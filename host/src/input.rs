@@ -383,11 +383,9 @@ impl InputSimulator {
                 }
                 4 => {
                     // Sleep / Suspend PC
-                    extern "system" {
-                        fn SetSuspendState(bHibernate: i32, bForce: i32, bWakeupEventsDisabled: i32) -> i32;
-                    }
+                    use windows::Win32::System::Power::SetSuspendState;
                     unsafe {
-                        let _ = SetSuspendState(0, 0, 0);
+                        let _ = SetSuspendState(false, false, false);
                     }
                     info!("Executed remote Sleep / Suspend");
                 }
