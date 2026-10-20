@@ -44,34 +44,42 @@ flowchart LR
 ## 2. Technical Stack & Component Breakdown
 
 ### 2.1 Windows Host Daemon (`host/`)
-- **Language & Runtime**: Rust (safe, zero runtime overhead, single executable).
-- **Video Capture**: DXGI Desktop Duplication API / Windows Graphics Capture API for 60fps frame grabbing.
-- **Audio Capture**: Windows Core Audio API (WASAPI) in loopback mode to capture system audio output.
+- **Language & Runtime**: Rust (safe, zero runtime overhead, compiled native executable).
+- **Architecture**:
+  - Elevated Windows Service: Handles unattended access, UAC prompts, and Windows Lock Screen (`Winlogon`) input injection.
+  - User Tray Application: Minimalist tray icon displaying active status, connected devices, pairing QR code, keep-awake toggle, and Privacy Mode.
+- **Video Capture**: DXGI Desktop Duplication API / Windows Graphics Capture API. Supports on-the-fly switching between multiple connected monitors.
+- **Audio Capture**: Windows Core Audio API (WASAPI) in loopback mode to stream laptop system sound (one-way, laptop to phone).
+- **Power & Session Control**: Windows `SetThreadExecutionState` to prevent unwanted laptop sleep during remote sessions, plus Wake-on-LAN (WoL) listener.
 - **Input Emulation**: Win32 `SendInput` API for high-precision relative mouse delta movement, clicks, scrolling, and keyboard virtual keys/scancodes.
-- **WebRTC Stack**: `webrtc` (Pure Rust Pion port) or `libdatachannel-rs` with hardware/OpenH264 video encoding and Opus audio encoding.
-- **Pairing UI**: Minimalist Windows system tray menu with an instant pairing window displaying an encrypted QR code containing device ID, ephemeral pairing token, and signaling endpoint.
+- **WebRTC Stack**: Pure Rust WebRTC / `libdatachannel-rs` with hardware-accelerated H.264/VP8 video encoding and Opus audio encoding.
 
 ### 2.2 Android Mobile App (`android/`)
 - **Language & Framework**: Kotlin + Jetpack Compose (Material Design 3).
 - **WebRTC Client**: Google WebRTC Android SDK (`org.webrtc:google-webrtc`).
 - **Video Rendering**: Native hardware-accelerated `SurfaceViewRenderer` / `TextureViewRenderer`.
-- **Audio Playback**: OpenSL ES / AudioTrack via WebRTC media pipeline.
+- **Adaptive UI & Orientation**:
+  - **Portrait Mode**: Live desktop preview on top half, large dedicated multi-touch trackpad surface and modifier keys on bottom half for easy one-handed navigation.
+  - **Landscape Mode**: Fullscreen immersive desktop stream with gesture overlays and toggleable controls.
 - **Touch & Gesture Engine**:
-  - 1-finger drag: Smooth mouse cursor movement (configurable sensitivity/acceleration).
-  - 1-finger tap: Left click.
-  - 2-finger tap: Right click.
+  - 1-finger drag: Smooth mouse cursor movement with configurable sensitivity & acceleration sliders.
+  - 1-finger tap: Left click (with subtle haptic feedback).
+  - 2-finger tap: Right click (with subtle haptic feedback).
   - 2-finger vertical drag: Smooth mouse wheel scroll.
-  - Long press + drag: Click-and-drag (text selection, window moving).
+  - Long press + drag: Click-and-drag.
 - **Keyboard & Modifiers**: Jetpack Compose overlay dock with sticky modifiers (`Ctrl`, `Alt`, `Shift`, `Win`, `Esc`, `Tab`, arrow keys) and system IME input.
+- **Monitor Switcher**: In-app selector to cycle through laptop monitors.
+- **Stream Quality Controls**: Dynamic presets ("Data Saver" 720p @ 30fps, "Balanced" 1080p @ 60fps, "Native" resolution).
 - **Pairing**: CameraX with ZXing / Google Code Scanner for scanning the host QR code.
 
 ### 2.3 Signaling & Relay Server (`signaling/`)
-- **Language**: Go or lightweight Node.js (fast, minimal RAM, single Docker container).
+- **Language**: Go (Golang) — ultra-lightweight (<20MB RAM, ~15MB Docker image), robust concurrency.
 - **Signaling Protocol**: WebSocket-based secure room exchange:
   - Laptop registers unique device ID with an authentication challenge.
   - Phone connects with the device ID and signed pairing token.
   - Server routes SDP offers, SDP answers, and ICE candidate exchange.
-- **Relay / NAT Traversal**: Dockerized `coturn` configuration recipe included for user's VPS to guarantee connectivity behind symmetric NATs / mobile cellular networks.
+  - Multi-device pairing support with device list management.
+- **Relay / NAT Traversal**: Dockerized `coturn` STUN/TURN configuration included for user's VPS to guarantee connectivity behind carrier-grade NATs and mobile networks.
 
 ---
 
