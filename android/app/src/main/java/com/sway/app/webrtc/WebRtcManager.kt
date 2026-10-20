@@ -36,6 +36,8 @@ class WebRtcManager(
     private val _connectionState = MutableStateFlow<RtcConnectionState>(RtcConnectionState.Idle)
     val connectionState = _connectionState.asStateFlow()
 
+    val currentFrame = signalingClient.currentFrame
+
     private var remoteVideoTrack: VideoTrack? = null
     private var videoRenderer: SurfaceViewRenderer? = null
 
@@ -141,15 +143,18 @@ class WebRtcManager(
     }
 
     /**
-     * Sends an input event directly through the low-latency DataChannel.
+     * Sends an input event directly through the low-latency DataChannel,
+     * or relays via WebSocket if DataChannel is negotiating.
      */
     fun sendInput(event: InputEvent) {
-        val dc = inputDataChannel ?: return
-        if (dc.state() != DataChannel.State.OPEN) return
-
         val bytes = event.toByteArray()
-        val buffer = DataChannel.Buffer(ByteBuffer.wrap(bytes), true)
-        dc.send(buffer)
+        val dc = inputDataChannel
+        if (dc != null && dc.state() == DataChannel.State.OPEN) {
+            val buffer = DataChannel.Buffer(ByteBuffer.wrap(bytes), true)
+            dc.send(buffer)
+        } else {
+            signalingClient.sendBinary(bytes)
+        }
     }
 
     private val peerConnectionObserver = object : PeerConnection.Observer {

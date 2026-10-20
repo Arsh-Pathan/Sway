@@ -55,9 +55,9 @@ fun PairingScreen(
     }
 
     // Manual Form State
-    var signalingUrl by remember { mutableStateOf("sway.yourvps.com:8080") }
-    var deviceId by remember { mutableStateOf("") }
-    var token by remember { mutableStateOf("") }
+    var signalingUrl by remember { mutableStateOf("51.79.249.143:8080") }
+    var deviceId by remember { mutableStateOf("sway-laptop-arsh") }
+    var token by remember { mutableStateOf("swaypass123") }
 
     Column(
         modifier = Modifier

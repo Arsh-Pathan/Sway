@@ -1,11 +1,14 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use qrcode::render::unicode;
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{error, info, warn};
 
+use crate::capture::ScreenCapture;
 use crate::input::InputSimulator;
 use crate::power::PowerManager;
 use crate::protocol::InputPacket;
@@ -87,6 +90,17 @@ impl HostSignaling {
         info!("Connected to signaling WebSocket!");
 
         let (mut write, mut read) = ws_stream.split();
+        let (out_tx, mut out_rx) = mpsc::channel::<Message>(128);
+
+        // Background WebSocket writer task
+        let writer_handle = tokio::spawn(async move {
+            while let Some(msg) = out_rx.recv().await {
+                if let Err(e) = write.send(msg).await {
+                    error!("WebSocket write error: {}", e);
+                    break;
+                }
+            }
+        });
 
         // Send registration message
         let reg_msg = SignalingEnvelope {
@@ -99,10 +113,11 @@ impl HostSignaling {
         };
 
         let raw = serde_json::to_string(&reg_msg)?;
-        write.send(Message::Text(raw)).await?;
+        let _ = out_tx.send(Message::Text(raw)).await;
         info!("Registered host '{}' with signaling server", self.device_id);
 
         let simulator = self.simulator.clone();
+        let is_streaming = Arc::new(AtomicBool::new(false));
 
         while let Some(msg) = read.next().await {
             match msg {
@@ -114,6 +129,31 @@ impl HostSignaling {
                                     if p.to_string().contains("client_joined") {
                                         info!("Mobile client paired and connected!");
                                         PowerManager::set_keep_awake(true);
+
+                                        // Start screen streaming to mobile client
+                                        if !is_streaming.load(Ordering::SeqCst) {
+                                            is_streaming.store(true, Ordering::SeqCst);
+                                            let stream_flag = is_streaming.clone();
+                                            let frame_tx = out_tx.clone();
+                                            tokio::task::spawn_blocking(move || {
+                                                let capture = ScreenCapture::new();
+                                                let target_interval = std::time::Duration::from_millis(33); // ~30 fps
+                                                info!("Started screen capture & streaming loop at 30 FPS");
+                                                while stream_flag.load(Ordering::Relaxed) {
+                                                    let start = std::time::Instant::now();
+                                                    if let Some(frame) = capture.capture_frame_jpeg(60) {
+                                                        if frame_tx.blocking_send(Message::Binary(frame)).is_err() {
+                                                            break;
+                                                        }
+                                                    }
+                                                    let elapsed = start.elapsed();
+                                                    if elapsed < target_interval {
+                                                        std::thread::sleep(target_interval - elapsed);
+                                                    }
+                                                }
+                                                info!("Screen capture loop stopped");
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -140,15 +180,17 @@ impl HostSignaling {
                     }
                 }
                 Ok(Message::Ping(p)) => {
-                    let _ = write.send(Message::Pong(p)).await;
+                    let _ = out_tx.send(Message::Pong(p)).await;
                 }
                 Ok(Message::Close(_)) => {
                     info!("Signaling connection closed by server");
+                    is_streaming.store(false, Ordering::SeqCst);
                     PowerManager::set_keep_awake(false);
                     break;
                 }
                 Err(e) => {
                     error!("WebSocket stream error: {}", e);
+                    is_streaming.store(false, Ordering::SeqCst);
                     PowerManager::set_keep_awake(false);
                     break;
                 }
@@ -156,6 +198,8 @@ impl HostSignaling {
             }
         }
 
+        is_streaming.store(false, Ordering::SeqCst);
+        writer_handle.abort();
         Ok(())
     }
 }

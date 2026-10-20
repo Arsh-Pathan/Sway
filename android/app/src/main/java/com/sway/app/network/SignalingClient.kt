@@ -1,5 +1,7 @@
 package com.sway.app.network
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import com.sway.app.model.CandidatePayload
 import com.sway.app.model.SdpPayload
@@ -14,6 +16,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import okhttp3.*
+import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import java.util.concurrent.TimeUnit
 
 sealed class SignalingState {
@@ -41,6 +45,9 @@ class SignalingClient(
 
     private val _state = MutableStateFlow<SignalingState>(SignalingState.Disconnected)
     val state = _state.asStateFlow()
+
+    private val _currentFrame = MutableStateFlow<Bitmap?>(null)
+    val currentFrame = _currentFrame.asStateFlow()
 
     private val _offers = MutableSharedFlow<SdpPayload>()
     val offers = _offers.asSharedFlow()
@@ -78,6 +85,18 @@ class SignalingClient(
             token = token
         )
         sendEnvelope(joinEnvelope)
+    }
+
+    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+        try {
+            val byteArray = bytes.toByteArray()
+            val bmp = BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
+            if (bmp != null) {
+                _currentFrame.value = bmp
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to decode incoming JPEG frame", e)
+        }
     }
 
     override fun onMessage(webSocket: WebSocket, text: String) {
@@ -120,6 +139,11 @@ class SignalingClient(
         } catch (e: Exception) {
             Log.e(tag, "Failed to parse message: $text", e)
         }
+    }
+
+    fun sendBinary(bytes: ByteArray): Boolean {
+        val ws = webSocket ?: return false
+        return ws.send(bytes.toByteString())
     }
 
     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {

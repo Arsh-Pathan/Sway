@@ -14,14 +14,20 @@ const (
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
 	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 512 * 1024 // 512 KB for large SDP payloads
+	maxMessageSize = 10 * 1024 * 1024 // 10 MB for high-resolution desktop frames
 )
+
+// WSMessage encapsulates a message type (Text or Binary) and its payload.
+type WSMessage struct {
+	msgType int
+	data    []byte
+}
 
 // Client represents a connected WebSocket peer (either a Host or an Android Client).
 type Client struct {
 	hub      *Hub
 	conn     *websocket.Conn
-	send     chan []byte
+	send     chan WSMessage
 	role     string // "host" or "client"
 	deviceID string
 	token    string
@@ -86,10 +92,7 @@ func (h *Hub) handleDisconnect(client *Client) {
 			})
 
 			for _, c := range h.clients[client.deviceID] {
-				select {
-				case c.send <- offlineMsg:
-				default:
-				}
+				c.sendSafe(WSMessage{msgType: websocket.TextMessage, data: offlineMsg})
 			}
 		}
 	} else if client.role == "client" {
@@ -106,6 +109,24 @@ func (h *Hub) handleDisconnect(client *Client) {
 	close(client.send)
 }
 
+// ProcessBinary relays binary frames (screen captures and input events) directly between host and mobile.
+func (h *Hub) ProcessBinary(client *Client, raw []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if client.role == "host" {
+		// Relay desktop screen frame to paired mobile client(s)
+		for _, c := range h.clients[client.deviceID] {
+			c.sendSafe(WSMessage{msgType: websocket.BinaryMessage, data: raw})
+		}
+	} else if client.role == "client" {
+		// Relay mouse/keyboard input event to target host
+		if host, exists := h.hosts[client.deviceID]; exists {
+			host.sendSafe(WSMessage{msgType: websocket.BinaryMessage, data: raw})
+		}
+	}
+}
+
 // ProcessMessage routes a parsed signaling message.
 func (h *Hub) ProcessMessage(client *Client, raw []byte) {
 	var msg SignalingMessage
@@ -117,7 +138,7 @@ func (h *Hub) ProcessMessage(client *Client, raw []byte) {
 	switch msg.Type {
 	case TypePing:
 		pong, _ := json.Marshal(SignalingMessage{Type: TypePong})
-		client.sendSafe(pong)
+		client.sendSafe(WSMessage{msgType: websocket.TextMessage, data: pong})
 
 	case TypeRegister:
 		h.handleRegister(client, msg)
@@ -146,13 +167,11 @@ func (h *Hub) handleRegister(client *Client, msg SignalingMessage) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// If a host already exists for this device ID, reject or replace if same token
 	if existing, exists := h.hosts[msg.DeviceID]; exists {
 		if subtle.ConstantTimeCompare([]byte(existing.token), []byte(msg.Token)) != 1 {
 			client.sendError("deviceId already registered with different token")
 			return
 		}
-		// Replace previous connection
 		close(existing.send)
 	}
 
@@ -169,7 +188,7 @@ func (h *Hub) handleRegister(client *Client, msg SignalingMessage) {
 		DeviceID: msg.DeviceID,
 		Payload:  json.RawMessage(`{"status":"registered"}`),
 	})
-	client.sendSafe(ack)
+	client.sendSafe(WSMessage{msgType: websocket.TextMessage, data: ack})
 }
 
 // handleJoin authenticates and connects a mobile client to a host.
@@ -188,7 +207,6 @@ func (h *Hub) handleJoin(client *Client, msg SignalingMessage) {
 		return
 	}
 
-	// Verify constant-time token comparison
 	if subtle.ConstantTimeCompare([]byte(host.token), []byte(msg.Token)) != 1 {
 		client.sendError("authentication failed: invalid pairing token")
 		return
@@ -207,7 +225,7 @@ func (h *Hub) handleJoin(client *Client, msg SignalingMessage) {
 		DeviceID: msg.DeviceID,
 		Payload:  json.RawMessage(`{"status":"paired"}`),
 	})
-	client.sendSafe(ack)
+	client.sendSafe(WSMessage{msgType: websocket.TextMessage, data: ack})
 
 	// Notify host that a mobile client has joined
 	notifyHost, _ := json.Marshal(SignalingMessage{
@@ -216,7 +234,7 @@ func (h *Hub) handleJoin(client *Client, msg SignalingMessage) {
 		DeviceID: msg.DeviceID,
 		Payload:  json.RawMessage(`{"status":"client_joined"}`),
 	})
-	host.sendSafe(notifyHost)
+	host.sendSafe(WSMessage{msgType: websocket.TextMessage, data: notifyHost})
 }
 
 // routePeerMessage relays SDP offers, answers, and ICE candidates between paired host and client.
@@ -225,31 +243,29 @@ func (h *Hub) routePeerMessage(client *Client, msg SignalingMessage, raw []byte)
 	defer h.mu.RUnlock()
 
 	if client.role == "host" {
-		// Forward to mobile client(s)
 		clients, exists := h.clients[client.deviceID]
 		if !exists || len(clients) == 0 {
 			log.Printf("[Hub] No active mobile clients for device: %s", client.deviceID)
 			return
 		}
 		for _, c := range clients {
-			c.sendSafe(raw)
+			c.sendSafe(WSMessage{msgType: websocket.TextMessage, data: raw})
 		}
 	} else if client.role == "client" {
-		// Forward to host
 		host, exists := h.hosts[client.deviceID]
 		if !exists {
 			client.sendError("target host not online")
 			return
 		}
-		host.sendSafe(raw)
+		host.sendSafe(WSMessage{msgType: websocket.TextMessage, data: raw})
 	} else {
 		client.sendError("client must register or join before sending peer messages")
 	}
 }
 
-func (c *Client) sendSafe(data []byte) {
+func (c *Client) sendSafe(msg WSMessage) {
 	select {
-	case c.send <- data:
+	case c.send <- msg:
 	default:
 		log.Printf("[Client] Send buffer full, dropping message")
 	}
@@ -260,5 +276,5 @@ func (c *Client) sendError(message string) {
 		Type:  TypeError,
 		Error: message,
 	})
-	c.sendSafe(errMsg)
+	c.sendSafe(WSMessage{msgType: websocket.TextMessage, data: errMsg})
 }

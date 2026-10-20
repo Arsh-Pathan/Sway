@@ -13,10 +13,9 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+	ReadBufferSize:  64 * 1024,
+	WriteBufferSize: 64 * 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		// Allow all origins for mobile and desktop WebSocket handshakes
 		return true
 	},
 }
@@ -93,7 +92,7 @@ func main() {
 		client := &Client{
 			hub:  hub,
 			conn: conn,
-			send: make(chan []byte, 256),
+			send: make(chan WSMessage, 512),
 		}
 
 		hub.register <- client
@@ -123,14 +122,19 @@ func (c *Client) readPump() {
 	})
 
 	for {
-		_, message, err := c.conn.ReadMessage()
+		msgType, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("[Client] Read error: %v", err)
 			}
 			break
 		}
-		c.hub.ProcessMessage(c, message)
+
+		if msgType == websocket.BinaryMessage {
+			c.hub.ProcessBinary(c, message)
+		} else {
+			c.hub.ProcessMessage(c, message)
+		}
 	}
 }
 
@@ -143,28 +147,14 @@ func (c *Client) writePump() {
 
 	for {
 		select {
-		case message, ok := <-c.send:
+		case msg, ok := <-c.send:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
-				// The hub closed the channel
 				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 
-			w, err := c.conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			_, _ = w.Write(message)
-
-			// Drain queued messages into the current WebSocket frame
-			n := len(c.send)
-			for i := 0; i < n; i++ {
-				_, _ = w.Write([]byte{'\n'})
-				_, _ = w.Write(<-c.send)
-			}
-
-			if err := w.Close(); err != nil {
+			if err := c.conn.WriteMessage(msg.msgType, msg.data); err != nil {
 				return
 			}
 

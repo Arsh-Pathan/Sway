@@ -1,6 +1,7 @@
 package com.sway.app.ui.screens
 
 import android.content.res.Configuration
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.BasicTextField
@@ -16,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
@@ -39,6 +42,7 @@ fun SessionScreen(
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val rtcState by webRtcManager.connectionState.collectAsState()
+    val currentFrame by webRtcManager.currentFrame.collectAsState()
 
     var sensitivity by remember { mutableFloatStateOf(1.2f) }
     var scrollSpeed by remember { mutableFloatStateOf(1.0f) }
@@ -66,15 +70,39 @@ fun SessionScreen(
         if (isLandscape) {
             // ==================== LANDSCAPE MODE: IMMERSIVE STREAM ====================
             Box(modifier = Modifier.fillMaxSize()) {
-                AndroidView(
-                    factory = { ctx ->
-                        SurfaceViewRenderer(ctx).apply {
-                            setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-                            webRtcManager.attachRenderer(this)
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
+                if (rtcState is RtcConnectionState.Connected) {
+                    AndroidView(
+                        factory = { ctx ->
+                            SurfaceViewRenderer(ctx).apply {
+                                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                                webRtcManager.attachRenderer(this)
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else if (currentFrame != null) {
+                    Image(
+                        bitmap = currentFrame!!.asImageBitmap(),
+                        contentDescription = "Desktop Stream",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit
+                    )
+                } else {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(8.dp),
+                        color = SurfaceDark.copy(alpha = 0.85f),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text(
+                            text = "Connecting to desktop...",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = Typography.bodyMedium,
+                            color = AccentIndigoBright
+                        )
+                    }
+                }
 
                 // Transparent gesture surface on top of screen
                 TrackpadSurface(
@@ -124,18 +152,25 @@ fun SessionScreen(
                         .clip(MaterialTheme.shapes.large)
                         .background(SurfaceDark)
                 ) {
-                    AndroidView(
-                        factory = { ctx ->
-                            SurfaceViewRenderer(ctx).apply {
-                                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-                                webRtcManager.attachRenderer(this)
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
-
-                    // Connection status badge
-                    if (rtcState !is RtcConnectionState.Connected) {
+                    if (rtcState is RtcConnectionState.Connected) {
+                        AndroidView(
+                            factory = { ctx ->
+                                SurfaceViewRenderer(ctx).apply {
+                                    setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                                    webRtcManager.attachRenderer(this)
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else if (currentFrame != null) {
+                        Image(
+                            bitmap = currentFrame!!.asImageBitmap(),
+                            contentDescription = "Desktop Stream",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit
+                        )
+                    } else {
+                        // Connection status badge
                         Surface(
                             modifier = Modifier
                                 .align(Alignment.Center)
@@ -144,11 +179,7 @@ fun SessionScreen(
                             shape = MaterialTheme.shapes.medium
                         ) {
                             Text(
-                                text = when (rtcState) {
-                                    is RtcConnectionState.Connecting -> "Connecting to desktop..."
-                                    is RtcConnectionState.Failed -> "Connection failed"
-                                    else -> "Waiting for stream..."
-                                },
+                                text = "Connecting to desktop...",
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                 style = Typography.bodyMedium,
                                 color = AccentIndigoBright
