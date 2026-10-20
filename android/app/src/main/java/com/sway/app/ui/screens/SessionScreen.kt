@@ -41,6 +41,7 @@ import android.widget.Toast
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.viewinterop.AndroidView
 import com.sway.app.model.InputEvent
+import com.sway.app.network.StreamFrame
 import com.sway.app.ui.components.ModifierDock
 import com.sway.app.ui.components.QuickActionsSheet
 import com.sway.app.ui.components.ResolutionSheet
@@ -124,11 +125,12 @@ private fun mapTouchToNormalized(
 @Composable
 private fun DesktopStreamCanvas(
     frame: android.graphics.Bitmap?,
+    sequence: Long = 0L,
     fitMode: ViewFitMode = ViewFitMode.FIT,
     modifier: Modifier = Modifier
 ) {
     if (frame != null) {
-        val imageBitmap = remember(frame) { frame.asImageBitmap() }
+        val imageBitmap = remember(sequence) { frame.asImageBitmap() }
         androidx.compose.foundation.Canvas(modifier = modifier.fillMaxSize()) {
             val canvasWidth = size.width
             val canvasHeight = size.height
@@ -206,7 +208,9 @@ fun SessionScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
 
     val rtcState by webRtcManager.connectionState.collectAsState()
-    val currentFrame by webRtcManager.currentFrame.collectAsState()
+    val currentFrameWrapper: StreamFrame? by webRtcManager.currentFrame.collectAsState()
+    val currentFrame: android.graphics.Bitmap? = currentFrameWrapper?.bitmap
+    val currentSequence: Long = currentFrameWrapper?.sequence ?: 0L
 
     var controlMode by remember { mutableStateOf(ControlMode.TRACKPAD) }
     var privacyCurtainActive by remember { mutableStateOf(false) }
@@ -395,7 +399,7 @@ fun SessionScreen(
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else if (currentFrame != null) {
-                            DesktopStreamCanvas(frame = currentFrame, fitMode = viewFitMode)
+                            DesktopStreamCanvas(frame = currentFrame, sequence = currentSequence, fitMode = viewFitMode)
                         } else {
                             Surface(
                                 modifier = Modifier
@@ -944,7 +948,7 @@ fun SessionScreen(
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else if (currentFrame != null) {
-                            DesktopStreamCanvas(frame = currentFrame, fitMode = viewFitMode)
+                            DesktopStreamCanvas(frame = currentFrame, sequence = currentSequence, fitMode = viewFitMode)
                         } else {
                             Surface(
                                 modifier = Modifier

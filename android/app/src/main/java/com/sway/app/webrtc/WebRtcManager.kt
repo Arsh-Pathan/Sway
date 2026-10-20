@@ -36,7 +36,7 @@ class WebRtcManager(
     private val _connectionState = MutableStateFlow<RtcConnectionState>(RtcConnectionState.Idle)
     val connectionState = _connectionState.asStateFlow()
 
-    val currentFrame = signalingClient.currentFrame
+    val currentFrame: kotlinx.coroutines.flow.StateFlow<com.sway.app.network.StreamFrame?> = signalingClient.currentFrame
     val fps = signalingClient.fps
     val rttMs = signalingClient.rttMs
 

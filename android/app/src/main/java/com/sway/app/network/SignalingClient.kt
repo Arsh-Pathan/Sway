@@ -20,6 +20,11 @@ import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import java.util.concurrent.TimeUnit
 
+data class StreamFrame(
+    val bitmap: Bitmap,
+    val sequence: Long
+)
+
 sealed class SignalingState {
     object Disconnected : SignalingState()
     object Connecting : SignalingState()
@@ -46,7 +51,7 @@ class SignalingClient(
     private val _state = MutableStateFlow<SignalingState>(SignalingState.Disconnected)
     val state = _state.asStateFlow()
 
-    private val _currentFrame = MutableStateFlow<Bitmap?>(null)
+    private val _currentFrame = MutableStateFlow<StreamFrame?>(null)
     val currentFrame = _currentFrame.asStateFlow()
 
     private val _fps = MutableStateFlow(0)
@@ -109,15 +114,18 @@ class SignalingClient(
     private val isDecoding = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile
     private var pendingFrameBytes: ByteArray? = null
-    private var reusableBitmap: Bitmap? = null
+    private var bufferA: Bitmap? = null
+    private var bufferB: Bitmap? = null
+    private var useBufferA = true
+    private var frameSeq = 0L
+
     private val decodeOptions = BitmapFactory.Options().apply {
         inMutable = true
         inPreferredConfig = Bitmap.Config.ARGB_8888
     }
 
     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-        val byteArray = bytes.toByteArray()
-        pendingFrameBytes = byteArray
+        pendingFrameBytes = bytes.toByteArray()
 
         // Update real-time FPS counter
         frameCounter++
@@ -135,19 +143,24 @@ class SignalingClient(
                         val toDecode = pendingFrameBytes ?: break
                         pendingFrameBytes = null
 
+                        val targetBuffer = if (useBufferA) bufferA else bufferB
                         val bmp = try {
-                            decodeOptions.inBitmap = reusableBitmap
+                            decodeOptions.inBitmap = targetBuffer
                             BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOptions)
                         } catch (_: Exception) {
                             decodeOptions.inBitmap = null
-                            val fresh = BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOptions)
-                            reusableBitmap = fresh
-                            fresh
+                            BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOptions)
                         }
 
                         if (bmp != null) {
-                            reusableBitmap = bmp
-                            _currentFrame.value = bmp
+                            if (useBufferA) {
+                                bufferA = bmp
+                            } else {
+                                bufferB = bmp
+                            }
+                            useBufferA = !useBufferA
+                            frameSeq++
+                            _currentFrame.value = StreamFrame(bmp, frameSeq)
                         }
                     }
                 } catch (e: Exception) {
@@ -250,6 +263,11 @@ class SignalingClient(
     fun disconnect() {
         webSocket?.close(1000, "User disconnected")
         webSocket = null
+        bufferA?.recycle()
+        bufferB?.recycle()
+        bufferA = null
+        bufferB = null
+        _currentFrame.value = null
         _state.value = SignalingState.Disconnected
     }
 }

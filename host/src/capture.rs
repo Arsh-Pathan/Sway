@@ -84,11 +84,13 @@ fn draw_cursor(img: &mut image::RgbaImage, cur_x: i32, cur_y: i32) {
 pub struct ScreenCapture {
     pub active_monitor: usize,
     pub monitors: Vec<MonitorInfo>,
+    cached_monitors: Vec<Monitor>,
     rgb_buffer: Vec<u8>,
     last_cursor_x: i32,
     last_cursor_y: i32,
     last_checksum: u64,
     last_frame_time: std::time::Instant,
+    last_monitor_refresh: std::time::Instant,
 }
 
 impl ScreenCapture {
@@ -110,18 +112,17 @@ impl ScreenCapture {
         }
 
         let monitors = Self::detect_monitors();
+        let cached_monitors = Monitor::all().unwrap_or_default();
         let mut active_index = 0;
 
         // Auto-detect which display actually has active desktop content (ignoring alpha channel)
-        if let Ok(all) = Monitor::all() {
-            for (idx, m) in all.iter().enumerate() {
-                if let Ok(img) = m.capture_image() {
-                    let has_content = img.chunks_exact(4).any(|c| c[0] > 15 || c[1] > 15 || c[2] > 15);
-                    if has_content {
-                        active_index = idx;
-                        info!("Auto-detected active desktop stream on Monitor #{} ({:?})", idx, m.name());
-                        break;
-                    }
+        for (idx, m) in cached_monitors.iter().enumerate() {
+            if let Ok(img) = m.capture_image() {
+                let has_content = img.chunks_exact(4).any(|c| c[0] > 15 || c[1] > 15 || c[2] > 15);
+                if has_content {
+                    active_index = idx;
+                    info!("Auto-detected active desktop stream on Monitor #{} ({:?})", idx, m.name());
+                    break;
                 }
             }
         }
@@ -134,11 +135,13 @@ impl ScreenCapture {
         Self {
             active_monitor: active_index,
             monitors,
+            cached_monitors,
             rgb_buffer: Vec::with_capacity(854 * 480 * 3),
             last_cursor_x: -1,
             last_cursor_y: -1,
             last_checksum: 0,
             last_frame_time: std::time::Instant::now(),
+            last_monitor_refresh: std::time::Instant::now(),
         }
     }
 
@@ -186,25 +189,50 @@ impl ScreenCapture {
     }
 
     pub fn capture_frame_jpeg(&mut self, quality: u8) -> Option<Vec<u8>> {
-        let all_monitors = Monitor::all().ok()?;
-        if all_monitors.is_empty() {
-            return None;
+        if self.cached_monitors.is_empty() {
+            if let Ok(all) = Monitor::all() {
+                self.cached_monitors = all;
+                self.last_monitor_refresh = std::time::Instant::now();
+            } else {
+                return None;
+            }
         }
 
-        let monitor = if self.active_monitor < all_monitors.len() {
-            &all_monitors[self.active_monitor]
+        let monitor_idx = if self.active_monitor < self.cached_monitors.len() {
+            self.active_monitor
         } else {
-            all_monitors
-                .iter()
-                .find(|m| m.is_primary().unwrap_or(false))
-                .unwrap_or(&all_monitors[0])
+            0
         };
 
-        let rgba_image = match monitor.capture_image() {
-            Ok(img) => img,
-            Err(_) => return None,
+        let rgba_result = self.cached_monitors.get(monitor_idx).and_then(|m| m.capture_image().ok());
+
+        let rgba_image = match rgba_result {
+            Some(img) => img,
+            None => {
+                // If capture failed (e.g. resolution change, desktop switch, or DXGI reset),
+                // rate-limit refresh to once per second to avoid handle exhaustion
+                if self.last_monitor_refresh.elapsed() >= std::time::Duration::from_millis(1000) {
+                    if let Ok(all) = Monitor::all() {
+                        self.cached_monitors = all;
+                        self.last_monitor_refresh = std::time::Instant::now();
+                        if let Some(m) = self.cached_monitors.get(monitor_idx) {
+                            match m.capture_image() {
+                                Ok(img) => img,
+                                Err(_) => return None,
+                            }
+                        } else {
+                            return None;
+                        }
+                    } else {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
         };
-        let selected_monitor = monitor;
+
+        let selected_monitor = &self.cached_monitors[monitor_idx];
         let width = rgba_image.width();
         let height = rgba_image.height();
 
