@@ -40,7 +40,8 @@ fun ModifierDock(
     onInputEvent: (InputEvent) -> Unit,
     onToggleKeyboard: () -> Unit,
     onOpenSettings: () -> Unit,
-    onSwitchMonitor: () -> Unit
+    onSwitchMonitor: () -> Unit,
+    onOpenQuickActions: () -> Unit = {}
 ) {
     var ctrlActive by remember { mutableStateOf(false) }
     var altActive by remember { mutableStateOf(false) }
@@ -176,6 +177,11 @@ fun ModifierDock(
                 icon = Icons.Default.ArrowForward,
                 modifier = Modifier.weight(0.9f),
                 onClick = { sendKeyPress(VK_RIGHT) }
+            )
+            IconButton(
+                icon = Icons.Default.Bolt,
+                modifier = Modifier.weight(0.9f),
+                onClick = onOpenQuickActions
             )
             IconButton(
                 icon = Icons.Default.Settings,

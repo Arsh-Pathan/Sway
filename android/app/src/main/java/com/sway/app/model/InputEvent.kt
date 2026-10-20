@@ -143,4 +143,29 @@ sealed class InputEvent {
         override val opCode: Byte = 0x0D
         override fun toByteArray(): ByteArray = byteArrayOf(opCode, if (vertical) 1 else 0)
     }
+
+    data class ClipboardSync(val text: String) : InputEvent() {
+        override val opCode: Byte = 0x0E
+        override fun toByteArray(): ByteArray {
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            return ByteBuffer.allocate(3 + bytes.size)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put(opCode)
+                .putShort(bytes.size.toShort())
+                .put(bytes)
+                .array()
+        }
+    }
+
+    data class SystemCommand(val action: Byte) : InputEvent() {
+        override val opCode: Byte = 0x0F
+        override fun toByteArray(): ByteArray = byteArrayOf(opCode, action)
+        companion object {
+            const val LOCK: Byte = 1
+            const val SHOW_DESKTOP: Byte = 2
+            const val TASK_MANAGER: Byte = 3
+            const val SLEEP: Byte = 4
+            const val TURN_OFF_SCREEN: Byte = 5
+        }
+    }
 }

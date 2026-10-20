@@ -47,14 +47,40 @@ impl LocalServer {
                     let priv_curtain = privacy.clone();
                     tokio::spawn(async move {
                         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                        let mut buf = vec![0u8; 2048];
-                        let _ = stream.read(&mut buf).await;
-                        let req = String::from_utf8_lossy(&buf);
+                        let mut buf = vec![0u8; 4096];
+                        let n = stream.read(&mut buf).await.unwrap_or(0);
+                        let req = String::from_utf8_lossy(&buf[..n]);
 
-                        if req.contains("POST /api/privacy") {
+                        let is_get_apk = req.contains("GET /sway.apk") || req.contains("GET /app.apk");
+                        let is_head_apk = req.contains("HEAD /sway.apk") || req.contains("HEAD /app.apk");
+
+                        if is_get_apk || is_head_apk {
+                            let apk_paths = [
+                                "android/app/build/outputs/apk/debug/app-debug.apk",
+                                "../android/app/build/outputs/apk/debug/app-debug.apk",
+                                "app-debug.apk",
+                                "sway.apk",
+                            ];
+                            for p in &apk_paths {
+                                if let Ok(bytes) = tokio::fs::read(p).await {
+                                    let header = format!(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.android.package-archive\r\nContent-Disposition: attachment; filename=\"Sway-Remote.apk\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                        bytes.len()
+                                    );
+                                    let _ = stream.write_all(header.as_bytes()).await;
+                                    if is_get_apk {
+                                        let _ = stream.write_all(&bytes).await;
+                                    }
+                                    return;
+                                }
+                            }
+                            let not_found = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nAPK not built yet. Run './gradlew assembleDebug' in android folder.";
+                            let _ = stream.write_all(not_found.as_bytes()).await;
+                            return;
+                        } else if req.contains("POST /api/privacy") {
                             let enable = req.contains("\"enable\":true") || req.contains("\"enable\": true");
                             priv_curtain.set_enabled(enable);
-                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"success\":true}";
+                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"success\":true}";
                             let _ = stream.write_all(resp.as_bytes()).await;
                             return;
                         } else if req.contains("POST /api/resolution") {
@@ -63,13 +89,65 @@ impl LocalServer {
                             } else {
                                 InputSimulator::set_display_resolution(0);
                             }
-                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"success\":true}";
+                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"success\":true}";
                             let _ = stream.write_all(resp.as_bytes()).await;
                             return;
                         } else if req.contains("POST /api/orientation") {
                             let vertical = req.contains("\"vertical\":true") || req.contains("\"vertical\": true");
                             InputSimulator::set_display_orientation(vertical);
-                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"success\":true}";
+                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"success\":true}";
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                            return;
+                        } else if req.contains("POST /api/system") {
+                            if req.contains("\"action\":1") || req.contains("\"action\": 1") {
+                                InputSimulator::execute_system_command(1);
+                            } else if req.contains("\"action\":2") || req.contains("\"action\": 2") {
+                                InputSimulator::execute_system_command(2);
+                            } else if req.contains("\"action\":3") || req.contains("\"action\": 3") {
+                                InputSimulator::execute_system_command(3);
+                            } else if req.contains("\"action\":4") || req.contains("\"action\": 4") {
+                                InputSimulator::execute_system_command(4);
+                            } else if req.contains("\"action\":5") || req.contains("\"action\": 5") {
+                                InputSimulator::execute_system_command(5);
+                            }
+                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"success\":true}";
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                            return;
+                        } else if req.contains("POST /api/clipboard") {
+                            let full_req = req.to_string();
+                            let sep = if full_req.contains("\r\n\r\n") {
+                                Some("\r\n\r\n")
+                            } else if full_req.contains("\n\n") {
+                                Some("\n\n")
+                            } else {
+                                None
+                            };
+
+                            let body_str = if let Some(s) = sep {
+                                let parts: Vec<&str> = full_req.splitn(2, s).collect();
+                                if parts.len() > 1 && !parts[1].trim().is_empty() {
+                                    parts[1].trim().to_string()
+                                } else {
+                                    // Body might be coming in next chunk
+                                    let mut body_buf = vec![0u8; 2048];
+                                    if let Ok(Ok(bn)) = tokio::time::timeout(std::time::Duration::from_millis(50), stream.read(&mut body_buf)).await {
+                                        String::from_utf8_lossy(&body_buf[..bn]).trim().to_string()
+                                    } else {
+                                        String::new()
+                                    }
+                                }
+                            } else {
+                                String::new()
+                            };
+
+                            if !body_str.is_empty() {
+                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                                    if let Some(text) = parsed.get("text").and_then(|t| t.as_str()) {
+                                        InputSimulator::set_clipboard_text(text);
+                                    }
+                                }
+                            }
+                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"success\":true}";
                             let _ = stream.write_all(resp.as_bytes()).await;
                             return;
                         }

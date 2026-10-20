@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.sway.app.model.InputEvent
 import com.sway.app.ui.components.ModifierDock
+import com.sway.app.ui.components.QuickActionsSheet
 import com.sway.app.ui.components.SettingsSheet
 import com.sway.app.ui.components.TrackpadSurface
 import com.sway.app.ui.theme.*
@@ -173,6 +174,7 @@ fun SessionScreen(
     var hapticsEnabled by remember { mutableStateOf(true) }
     var currentQuality by remember { mutableStateOf<Byte>(InputEvent.SetQuality.TURBO) }
     var showSettings by remember { mutableStateOf(false) }
+    var showQuickActions by remember { mutableStateOf(false) }
 
     val liveFps by webRtcManager.fps.collectAsState()
     val liveRtt by webRtcManager.rttMs.collectAsState()
@@ -571,6 +573,14 @@ fun SessionScreen(
                             Icon(Icons.Default.ScreenRotation, contentDescription = "Rotate", tint = TextPrimary)
                         }
 
+                        // Quick Actions & Power button
+                        IconButton(
+                            onClick = { showQuickActions = true },
+                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
+                        ) {
+                            Icon(Icons.Default.Bolt, contentDescription = "Quick Actions", tint = AccentIndigoBright)
+                        }
+
                         // Settings button
                         IconButton(
                             onClick = { showSettings = true },
@@ -737,6 +747,14 @@ fun SessionScreen(
                             colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark)
                         ) {
                             Icon(Icons.Default.ScreenRotation, contentDescription = "Rotate", tint = TextPrimary)
+                        }
+
+                        // Quick Actions & Power
+                        IconButton(
+                            onClick = { showQuickActions = true },
+                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark)
+                        ) {
+                            Icon(Icons.Default.Bolt, contentDescription = "Quick Actions", tint = AccentIndigoBright)
                         }
 
                         IconButton(
@@ -948,7 +966,8 @@ fun SessionScreen(
                         }
                     },
                     onOpenSettings = { showSettings = true },
-                    onSwitchMonitor = { switchMonitor() }
+                    onSwitchMonitor = { switchMonitor() },
+                    onOpenQuickActions = { showQuickActions = true }
                 )
             }
         }
@@ -996,6 +1015,14 @@ fun SessionScreen(
                 },
                 onDismiss = { showSettings = false },
                 onDisconnect = { handleDisconnect() }
+            )
+        }
+
+        // Quick Actions & Power Sheet
+        if (showQuickActions) {
+            QuickActionsSheet(
+                onSendInput = { webRtcManager.sendInput(it) },
+                onDismiss = { showQuickActions = false }
             )
         }
     }

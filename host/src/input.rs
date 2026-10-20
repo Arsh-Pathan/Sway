@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU8, Ordering};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -48,6 +48,12 @@ impl InputSimulator {
             }
             InputPacket::ChangeOrientation { vertical } => {
                 Self::set_display_orientation(vertical);
+            }
+            InputPacket::ClipboardSync { text } => {
+                Self::set_clipboard_text(&text);
+            }
+            InputPacket::SystemCommand { action } => {
+                Self::execute_system_command(action);
             }
         }
     }
@@ -291,5 +297,121 @@ impl InputSimulator {
                 }
             }
         }
+    }
+
+    pub fn set_clipboard_text(text: &str) {
+        #[cfg(windows)]
+        {
+            extern "system" {
+                fn OpenClipboard(hWndNewOwner: isize) -> i32;
+                fn CloseClipboard() -> i32;
+                fn EmptyClipboard() -> i32;
+                fn SetClipboardData(uFormat: u32, hMem: isize) -> isize;
+                fn GlobalAlloc(uFlags: u32, dwBytes: usize) -> isize;
+                fn GlobalLock(hMem: isize) -> *mut u8;
+                fn GlobalUnlock(hMem: isize) -> i32;
+            }
+
+            let utf16: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+            let byte_count = utf16.len() * std::mem::size_of::<u16>();
+
+            let mut opened = false;
+            for _ in 0..10 {
+                if unsafe { OpenClipboard(0) } != 0 {
+                    opened = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            if opened {
+                unsafe {
+                    let _ = EmptyClipboard();
+                    let h_mem = GlobalAlloc(0x0002 /* GMEM_MOVEABLE */, byte_count);
+                    if h_mem != 0 {
+                        let ptr = GlobalLock(h_mem);
+                        if !ptr.is_null() {
+                            std::ptr::copy_nonoverlapping(utf16.as_ptr() as *const u8, ptr, byte_count);
+                            let _ = GlobalUnlock(h_mem);
+                            let _ = SetClipboardData(13 /* CF_UNICODETEXT */, h_mem);
+                            info!("Synced clipboard text ({} chars) to Windows clipboard", text.chars().count());
+                        }
+                    }
+                    let _ = CloseClipboard();
+                }
+            } else {
+                warn!("Failed to open Windows clipboard after 10 attempts");
+            }
+        }
+    }
+
+    pub fn execute_system_command(action: u8) {
+        #[cfg(windows)]
+        {
+            match action {
+                1 => {
+                    // Lock Workstation (Win+L)
+                    extern "system" {
+                        fn LockWorkStation() -> i32;
+                    }
+                    unsafe {
+                        let _ = LockWorkStation();
+                    }
+                    info!("Executed remote LockWorkStation");
+                }
+                2 => {
+                    // Show Desktop (Win+D)
+                    use windows::Win32::UI::Input::KeyboardAndMouse::{KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_LWIN};
+                    let sim = InputSimulator::new();
+                    sim.send_key_input(VK_LWIN.0, KEYBD_EVENT_FLAGS(0), 0);
+                    sim.send_key_input(0x44, KEYBD_EVENT_FLAGS(0), 0); // 'D'
+                    sim.send_key_input(0x44, KEYEVENTF_KEYUP, 0);
+                    sim.send_key_input(VK_LWIN.0, KEYEVENTF_KEYUP, 0);
+                    info!("Executed remote Show Desktop (Win+D)");
+                }
+                3 => {
+                    // Open Task Manager (Ctrl+Shift+Esc)
+                    use windows::Win32::UI::Input::KeyboardAndMouse::{KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_CONTROL, VK_SHIFT};
+                    let sim = InputSimulator::new();
+                    sim.send_key_input(VK_CONTROL.0, KEYBD_EVENT_FLAGS(0), 0);
+                    sim.send_key_input(VK_SHIFT.0, KEYBD_EVENT_FLAGS(0), 0);
+                    sim.send_key_input(0x1B, KEYBD_EVENT_FLAGS(0), 0); // VK_ESCAPE
+                    sim.send_key_input(0x1B, KEYEVENTF_KEYUP, 0);
+                    sim.send_key_input(VK_SHIFT.0, KEYEVENTF_KEYUP, 0);
+                    sim.send_key_input(VK_CONTROL.0, KEYEVENTF_KEYUP, 0);
+                    info!("Executed remote Task Manager shortcut");
+                }
+                4 => {
+                    // Sleep / Suspend PC
+                    extern "system" {
+                        fn SetSuspendState(bHibernate: i32, bForce: i32, bWakeupEventsDisabled: i32) -> i32;
+                    }
+                    unsafe {
+                        let _ = SetSuspendState(0, 0, 0);
+                    }
+                    info!("Executed remote Sleep / Suspend");
+                }
+                5 => {
+                    // Turn Off Display
+                    use windows::Win32::Foundation::{LPARAM, WPARAM};
+                    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, HWND_BROADCAST, WM_SYSCOMMAND};
+                    unsafe {
+                        let _ = SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, WPARAM(0xF170), LPARAM(2)); // SC_MONITORPOWER, 2 = off
+                    }
+                    info!("Executed remote Turn Off Display");
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_clipboard() {
+        InputSimulator::set_clipboard_text("Test Sway Clipboard Text");
     }
 }

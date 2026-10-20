@@ -17,6 +17,8 @@ pub enum InputPacket {
     SetPrivacyCurtain { enabled: bool },
     ChangeResolution { mode: u8 },
     ChangeOrientation { vertical: bool },
+    ClipboardSync { text: String },
+    SystemCommand { action: u8 },
 }
 
 #[derive(Debug, Error)]
@@ -104,6 +106,20 @@ impl InputPacket {
                 let vertical = rdr.read_u8()? != 0;
                 Ok(InputPacket::ChangeOrientation { vertical })
             }
+            0x0E => {
+                let len = rdr.read_u16::<LittleEndian>()? as usize;
+                let remaining = &buf[3..];
+                if remaining.len() < len {
+                    return Err(ProtocolError::TooShort);
+                }
+                let text = String::from_utf8(remaining[..len].to_vec())
+                    .map_err(|_| ProtocolError::InvalidUtf8)?;
+                Ok(InputPacket::ClipboardSync { text })
+            }
+            0x0F => {
+                let action = rdr.read_u8()?;
+                Ok(InputPacket::SystemCommand { action })
+            }
             _ => Err(ProtocolError::UnknownOpCode(opcode)),
         }
     }
@@ -166,6 +182,22 @@ mod tests {
         assert_eq!(
             InputPacket::parse(&qual).unwrap(),
             InputPacket::SetQuality { mode: 2 }
+        );
+    }
+
+    #[test]
+    fn test_parse_clipboard_and_system() {
+        let mut clip = vec![0x0E, 0x04, 0x00];
+        clip.extend_from_slice(b"Sway");
+        assert_eq!(
+            InputPacket::parse(&clip).unwrap(),
+            InputPacket::ClipboardSync { text: "Sway".to_string() }
+        );
+
+        let sys = vec![0x0F, 0x01];
+        assert_eq!(
+            InputPacket::parse(&sys).unwrap(),
+            InputPacket::SystemCommand { action: 1 }
         );
     }
 }

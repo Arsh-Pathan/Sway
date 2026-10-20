@@ -6,8 +6,8 @@ import android.os.Vibrator
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -66,57 +66,84 @@ fun TrackpadSurface(
                 color = if (isDragging) TrackpadActiveBorder else TrackpadBorder,
                 shape = RoundedCornerShape(20.dp)
             )
-            .pointerInput(sensitivity, hapticsEnabled) {
-                detectTapGestures(
-                    onTap = {
-                        // 1-finger single tap -> Left click
-                        triggerHaptic(1)
-                        onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
-                        onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
-                    },
-                    onDoubleTap = {
-                        // Double tap -> Double click
-                        triggerHaptic(2)
-                        onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
-                        onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
-                        onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
-                        onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
-                    },
-                    onLongPress = {
-                        // Long press -> Right click
-                        triggerHaptic(2)
-                        onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_RIGHT))
-                        onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_RIGHT))
-                    }
-                )
-            }
-            .pointerInput(sensitivity, scrollSpeed) {
-                detectDragGestures(
-                    onDragStart = { offset ->
-                        touchPoint = offset
+            .pointerInput(sensitivity, scrollSpeed, hapticsEnabled) {
+                awaitEachGesture {
+                    val firstDown = awaitFirstDown()
+                    val startTime = System.currentTimeMillis()
+                    var maxPointers = 1
+                    var hasMoved = false
+                    var totalDragX = 0f
+                    var totalDragY = 0f
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val activePointers = event.changes.filter { it.pressed }
+                        if (activePointers.size > maxPointers) {
+                            maxPointers = activePointers.size
+                        }
+
+                        if (activePointers.isEmpty()) {
+                            // Gesture ended (all fingers lifted)
+                            val duration = System.currentTimeMillis() - startTime
+                            if (!hasMoved && duration < 400) {
+                                if (maxPointers == 1) {
+                                    // 1-finger tap -> Left Click
+                                    triggerHaptic(1)
+                                    onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                                    onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                                } else if (maxPointers >= 2) {
+                                    // 2-finger tap -> Right Click!
+                                    triggerHaptic(2)
+                                    onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_RIGHT))
+                                    onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_RIGHT))
+                                }
+                            }
+                            touchPoint = null
+                            isDragging = false
+                            break
+                        }
+
+                        touchPoint = activePointers.first().position
                         isDragging = true
-                    },
-                    onDragEnd = {
-                        touchPoint = null
-                        isDragging = false
-                    },
-                    onDragCancel = {
-                        touchPoint = null
-                        isDragging = false
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        touchPoint = change.position
 
-                        // Calculate scaled delta
-                        val dx = (dragAmount.x * sensitivity).toInt().coerceIn(-32767, 32767).toShort()
-                        val dy = (dragAmount.y * sensitivity).toInt().coerceIn(-32767, 32767).toShort()
+                        if (activePointers.size == 1) {
+                            val change = activePointers.first()
+                            val dragX = change.position.x - change.previousPosition.x
+                            val dragY = change.position.y - change.previousPosition.y
+                            totalDragX += Math.abs(dragX)
+                            totalDragY += Math.abs(dragY)
+                            if (totalDragX > 8f || totalDragY > 8f) {
+                                hasMoved = true
+                            }
 
-                        if (dx != 0.toShort() || dy != 0.toShort()) {
-                            onInputEvent(InputEvent.MouseMove(dx, dy))
+                            val dx = (dragX * sensitivity).toInt().coerceIn(-32767, 32767).toShort()
+                            val dy = (dragY * sensitivity).toInt().coerceIn(-32767, 32767).toShort()
+                            if (dx != 0.toShort() || dy != 0.toShort()) {
+                                onInputEvent(InputEvent.MouseMove(dx, dy))
+                            }
+                            change.consume()
+                        } else if (activePointers.size >= 2) {
+                            // 2-finger scroll
+                            val p0 = activePointers[0]
+                            val p1 = activePointers[1]
+                            val dragY = ((p0.position.y - p0.previousPosition.y) + (p1.position.y - p1.previousPosition.y)) / 2f
+                            val dragX = ((p0.position.x - p0.previousPosition.x) + (p1.position.x - p1.previousPosition.x)) / 2f
+                            totalDragX += Math.abs(dragX)
+                            totalDragY += Math.abs(dragY)
+                            if (totalDragX > 8f || totalDragY > 8f) {
+                                hasMoved = true
+                            }
+
+                            // Natural wheel delta
+                            val scrollDeltaY = (-dragY * scrollSpeed * 12f).toInt().coerceIn(-32767, 32767).toShort()
+                            val scrollDeltaX = (dragX * scrollSpeed * 12f).toInt().coerceIn(-32767, 32767).toShort()
+                            if (scrollDeltaY != 0.toShort() || scrollDeltaX != 0.toShort()) {
+                                onInputEvent(InputEvent.MouseScroll(scrollDeltaY, scrollDeltaX))
+                            }
+                            for (p in activePointers) p.consume()
                         }
                     }
-                )
+                }
             }
     ) {
         // Visual touch indicator
