@@ -11,6 +11,7 @@ use std::env;
 use std::sync::Arc;
 use capture::ScreenCapture;
 use discovery::DiscoveryService;
+use input::InputSimulator;
 use local_server::LocalServer;
 use power::PowerManager;
 use privacy::PrivacyCurtain;
@@ -68,8 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         _ = tokio::signal::ctrl_c() => {
-            info!("Received shutdown signal (Ctrl+C). Restoring power policies and exiting...");
+            info!("Received shutdown signal (Ctrl+C). Restoring display settings and power policies...");
             privacy.set_enabled(false);
+            InputSimulator::set_display_resolution(0);
+            InputSimulator::set_display_orientation(false);
             PowerManager::set_keep_awake(false);
         }
     }

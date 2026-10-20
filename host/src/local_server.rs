@@ -9,6 +9,7 @@ use tracing::{error, info, warn};
 
 use crate::capture::ScreenCapture;
 use crate::input::InputSimulator;
+use crate::power::PowerManager;
 use crate::privacy::PrivacyCurtain;
 use crate::protocol::InputPacket;
 
@@ -177,6 +178,7 @@ impl LocalServer {
                     };
 
                     info!("Local direct WebSocket session established with {}", peer_addr);
+                    PowerManager::set_keep_awake(true);
                     let (mut write, mut read) = ws_stream.split();
                     let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(1);
                     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(32);
@@ -298,6 +300,7 @@ impl LocalServer {
                     priv_curtain.set_enabled(false);
                     InputSimulator::set_display_resolution(0);
                     InputSimulator::set_display_orientation(false);
+                    PowerManager::set_keep_awake(false);
                     writer_handle.abort();
                     let _ = capture_handle.await;
                     info!("Local direct session cleaned up, restored screen settings");
