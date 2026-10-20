@@ -34,6 +34,7 @@ impl LocalServer {
             };
 
             while let Ok((mut stream, peer_addr)) = listener.accept().await {
+                let _ = stream.set_nodelay(true);
                 let mut peek_buf = [0u8; 1024];
                 let n = match stream.peek(&mut peek_buf).await {
                     Ok(n) => n,
@@ -125,9 +126,9 @@ impl LocalServer {
 
                     let is_streaming = Arc::new(AtomicBool::new(true));
                     let active_monitor = Arc::new(AtomicUsize::new(0));
-                    let stream_quality = Arc::new(AtomicU8::new(50));
+                    let stream_quality = Arc::new(AtomicU8::new(45)); // Default to Fast 60 FPS on direct local connection
 
-                    // Direct capture thread at ultra-fluid 45-60 FPS
+                    // Direct capture thread at ultra-fluid up to 60 FPS
                     let stream_flag = is_streaming.clone();
                     let monitor_flag = active_monitor.clone();
                     let quality_flag = stream_quality.clone();
@@ -135,14 +136,18 @@ impl LocalServer {
 
                     let capture_handle = tokio::task::spawn_blocking(move || {
                         let mut capture = ScreenCapture::new();
-                        // 22ms = ~45 FPS for silky-smooth direct local Wi-Fi streaming
-                        let target_interval = std::time::Duration::from_millis(22);
-                        info!("Started direct local screen streaming loop at 45 FPS");
+                        info!("Started direct local screen streaming loop (up to 60 FPS)");
 
                         while stream_flag.load(Ordering::Relaxed) {
                             let start = std::time::Instant::now();
                             capture.active_monitor = monitor_flag.load(Ordering::Relaxed);
                             let q = quality_flag.load(Ordering::Relaxed);
+
+                            let target_interval = match q {
+                                40..=45 => std::time::Duration::from_millis(16), // ~60 FPS Turbo Mode
+                                70..=100 => std::time::Duration::from_millis(33), // ~30 FPS Fidelity Mode
+                                _ => std::time::Duration::from_millis(20),        // ~50 FPS Balanced Mode
+                            };
 
                             if let Some(frame) = capture.capture_frame_jpeg(q) {
                                 match ft_tx.try_send(Message::Binary(frame)) {
@@ -192,6 +197,12 @@ impl LocalServer {
                             }
                             Ok(Message::Ping(p)) => {
                                 let _ = ctrl_tx.send(Message::Pong(p)).await;
+                            }
+                            Ok(Message::Text(t)) => {
+                                if t.contains("\"ping\"") {
+                                    let pong = t.replace("\"ping\"", "\"pong\"");
+                                    let _ = ctrl_tx.send(Message::Text(pong)).await;
+                                }
                             }
                             Ok(Message::Close(_)) => {
                                 info!("Local client disconnected");

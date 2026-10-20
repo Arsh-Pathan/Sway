@@ -49,6 +49,16 @@ class SignalingClient(
     private val _currentFrame = MutableStateFlow<Bitmap?>(null)
     val currentFrame = _currentFrame.asStateFlow()
 
+    private val _fps = MutableStateFlow(0)
+    val fps = _fps.asStateFlow()
+
+    private val _rttMs = MutableStateFlow(1)
+    val rttMs = _rttMs.asStateFlow()
+
+    private var frameCounter = 0
+    private var lastFpsTimestamp = System.currentTimeMillis()
+    private var lastPingTimestamp = 0L
+
     private val _offers = MutableSharedFlow<SdpPayload>()
     val offers = _offers.asSharedFlow()
 
@@ -85,23 +95,58 @@ class SignalingClient(
             token = token
         )
         sendEnvelope(joinEnvelope)
+
+        // Start real-time RTT latency ping loop every 1.5 seconds
+        scope.launch {
+            while (isActive) {
+                delay(1500)
+                lastPingTimestamp = System.currentTimeMillis()
+                webSocket.send("{\"type\":\"ping\",\"t\":$lastPingTimestamp}")
+            }
+        }
     }
 
     private val isDecoding = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile
     private var pendingFrameBytes: ByteArray? = null
+    private var reusableBitmap: Bitmap? = null
+    private val decodeOptions = BitmapFactory.Options().apply {
+        inMutable = true
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+    }
 
     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
         val byteArray = bytes.toByteArray()
         pendingFrameBytes = byteArray
+
+        // Update real-time FPS counter
+        frameCounter++
+        val now = System.currentTimeMillis()
+        if (now - lastFpsTimestamp >= 1000) {
+            _fps.value = frameCounter
+            frameCounter = 0
+            lastFpsTimestamp = now
+        }
+
         if (isDecoding.compareAndSet(false, true)) {
             scope.launch(Dispatchers.Default) {
                 try {
                     while (true) {
                         val toDecode = pendingFrameBytes ?: break
                         pendingFrameBytes = null
-                        val bmp = BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size)
+
+                        val bmp = try {
+                            decodeOptions.inBitmap = reusableBitmap
+                            BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOptions)
+                        } catch (_: Exception) {
+                            decodeOptions.inBitmap = null
+                            val fresh = BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOptions)
+                            reusableBitmap = fresh
+                            fresh
+                        }
+
                         if (bmp != null) {
+                            reusableBitmap = bmp
                             _currentFrame.value = bmp
                         }
                     }
@@ -116,6 +161,15 @@ class SignalingClient(
 
     override fun onMessage(webSocket: WebSocket, text: String) {
         try {
+            // Handle real-time RTT pong response
+            if (text.contains("\"pong\"")) {
+                if (lastPingTimestamp > 0) {
+                    val rtt = (System.currentTimeMillis() - lastPingTimestamp).coerceAtLeast(1)
+                    _rttMs.value = rtt.toInt()
+                }
+                return
+            }
+
             val env = json.decodeFromString<SignalingEnvelope>(text)
             when (env.type) {
                 "status" -> {

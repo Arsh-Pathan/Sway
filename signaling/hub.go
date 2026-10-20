@@ -159,7 +159,10 @@ func (h *Hub) ProcessMessage(client *Client, raw []byte) {
 
 	switch msg.Type {
 	case TypePing:
-		pong, _ := json.Marshal(SignalingMessage{Type: TypePong})
+		pong, _ := json.Marshal(SignalingMessage{
+			Type:    TypePong,
+			Payload: msg.Payload,
+		})
 		client.sendSafe(WSMessage{msgType: websocket.TextMessage, data: pong})
 
 	case TypeRegister:

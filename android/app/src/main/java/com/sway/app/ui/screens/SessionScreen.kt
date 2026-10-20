@@ -103,6 +103,48 @@ private fun mapTouchToNormalized(
 }
 
 @Composable
+private fun DesktopStreamCanvas(
+    frame: android.graphics.Bitmap?,
+    modifier: Modifier = Modifier
+) {
+    if (frame != null) {
+        val imageBitmap = remember(frame) { frame.asImageBitmap() }
+        androidx.compose.foundation.Canvas(modifier = modifier.fillMaxSize()) {
+            val canvasWidth = size.width
+            val canvasHeight = size.height
+
+            val imgW = frame.width.toFloat()
+            val imgH = frame.height.toFloat()
+            val streamAspect = imgW / imgH
+            val canvasAspect = canvasWidth / canvasHeight
+
+            val fitW: Float
+            val fitH: Float
+            val padX: Float
+            val padY: Float
+
+            if (canvasAspect > streamAspect) {
+                fitH = canvasHeight
+                fitW = fitH * streamAspect
+                padX = (canvasWidth - fitW) / 2f
+                padY = 0f
+            } else {
+                fitW = canvasWidth
+                fitH = fitW / streamAspect
+                padX = 0f
+                padY = (canvasHeight - fitH) / 2f
+            }
+
+            drawImage(
+                image = imageBitmap,
+                dstOffset = androidx.compose.ui.unit.IntOffset(padX.toInt(), padY.toInt()),
+                dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt())
+            )
+        }
+    }
+}
+
+@Composable
 fun SessionScreen(
     webRtcManager: WebRtcManager,
     onDisconnect: () -> Unit
@@ -129,8 +171,21 @@ fun SessionScreen(
     var sensitivity by remember { mutableFloatStateOf(1.2f) }
     var scrollSpeed by remember { mutableFloatStateOf(1.0f) }
     var hapticsEnabled by remember { mutableStateOf(true) }
-    var currentQuality by remember { mutableStateOf(InputEvent.SetQuality.BALANCED) }
+    var currentQuality by remember { mutableStateOf<Byte>(InputEvent.SetQuality.TURBO) }
     var showSettings by remember { mutableStateOf(false) }
+
+    val liveFps by webRtcManager.fps.collectAsState()
+    val liveRtt by webRtcManager.rttMs.collectAsState()
+    var touchRipplePos by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
+
+    fun cyclePerformanceMode() {
+        currentQuality = when (currentQuality) {
+            InputEvent.SetQuality.TURBO -> InputEvent.SetQuality.BALANCED
+            InputEvent.SetQuality.BALANCED -> InputEvent.SetQuality.NATIVE
+            else -> InputEvent.SetQuality.TURBO
+        }
+        webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
+    }
 
     // Soft Keyboard state
     val baseBuffer = "  "
@@ -220,6 +275,7 @@ fun SessionScreen(
                             if (controlMode == ControlMode.TOUCH_SCREEN) {
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
+                                    touchRipplePos = down.position
                                     val pt = mapTouchToNormalized(
                                         down.position.x, down.position.y,
                                         size.width.toFloat(), size.height.toFloat(),
@@ -241,11 +297,13 @@ fun SessionScreen(
                                             isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY
                                         )
                                         if (!current.pressed) {
+                                            touchRipplePos = null
                                             if (curPt != null) {
                                                 webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
                                             }
                                             break
                                         }
+                                        touchRipplePos = current.position
                                         if (curPt != null) {
                                             webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
                                         }
@@ -276,12 +334,7 @@ fun SessionScreen(
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else if (currentFrame != null) {
-                            Image(
-                                bitmap = currentFrame!!.asImageBitmap(),
-                                contentDescription = "Desktop Stream",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Fit
-                            )
+                            DesktopStreamCanvas(frame = currentFrame)
                         } else {
                             Surface(
                                 modifier = Modifier
@@ -295,6 +348,22 @@ fun SessionScreen(
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = Typography.bodyMedium,
                                     color = AccentIndigoBright
+                                )
+                            }
+                        }
+
+                        // Real-time Visual Touch Ripple Glow
+                        touchRipplePos?.let { pos ->
+                            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                                drawCircle(
+                                    color = AccentIndigo.copy(alpha = 0.35f),
+                                    radius = 28.dp.toPx(),
+                                    center = pos
+                                )
+                                drawCircle(
+                                    color = AccentIndigoBright,
+                                    radius = 6.dp.toPx(),
+                                    center = pos
                                 )
                             }
                         }
@@ -350,6 +419,62 @@ fun SessionScreen(
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp)
                                 )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = AccentIndigo,
+                                selectedLabelColor = TextPrimary,
+                                containerColor = SurfaceDark.copy(alpha = 0.85f),
+                                labelColor = TextSecondary
+                            )
+                        )
+
+                        // Real-time Live Performance HUD (FPS & Latency)
+                        Surface(
+                            color = SurfaceDark.copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (liveFps >= 45) Color(0xFF10B981).copy(alpha = 0.5f) else AccentIndigo.copy(alpha = 0.4f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(if (liveFps >= 45) Color(0xFF10B981) else Color(0xFFF59E0B))
+                                )
+                                Text(
+                                    text = "${liveFps} FPS",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary
+                                )
+                                Text(text = "•", fontSize = 10.sp, color = TextMuted)
+                                Text(
+                                    text = "${liveRtt}ms",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (liveRtt <= 10) Color(0xFF10B981) else AccentIndigoBright
+                                )
+                            }
+                        }
+
+                        // One-tap Performance Mode Switcher (Turbo 60 FPS / Balanced 45 FPS / HQ 30 FPS)
+                        FilterChip(
+                            selected = currentQuality == InputEvent.SetQuality.TURBO,
+                            onClick = { cyclePerformanceMode() },
+                            label = {
+                                val label = when (currentQuality) {
+                                    InputEvent.SetQuality.TURBO -> "⚡ 60 FPS"
+                                    InputEvent.SetQuality.BALANCED -> "⚖️ 45 FPS"
+                                    else -> "🎨 HQ"
+                                }
+                                Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = AccentIndigo,
@@ -485,7 +610,7 @@ fun SessionScreen(
                         },
                         label = {
                             Text(
-                                if (controlMode == ControlMode.TOUCH_SCREEN) "Touch Screen" else "Trackpad",
+                                if (controlMode == ControlMode.TOUCH_SCREEN) "Touch Slate" else "Trackpad",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -496,6 +621,62 @@ fun SessionScreen(
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp)
                             )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = AccentIndigo,
+                            selectedLabelColor = TextPrimary,
+                            containerColor = SurfaceDark,
+                            labelColor = TextSecondary
+                        )
+                    )
+
+                    // Real-time Live Performance HUD (FPS & Latency)
+                    Surface(
+                        color = SurfaceDark,
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (liveFps >= 45) Color(0xFF10B981).copy(alpha = 0.5f) else AccentIndigo.copy(alpha = 0.4f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(if (liveFps >= 45) Color(0xFF10B981) else Color(0xFFF59E0B))
+                            )
+                            Text(
+                                text = "${liveFps} FPS",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                            Text(text = "•", fontSize = 10.sp, color = TextMuted)
+                            Text(
+                                text = "${liveRtt}ms",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (liveRtt <= 10) Color(0xFF10B981) else AccentIndigoBright
+                            )
+                        }
+                    }
+
+                    // Quick Mode Switcher
+                    FilterChip(
+                        selected = currentQuality == InputEvent.SetQuality.TURBO,
+                        onClick = { cyclePerformanceMode() },
+                        label = {
+                            val label = when (currentQuality) {
+                                InputEvent.SetQuality.TURBO -> "⚡ 60 FPS"
+                                InputEvent.SetQuality.BALANCED -> "⚖️ 45 FPS"
+                                else -> "🎨 HQ"
+                            }
+                            Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = AccentIndigo,
@@ -614,6 +795,7 @@ fun SessionScreen(
                             if (controlMode == ControlMode.TOUCH_SCREEN) {
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
+                                    touchRipplePos = down.position
                                     val pt = mapTouchToNormalized(
                                         down.position.x, down.position.y,
                                         size.width.toFloat(), size.height.toFloat(),
@@ -635,11 +817,13 @@ fun SessionScreen(
                                             isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY
                                         )
                                         if (!current.pressed) {
+                                            touchRipplePos = null
                                             if (curPt != null) {
                                                 webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
                                             }
                                             break
                                         }
+                                        touchRipplePos = current.position
                                         if (curPt != null) {
                                             webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
                                         }
@@ -670,12 +854,7 @@ fun SessionScreen(
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else if (currentFrame != null) {
-                            Image(
-                                bitmap = currentFrame!!.asImageBitmap(),
-                                contentDescription = "Desktop Stream",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = if (isVerticalPcMode) ContentScale.Crop else ContentScale.Fit
-                            )
+                            DesktopStreamCanvas(frame = currentFrame)
                         } else {
                             Surface(
                                 modifier = Modifier
@@ -689,6 +868,22 @@ fun SessionScreen(
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = Typography.bodyMedium,
                                     color = AccentIndigoBright
+                                )
+                            }
+                        }
+
+                        // Real-time Visual Touch Ripple Glow in Portrait
+                        touchRipplePos?.let { pos ->
+                            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                                drawCircle(
+                                    color = AccentIndigo.copy(alpha = 0.35f),
+                                    radius = 28.dp.toPx(),
+                                    center = pos
+                                )
+                                drawCircle(
+                                    color = AccentIndigoBright,
+                                    radius = 6.dp.toPx(),
+                                    center = pos
                                 )
                             }
                         }

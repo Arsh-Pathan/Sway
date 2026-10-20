@@ -37,6 +37,8 @@ class WebRtcManager(
     val connectionState = _connectionState.asStateFlow()
 
     val currentFrame = signalingClient.currentFrame
+    val fps = signalingClient.fps
+    val rttMs = signalingClient.rttMs
 
     private var remoteVideoTrack: VideoTrack? = null
     private var videoRenderer: SurfaceViewRenderer? = null

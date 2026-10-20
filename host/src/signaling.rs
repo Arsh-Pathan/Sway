@@ -156,12 +156,18 @@ impl HostSignaling {
                     let frame_tx = frame_tx.clone();
                     tokio::task::spawn_blocking(move || {
                         let mut capture = ScreenCapture::new();
-                        let target_interval = std::time::Duration::from_millis(33); // ~30 fps
-                        info!("Started screen capture & streaming loop at 30 FPS");
+                        info!("Started cloud screen capture & streaming loop");
                         while stream_flag.load(Ordering::Relaxed) {
                             let start = std::time::Instant::now();
                             capture.active_monitor = monitor_flag.load(Ordering::Relaxed);
                             let q = quality_flag.load(Ordering::Relaxed);
+
+                            let target_interval = match q {
+                                40..=45 => std::time::Duration::from_millis(20), // ~50 FPS Cloud Turbo
+                                70..=100 => std::time::Duration::from_millis(40), // ~25 FPS Cloud HQ
+                                _ => std::time::Duration::from_millis(28),        // ~35 FPS Cloud Balanced
+                            };
+
                             if let Some(frame) = capture.capture_frame_jpeg(q) {
                                 // Non-blocking send: if the network writer is busy, drop frame immediately!
                                 // Never buffer video frames; guarantees near-zero latency.

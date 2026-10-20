@@ -99,6 +99,7 @@ sealed class InputEvent {
         override val opCode: Byte = 0x09
         override fun toByteArray(): ByteArray = byteArrayOf(opCode, qualityMode)
         companion object {
+            const val TURBO: Byte = 0
             const val DATA_SAVER: Byte = 1
             const val BALANCED: Byte = 2
             const val NATIVE: Byte = 3

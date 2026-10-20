@@ -92,7 +92,7 @@ func main() {
 		client := &Client{
 			hub:  hub,
 			conn: conn,
-			send: make(chan WSMessage, 512),
+			send: make(chan WSMessage, 4),
 		}
 
 		hub.register <- client

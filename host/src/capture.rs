@@ -84,6 +84,11 @@ fn draw_cursor(img: &mut image::RgbaImage, cur_x: i32, cur_y: i32) {
 pub struct ScreenCapture {
     pub active_monitor: usize,
     pub monitors: Vec<MonitorInfo>,
+    rgb_buffer: Vec<u8>,
+    last_cursor_x: i32,
+    last_cursor_y: i32,
+    last_checksum: u64,
+    last_frame_time: std::time::Instant,
 }
 
 impl ScreenCapture {
@@ -129,6 +134,11 @@ impl ScreenCapture {
         Self {
             active_monitor: active_index,
             monitors,
+            rgb_buffer: Vec::with_capacity(854 * 480 * 3),
+            last_cursor_x: -1,
+            last_cursor_y: -1,
+            last_checksum: 0,
+            last_frame_time: std::time::Instant::now(),
         }
     }
 
@@ -174,7 +184,7 @@ impl ScreenCapture {
         }]
     }
 
-    pub fn capture_frame_jpeg(&self, quality: u8) -> Option<Vec<u8>> {
+    pub fn capture_frame_jpeg(&mut self, quality: u8) -> Option<Vec<u8>> {
         let all_monitors = Monitor::all().ok()?;
         if all_monitors.is_empty() {
             return None;
@@ -197,7 +207,7 @@ impl ScreenCapture {
         let width = rgba_image.width();
         let height = rgba_image.height();
 
-        // Downscale to 854 max width for sub-1ms resize & ultra-lightweight 10KB frames
+        // Downscale to 854 max width for sub-1ms resize & ultra-lightweight 10-25KB frames
         let max_dim = 854;
         let mut target_image = if width > max_dim || height > max_dim {
             let (target_w, target_h) = if width >= height {
@@ -221,7 +231,12 @@ impl ScreenCapture {
         let mon_w = selected_monitor.width().unwrap_or(width).max(1);
         let mon_h = selected_monitor.height().unwrap_or(height).max(1);
 
-        if let Some((cx, cy)) = get_cursor_pos() {
+        let cur_pos = get_cursor_pos().unwrap_or((0, 0));
+        let cursor_changed = cur_pos.0 != self.last_cursor_x || cur_pos.1 != self.last_cursor_y;
+        self.last_cursor_x = cur_pos.0;
+        self.last_cursor_y = cur_pos.1;
+
+        if let Some((cx, cy)) = Some(cur_pos) {
             let local_x = cx - mon_x;
             let local_y = cy - mon_y;
             if local_x >= 0 && local_x < mon_w as i32 && local_y >= 0 && local_y < mon_h as i32 {
@@ -231,21 +246,47 @@ impl ScreenCapture {
             }
         }
 
-        // Fast in-place conversion from RGBA to RGB for JPEG encoding
+        // Fast zero-allocation RGBA to RGB conversion into reusable pre-allocated buffer
         let raw_rgba = target_image.as_raw();
         let pixel_count = (target_image.width() * target_image.height()) as usize;
-        let mut rgb_bytes = Vec::with_capacity(pixel_count * 3);
-        for chunk in raw_rgba.chunks_exact(4) {
-            rgb_bytes.push(chunk[0]);
-            rgb_bytes.push(chunk[1]);
-            rgb_bytes.push(chunk[2]);
+        let rgb_len = pixel_count * 3;
+        if self.rgb_buffer.len() < rgb_len {
+            self.rgb_buffer.resize(rgb_len, 0);
         }
 
-        let mut jpeg_bytes = Vec::new();
+        let dst = &mut self.rgb_buffer[..rgb_len];
+        let src = raw_rgba;
+        let mut s = 0;
+        let mut d = 0;
+        while d < rgb_len {
+            dst[d] = src[s];
+            dst[d + 1] = src[s + 1];
+            dst[d + 2] = src[s + 2];
+            s += 4;
+            d += 3;
+        }
+
+        // Fast lightweight 64-sample checksum to detect static screen
+        let mut checksum: u64 = 0;
+        let step = (rgb_len / 64).max(1);
+        for i in (0..rgb_len).step_by(step) {
+            checksum = checksum.wrapping_add(dst[i] as u64).rotate_left(3);
+        }
+
+        let is_identical = checksum == self.last_checksum && !cursor_changed;
+        self.last_checksum = checksum;
+
+        // If screen is unchanged and cursor hasn't moved, throttle to ~5 FPS to save battery & airtime
+        if is_identical && self.last_frame_time.elapsed().as_millis() < 200 {
+            return None;
+        }
+        self.last_frame_time = std::time::Instant::now();
+
+        let mut jpeg_bytes = Vec::with_capacity(32 * 1024);
         let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_bytes, quality);
         if encoder
             .encode(
-                &rgb_bytes,
+                dst,
                 target_image.width(),
                 target_image.height(),
                 ColorType::Rgb8.into(),
@@ -265,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_capture_screen() {
-        let capture = ScreenCapture::new();
+        let mut capture = ScreenCapture::new();
         if let Ok(monitors) = Monitor::all() {
             for (i, m) in monitors.iter().enumerate() {
                 println!("Monitor {}: x={}, y={}, w={}, h={}", 
