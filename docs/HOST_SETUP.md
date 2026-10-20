@@ -44,15 +44,17 @@ When started, Sway Host automatically:
 
 To run Sway automatically whenever you start your laptop:
 
-### Method A: Windows Startup Folder
-1. Press `Win + R`, type `shell:startup`, and press Enter.
-2. Create a shortcut to `host/target/release/sway-host.exe`.
+### Method A: One-Click PowerShell Script (Recommended)
+From the repository root, run:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1
+```
 
 ### Method B: Windows Service / Scheduled Task (Elevated)
 To enable control on the Windows Lock Screen and UAC prompts:
 ```powershell
 # Create an elevated scheduled task that starts at user logon
-$action = New-ScheduledTaskAction -Execute "C:\Users\ArshPathan\Projects\Apps\Sway\host\target\release\sway-host.exe"
+$action = New-ScheduledTaskAction -Execute "$env:LOCALAPPDATA\Sway\sway-host.exe"
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -RunLevel Highest
 Register-ScheduledTask -TaskName "SwayHost" -Action $action -Trigger $trigger -Principal $principal

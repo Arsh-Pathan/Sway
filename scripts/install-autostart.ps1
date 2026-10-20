@@ -2,10 +2,17 @@
 
 [CmdletBinding()]
 param(
-    [string]$SignalingUrl = "51.79.249.143:8080",
-    [string]$DeviceId = "sway-laptop-arsh",
-    [string]$Token = "swaypass123"
+    [string]$SignalingUrl = "127.0.0.1:8080",
+    [string]$DeviceId = "",
+    [string]$Token = ""
 )
+
+if ([string]::IsNullOrWhiteSpace($DeviceId)) {
+    $DeviceId = "sway-host-$((New-Guid).ToString().Substring(0,8))"
+}
+if ([string]::IsNullOrWhiteSpace($Token)) {
+    $Token = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 16 | ForEach-Object {[char]$_})
+}
 
 $ErrorActionPreference = "Stop"
 Write-Host "========================================" -ForegroundColor Cyan

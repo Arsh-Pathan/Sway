@@ -39,7 +39,7 @@ The **Sway Signaling Server** coordinates WebRTC peer connections between Window
         "turn:YOUR_VPS_IP:3478?transport=tcp"
       ],
       "username": "swayuser",
-      "credential": "swaypass123"
+      "credential": "YOUR_SECURE_PASSWORD"
     }
   ]
 }

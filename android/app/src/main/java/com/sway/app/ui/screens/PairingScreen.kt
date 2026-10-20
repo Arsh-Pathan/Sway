@@ -81,8 +81,8 @@ fun PairingScreen(
 
     // Manual Form State
     var signalingUrl by remember { mutableStateOf("127.0.0.1:8089") }
-    var deviceId by remember { mutableStateOf("sway-laptop-arsh") }
-    var token by remember { mutableStateOf("swaypass123") }
+    var deviceId by remember { mutableStateOf("") }
+    var token by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -277,11 +277,11 @@ fun PairingScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilterChip(
-                        selected = signalingUrl.contains("8089") || signalingUrl.contains("192.168"),
+                        selected = signalingUrl.contains("8089"),
                         onClick = {
-                            signalingUrl = "192.168.11.166:8089"
+                            signalingUrl = discoveredHost?.let { "${it.ipAddress}:${it.port}" } ?: "192.168.1.100:8089"
                         },
-                        label = { Text("Direct Wi-Fi (1ms)", fontSize = 12.sp) },
+                        label = { Text("Direct Wi-Fi", fontSize = 12.sp) },
                         modifier = Modifier.weight(1f),
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = androidx.compose.ui.graphics.Color.White,
@@ -289,11 +289,11 @@ fun PairingScreen(
                         )
                     )
                     FilterChip(
-                        selected = signalingUrl.contains("51.79.249.143"),
+                        selected = signalingUrl.contains("8080"),
                         onClick = {
-                            signalingUrl = "51.79.249.143:8080"
+                            signalingUrl = "127.0.0.1:8080"
                         },
-                        label = { Text("Cloud Relay (4G)", fontSize = 12.sp) },
+                        label = { Text("Relay / Localhost", fontSize = 12.sp) },
                         modifier = Modifier.weight(1f),
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = androidx.compose.ui.graphics.Color.White,

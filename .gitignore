@@ -35,4 +35,24 @@ signaling/*.exe
 # Docker & Logs
 *.log
 .env
-.env.local
+.env.*
+*.local
+
+# Secrets, Keystores & Credentials
+*.jks
+*.keystore
+*.pem
+*.key
+*.pfx
+*.p12
+credentials*.json
+*token*
+!*token*.rs
+!*token*.go
+!*token*.kt
+
+# Test artifacts & Screenshots
+*.png
+!android/**/*.png
+!docs/**/*.png
+phone_screen_test.png
