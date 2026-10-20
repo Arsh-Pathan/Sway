@@ -11,6 +11,7 @@ use tracing::{error, info, warn};
 use crate::capture::ScreenCapture;
 use crate::input::InputSimulator;
 use crate::power::PowerManager;
+use crate::privacy::PrivacyCurtain;
 use crate::protocol::InputPacket;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,15 +35,22 @@ pub struct HostSignaling {
     pub device_id: String,
     pub token: String,
     pub simulator: Arc<InputSimulator>,
+    pub privacy: Arc<PrivacyCurtain>,
 }
 
 impl HostSignaling {
-    pub fn new(server_url: String, device_id: String, token: String) -> Self {
+    pub fn new(
+        server_url: String,
+        device_id: String,
+        token: String,
+        privacy: Arc<PrivacyCurtain>,
+    ) -> Self {
         Self {
             server_url,
             device_id,
             token,
             simulator: Arc::new(InputSimulator::new()),
+            privacy,
         }
     }
 
@@ -90,14 +98,27 @@ impl HostSignaling {
         info!("Connected to signaling WebSocket!");
 
         let (mut write, mut read) = ws_stream.split();
-        let (out_tx, mut out_rx) = mpsc::channel::<Message>(128);
+        let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(32);
+        let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(1);
 
-        // Background WebSocket writer task
+        // Background WebSocket writer task prioritizing control messages and dropping stale frames
         let writer_handle = tokio::spawn(async move {
-            while let Some(msg) = out_rx.recv().await {
-                if let Err(e) = write.send(msg).await {
-                    error!("WebSocket write error: {}", e);
-                    break;
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(ctrl) = ctrl_rx.recv() => {
+                        if let Err(e) = write.send(ctrl).await {
+                            error!("WebSocket write error: {}", e);
+                            break;
+                        }
+                    }
+                    Some(frame) = frame_rx.recv() => {
+                        if let Err(e) = write.send(frame).await {
+                            error!("WebSocket write error: {}", e);
+                            break;
+                        }
+                    }
+                    else => break,
                 }
             }
         });
@@ -113,26 +134,26 @@ impl HostSignaling {
         };
 
         let raw = serde_json::to_string(&reg_msg)?;
-        let _ = out_tx.send(Message::Text(raw)).await;
+        let _ = ctrl_tx.send(Message::Text(raw)).await;
         info!("Registered host '{}' with signaling server", self.device_id);
 
         let simulator = self.simulator.clone();
         let is_streaming = Arc::new(AtomicBool::new(false));
         let active_monitor = Arc::new(AtomicUsize::new(0));
-        let stream_quality = Arc::new(AtomicU8::new(60));
+        let stream_quality = Arc::new(AtomicU8::new(50));
 
         let start_streaming = {
             let is_streaming = is_streaming.clone();
             let active_monitor = active_monitor.clone();
             let stream_quality = stream_quality.clone();
-            let out_tx = out_tx.clone();
+            let frame_tx = frame_tx.clone();
             move || {
                 if !is_streaming.load(Ordering::SeqCst) {
                     is_streaming.store(true, Ordering::SeqCst);
                     let stream_flag = is_streaming.clone();
                     let monitor_flag = active_monitor.clone();
                     let quality_flag = stream_quality.clone();
-                    let frame_tx = out_tx.clone();
+                    let frame_tx = frame_tx.clone();
                     tokio::task::spawn_blocking(move || {
                         let mut capture = ScreenCapture::new();
                         let target_interval = std::time::Duration::from_millis(33); // ~30 fps
@@ -142,8 +163,12 @@ impl HostSignaling {
                             capture.active_monitor = monitor_flag.load(Ordering::Relaxed);
                             let q = quality_flag.load(Ordering::Relaxed);
                             if let Some(frame) = capture.capture_frame_jpeg(q) {
-                                if frame_tx.blocking_send(Message::Binary(frame)).is_err() {
-                                    break;
+                                // Non-blocking send: if the network writer is busy, drop frame immediately!
+                                // Never buffer video frames; guarantees near-zero latency.
+                                match frame_tx.try_send(Message::Binary(frame)) {
+                                    Ok(_) => {}
+                                    Err(mpsc::error::TrySendError::Full(_)) => {}
+                                    Err(mpsc::error::TrySendError::Closed(_)) => break,
                                 }
                             }
                             let elapsed = start.elapsed();
@@ -198,10 +223,19 @@ impl HostSignaling {
                             InputPacket::SetQuality { mode } => {
                                 let q = match mode {
                                     0 => 40,
-                                    1 => 60,
-                                    _ => 80,
+                                    1 => 50,
+                                    _ => 70,
                                 };
                                 stream_quality.store(q, Ordering::SeqCst);
+                            }
+                            InputPacket::SetPrivacyCurtain { enabled } => {
+                                self.privacy.set_enabled(*enabled);
+                            }
+                            InputPacket::ChangeResolution { mode } => {
+                                InputSimulator::set_display_resolution(*mode);
+                            }
+                            InputPacket::ChangeOrientation { vertical } => {
+                                InputSimulator::set_display_orientation(*vertical);
                             }
                             _ => {}
                         }
@@ -209,17 +243,23 @@ impl HostSignaling {
                     }
                 }
                 Ok(Message::Ping(p)) => {
-                    let _ = out_tx.send(Message::Pong(p)).await;
+                    let _ = ctrl_tx.send(Message::Pong(p)).await;
                 }
                 Ok(Message::Close(_)) => {
                     info!("Signaling connection closed by server");
                     is_streaming.store(false, Ordering::SeqCst);
+                    self.privacy.set_enabled(false);
+                    InputSimulator::set_display_resolution(0);
+                    InputSimulator::set_display_orientation(false);
                     PowerManager::set_keep_awake(false);
                     break;
                 }
                 Err(e) => {
                     error!("WebSocket stream error: {}", e);
                     is_streaming.store(false, Ordering::SeqCst);
+                    self.privacy.set_enabled(false);
+                    InputSimulator::set_display_resolution(0);
+                    InputSimulator::set_display_orientation(false);
                     PowerManager::set_keep_awake(false);
                     break;
                 }
@@ -228,6 +268,9 @@ impl HostSignaling {
         }
 
         is_streaming.store(false, Ordering::SeqCst);
+        self.privacy.set_enabled(false);
+        InputSimulator::set_display_resolution(0);
+        InputSimulator::set_display_orientation(false);
         writer_handle.abort();
         Ok(())
     }

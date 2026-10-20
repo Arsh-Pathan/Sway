@@ -104,4 +104,42 @@ sealed class InputEvent {
             const val NATIVE: Byte = 3
         }
     }
+
+    data class TouchDirect(val normX: Int, val normY: Int, val action: Byte) : InputEvent() {
+        override val opCode: Byte = 0x0A
+        override fun toByteArray(): ByteArray {
+            return ByteBuffer.allocate(6)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .put(opCode)
+                .putShort(normX.toShort())
+                .putShort(normY.toShort())
+                .put(action)
+                .array()
+        }
+        companion object {
+            const val ACTION_DOWN: Byte = 0
+            const val ACTION_MOVE: Byte = 1
+            const val ACTION_UP: Byte = 2
+        }
+    }
+
+    data class SetPrivacyCurtain(val enabled: Boolean) : InputEvent() {
+        override val opCode: Byte = 0x0B
+        override fun toByteArray(): ByteArray = byteArrayOf(opCode, if (enabled) 1 else 0)
+    }
+
+    data class ChangeResolution(val mode: Byte) : InputEvent() {
+        override val opCode: Byte = 0x0C
+        override fun toByteArray(): ByteArray = byteArrayOf(opCode, mode)
+        companion object {
+            const val DEFAULT: Byte = 0
+            const val MOBILE_720P: Byte = 1
+            const val DESKTOP_1080P: Byte = 2
+        }
+    }
+
+    data class ChangeOrientation(val vertical: Boolean) : InputEvent() {
+        override val opCode: Byte = 0x0D
+        override fun toByteArray(): ByteArray = byteArrayOf(opCode, if (vertical) 1 else 0)
+    }
 }

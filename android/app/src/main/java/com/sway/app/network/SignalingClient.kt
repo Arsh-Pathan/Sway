@@ -87,15 +87,30 @@ class SignalingClient(
         sendEnvelope(joinEnvelope)
     }
 
+    private val isDecoding = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile
+    private var pendingFrameBytes: ByteArray? = null
+
     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-        try {
-            val byteArray = bytes.toByteArray()
-            val bmp = BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
-            if (bmp != null) {
-                _currentFrame.value = bmp
+        val byteArray = bytes.toByteArray()
+        pendingFrameBytes = byteArray
+        if (isDecoding.compareAndSet(false, true)) {
+            scope.launch(Dispatchers.Default) {
+                try {
+                    while (true) {
+                        val toDecode = pendingFrameBytes ?: break
+                        pendingFrameBytes = null
+                        val bmp = BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size)
+                        if (bmp != null) {
+                            _currentFrame.value = bmp
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to decode incoming JPEG frame", e)
+                } finally {
+                    isDecoding.set(false)
+                }
             }
-        } catch (e: Exception) {
-            Log.e(tag, "Failed to decode incoming JPEG frame", e)
         }
     }
 

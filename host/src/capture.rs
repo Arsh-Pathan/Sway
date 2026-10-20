@@ -12,6 +12,75 @@ pub struct MonitorInfo {
     pub is_primary: bool,
 }
 
+const CURSOR_WIDTH: usize = 14;
+const CURSOR_HEIGHT: usize = 20;
+
+// 0 = Transparent, 1 = Black border, 2 = White body
+#[rustfmt::skip]
+const CURSOR_BITMAP: [u8; CURSOR_WIDTH * CURSOR_HEIGHT] = [
+    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0,
+    1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0,
+    1, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0,
+    1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0,
+    1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0,
+    1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 0, 0,
+    1, 2, 2, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0,
+    1, 2, 1, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0,
+    1, 1, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0,
+    1, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+#[cfg(windows)]
+fn get_cursor_pos() -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut pt = POINT::default();
+    if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+        Some((pt.x, pt.y))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(windows))]
+fn get_cursor_pos() -> Option<(i32, i32)> {
+    None
+}
+
+fn draw_cursor(img: &mut image::RgbaImage, cur_x: i32, cur_y: i32) {
+    let img_w = img.width() as i32;
+    let img_h = img.height() as i32;
+
+    for y in 0..CURSOR_HEIGHT {
+        for x in 0..CURSOR_WIDTH {
+            let val = CURSOR_BITMAP[y * CURSOR_WIDTH + x];
+            if val == 0 {
+                continue;
+            }
+            let px = cur_x + x as i32;
+            let py = cur_y + y as i32;
+            if px >= 0 && px < img_w && py >= 0 && py < img_h {
+                let color = if val == 1 {
+                    image::Rgba([0, 0, 0, 255])
+                } else {
+                    image::Rgba([255, 255, 255, 255])
+                };
+                img.put_pixel(px as u32, py as u32, color);
+            }
+        }
+    }
+}
+
 pub struct ScreenCapture {
     pub active_monitor: usize,
     pub monitors: Vec<MonitorInfo>,
@@ -133,32 +202,21 @@ impl ScreenCapture {
         };
 
         let rgba_image = match monitor.capture_image() {
-            Ok(img) => {
-                let has_rgb = img.chunks_exact(4).any(|c| c[0] > 15 || c[1] > 15 || c[2] > 15);
-                if !has_rgb && all_monitors.len() > 1 {
-                    let alt_idx = (self.active_monitor + 1) % all_monitors.len();
-                    if let Ok(alt_img) = all_monitors[alt_idx].capture_image() {
-                        if alt_img.chunks_exact(4).any(|c| c[0] > 15 || c[1] > 15 || c[2] > 15) {
-                            alt_img
-                        } else {
-                            img
-                        }
-                    } else {
-                        img
-                    }
-                } else {
-                    img
-                }
-            }
+            Ok(img) => img,
             Err(_) => return None,
         };
+        let selected_monitor = monitor;
         let width = rgba_image.width();
         let height = rgba_image.height();
 
-        // Downscale to 1280 max width for 30+ FPS low-latency streaming
-        let target_image = if width > 1280 {
-            let target_w = 1280;
-            let target_h = (height * 1280) / width;
+        // Downscale to 854 max width for sub-1ms resize & ultra-lightweight 10KB frames
+        let max_dim = 854;
+        let mut target_image = if width > max_dim || height > max_dim {
+            let (target_w, target_h) = if width >= height {
+                (max_dim, (height * max_dim) / width)
+            } else {
+                ((width * max_dim) / height, max_dim)
+            };
             image::imageops::resize(
                 &rgba_image,
                 target_w,
@@ -169,15 +227,39 @@ impl ScreenCapture {
             rgba_image
         };
 
-        let rgb_image = image::DynamicImage::ImageRgba8(target_image).into_rgb8();
+        // Render hardware mouse cursor overlay directly on the frame
+        let mon_x = selected_monitor.x().unwrap_or(0);
+        let mon_y = selected_monitor.y().unwrap_or(0);
+        let mon_w = selected_monitor.width().unwrap_or(width).max(1);
+        let mon_h = selected_monitor.height().unwrap_or(height).max(1);
+
+        if let Some((cx, cy)) = get_cursor_pos() {
+            let local_x = cx - mon_x;
+            let local_y = cy - mon_y;
+            if local_x >= 0 && local_x < mon_w as i32 && local_y >= 0 && local_y < mon_h as i32 {
+                let cur_x = ((local_x as f64 * target_image.width() as f64) / mon_w as f64).round() as i32;
+                let cur_y = ((local_y as f64 * target_image.height() as f64) / mon_h as f64).round() as i32;
+                draw_cursor(&mut target_image, cur_x, cur_y);
+            }
+        }
+
+        // Fast in-place conversion from RGBA to RGB for JPEG encoding
+        let raw_rgba = target_image.as_raw();
+        let pixel_count = (target_image.width() * target_image.height()) as usize;
+        let mut rgb_bytes = Vec::with_capacity(pixel_count * 3);
+        for chunk in raw_rgba.chunks_exact(4) {
+            rgb_bytes.push(chunk[0]);
+            rgb_bytes.push(chunk[1]);
+            rgb_bytes.push(chunk[2]);
+        }
 
         let mut jpeg_bytes = Vec::new();
         let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_bytes, quality);
         if encoder
             .encode(
-                rgb_image.as_raw(),
-                rgb_image.width(),
-                rgb_image.height(),
+                &rgb_bytes,
+                target_image.width(),
+                target_image.height(),
                 ColorType::Rgb8.into(),
             )
             .is_ok()
@@ -196,6 +278,17 @@ mod tests {
     #[test]
     fn test_capture_screen() {
         let capture = ScreenCapture::new();
+        if let Ok(monitors) = Monitor::all() {
+            for (i, m) in monitors.iter().enumerate() {
+                println!("Monitor {}: x={}, y={}, w={}, h={}", 
+                    i, 
+                    m.x().unwrap_or(0), 
+                    m.y().unwrap_or(0), 
+                    m.width().unwrap_or(0), 
+                    m.height().unwrap_or(0)
+                );
+            }
+        }
         let frame = capture.capture_frame_jpeg(50);
         assert!(frame.is_some(), "Capture failed to produce a frame");
         let bytes = frame.unwrap();

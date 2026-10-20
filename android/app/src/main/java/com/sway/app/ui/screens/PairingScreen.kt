@@ -28,7 +28,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
+import androidx.compose.foundation.BorderStroke
 import com.sway.app.model.PairedDevice
+import com.sway.app.network.NetworkDiscovery
 import com.sway.app.ui.theme.*
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
@@ -54,8 +56,15 @@ fun PairingScreen(
         hasCameraPermission = isGranted
     }
 
+    val discovery = remember { NetworkDiscovery() }
+    val discoveredHost by discovery.discoveredHost.collectAsState()
+
+    LaunchedEffect(Unit) {
+        discovery.discover()
+    }
+
     // Manual Form State
-    var signalingUrl by remember { mutableStateOf("51.79.249.143:8080") }
+    var signalingUrl by remember { mutableStateOf("127.0.0.1:8089") }
     var deviceId by remember { mutableStateOf("sway-laptop-arsh") }
     var token by remember { mutableStateOf("swaypass123") }
 
@@ -102,7 +111,52 @@ fun PairingScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        // Auto-Discovery Card if found on Wi-Fi or USB
+        discoveredHost?.let { host ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = AccentIndigo.copy(alpha = 0.2f),
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, AccentIndigo)
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "✨ Auto-Discovered Laptop",
+                            color = AccentIndigoBright,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            host.name,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 15.sp
+                        )
+                        Text(
+                            "${host.ipAddress}:${host.port} (Direct Wi-Fi / 1ms)",
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            onConnect("${host.ipAddress}:${host.port}", host.deviceId, host.token)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentIndigo),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Auto-Connect", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
 
         // Tab Selector
         PrimaryTabRow(
@@ -203,13 +257,44 @@ fun PairingScreen(
                     .clip(RoundedCornerShape(20.dp))
                     .background(SurfaceDark)
                     .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                // Connection Mode Selector
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = signalingUrl.contains("8089") || signalingUrl.contains("192.168"),
+                        onClick = {
+                            signalingUrl = "192.168.11.166:8089"
+                        },
+                        label = { Text("Direct Wi-Fi (1ms)", fontSize = 12.sp) },
+                        modifier = Modifier.weight(1f),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = AccentIndigo,
+                            selectedLabelColor = TextPrimary
+                        )
+                    )
+                    FilterChip(
+                        selected = signalingUrl.contains("51.79.249.143"),
+                        onClick = {
+                            signalingUrl = "51.79.249.143:8080"
+                        },
+                        label = { Text("Cloud Relay (4G)", fontSize = 12.sp) },
+                        modifier = Modifier.weight(1f),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = AccentIndigo,
+                            selectedLabelColor = TextPrimary
+                        )
+                    )
+                }
+
                 OutlinedTextField(
                     value = signalingUrl,
                     onValueChange = { signalingUrl = it },
-                    label = { Text("Signaling Server / VPS Address") },
-                    placeholder = { Text("vps.example.com:8080") },
+                    label = { Text("Server / Host Address") },
+                    placeholder = { Text("192.168.x.x:8089 or vps:8080") },
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = AccentIndigo,

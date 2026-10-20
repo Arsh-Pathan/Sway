@@ -13,6 +13,10 @@ pub enum InputPacket {
     TextInput { text: String },
     SwitchMonitor { monitor_index: u8 },
     SetQuality { mode: u8 },
+    TouchDirect { norm_x: u16, norm_y: u16, action: u8 },
+    SetPrivacyCurtain { enabled: bool },
+    ChangeResolution { mode: u8 },
+    ChangeOrientation { vertical: bool },
 }
 
 #[derive(Debug, Error)]
@@ -81,6 +85,24 @@ impl InputPacket {
             0x09 => {
                 let mode = rdr.read_u8()?;
                 Ok(InputPacket::SetQuality { mode })
+            }
+            0x0A => {
+                let norm_x = rdr.read_u16::<LittleEndian>()?;
+                let norm_y = rdr.read_u16::<LittleEndian>()?;
+                let action = rdr.read_u8()?;
+                Ok(InputPacket::TouchDirect { norm_x, norm_y, action })
+            }
+            0x0B => {
+                let enabled = rdr.read_u8()? != 0;
+                Ok(InputPacket::SetPrivacyCurtain { enabled })
+            }
+            0x0C => {
+                let mode = rdr.read_u8()?;
+                Ok(InputPacket::ChangeResolution { mode })
+            }
+            0x0D => {
+                let vertical = rdr.read_u8()? != 0;
+                Ok(InputPacket::ChangeOrientation { vertical })
             }
             _ => Err(ProtocolError::UnknownOpCode(opcode)),
         }

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sway - Desktop Control Center</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card: #131c2e;
+      --card-border: #1e293b;
+      --accent: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.35);
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --green: #10b981;
+      --green-glow: rgba(16, 185, 129, 0.25);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 32px; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+    .container { max-width: 900px; width: 100%; display: flex; flex-direction: column; gap: 24px; }
+    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--card-border); padding-bottom: 20px; }
+    .title-group { display: flex; align-items: center; gap: 14px; }
+    .logo-badge { width: 44px; height: 44px; border-radius: 12px; background: var(--accent); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 20px var(--accent-glow); font-size: 22px; font-weight: bold; }
+    .status-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; background: var(--green-glow); color: var(--green); border: 1px solid var(--green); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+    .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 16px; padding: 22px; display: flex; flex-direction: column; gap: 14px; position: relative; overflow: hidden; }
+    .card h3 { font-size: 16px; font-weight: 600; color: var(--text-muted); display: flex; align-items: center; gap: 8px; }
+    .val { font-size: 22px; font-weight: 700; color: var(--text); }
+    .btn { background: var(--accent); color: white; border: none; padding: 12px 18px; border-radius: 10px; font-weight: 600; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; }
+    .btn:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 14px var(--accent-glow); }
+    .btn-stealth { background: #1e293b; color: var(--text); border: 1px solid var(--card-border); }
+    .btn-stealth.active { background: var(--green); color: black; font-weight: bold; box-shadow: 0 0 16px var(--green-glow); }
+    .btn-row { display: flex; gap: 10px; }
+    .badge-bar { display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge { padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; background: #1e293b; color: #cbd5e1; }
+    .footer { text-align: center; color: var(--text-muted); font-size: 13px; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title-group">
+        <div class="logo-badge">⚡</div>
+        <div>
+          <h2>Sway Control Center</h2>
+          <p style="color: var(--text-muted); font-size: 14px;">High-Performance Remote Desktop Host Daemon</p>
+        </div>
+      </div>
+      <div class="status-pill">● System Online & Ready</div>
+    </div>
+
+    <div class="grid">
+      <!-- Card 1: Network & Connection -->
+      <div class="card">
+        <h3>🌐 Connection Endpoints</h3>
+        <div>
+          <p style="font-size: 13px; color: var(--text-muted);">Direct Wi-Fi / LAN (1ms Latency):</p>
+          <div class="val" style="font-size: 18px; color: #38bdf8;">ws://192.168.11.166:8089/ws</div>
+        </div>
+        <div>
+          <p style="font-size: 13px; color: var(--text-muted);">Cloud Relay (Global 4G/5G):</p>
+          <div style="font-size: 14px; color: #a5b4fc; font-weight: 600;">51.79.249.143:8080</div>
+        </div>
+        <div class="badge-bar">
+          <span class="badge">UDP Discovery: 8088</span>
+          <span class="badge">Device: sway-laptop-arsh</span>
+        </div>
+      </div>
+
+      <!-- Card 2: Privacy Shield -->
+      <div class="card">
+        <h3>🛡️ Stealth Privacy Curtain</h3>
+        <p style="font-size: 13px; color: var(--text-muted);">Hides laptop display with a pitch black shield so family or people nearby cannot see your screen while you control it remotely.</p>
+        <button id="btnPrivacy" class="btn btn-stealth" onclick="togglePrivacy()">
+          🛡️ Enable Privacy Shield
+        </button>
+      </div>
+
+      <!-- Card 3: Display Mode & Orientation -->
+      <div class="card">
+        <h3>📱 Display & Mobile Fit</h3>
+        <p style="font-size: 13px; color: var(--text-muted);">Rotate screen to portrait so Windows fits your vertical phone screen natively, or switch to 720p mobile preset.</p>
+        <div class="btn-row">
+          <button class="btn" style="flex: 1;" onclick="setOrientation(true)">📱 Fit Vertical PC</button>
+          <button class="btn btn-stealth" style="flex: 1;" onclick="setOrientation(false)">🖥️ Landscape</button>
+        </div>
+        <div class="btn-row" style="margin-top: 6px;">
+          <button class="btn btn-stealth" style="flex: 1;" onclick="setResolution(1)">720p Mobile</button>
+          <button class="btn btn-stealth" style="flex: 1;" onclick="setResolution(0)">Default 1080p</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Stream Info -->
+    <div class="card" style="flex-direction: row; align-items: center; justify-content: space-between;">
+      <div>
+        <h3 style="margin-bottom: 4px;">⚡ Real-Time Engine</h3>
+        <p style="font-size: 13px; color: var(--text-muted);">Direct3D 11 DXGI Desktop Duplication API  •  Hardware Composited Cursor  •  Sub-1ms Latency</p>
+      </div>
+      <div style="display: flex; gap: 12px;">
+        <span class="badge" style="background: var(--accent); color: white;">45-60 FPS</span>
+        <span class="badge" style="background: #065f46; color: #34d399;">Active</span>
+      </div>
+    </div>
+
+    <div class="footer">
+      Sway Desktop Daemon v1.0.0 &bull; Running on Windows 11 &bull; Connected to phone via Direct Wi-Fi / VPS Relay
+    </div>
+  </div>
+
+  <script>
+    let privacyActive = false;
+
+    async function togglePrivacy() {
+      privacyActive = !privacyActive;
+      const btn = document.getElementById('btnPrivacy');
+      if (privacyActive) {
+        btn.classList.add('active');
+        btn.innerText = '🔒 Privacy Shield ACTIVE (Screen Hidden)';
+      } else {
+        btn.classList.remove('active');
+        btn.innerText = '🛡️ Enable Privacy Shield';
+      }
+      await fetch('/api/privacy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: privacyActive })
+      });
+    }
+
+    async function setOrientation(vertical) {
+      await fetch('/api/orientation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vertical: vertical })
+      });
+    }
+
+    async function setResolution(mode) {
+      await fetch('/api/resolution', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: mode })
+      });
+    }
+  </script>
+</body>
+</html>

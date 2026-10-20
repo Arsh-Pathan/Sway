@@ -34,6 +34,16 @@ impl InputSimulator {
             InputPacket::SetQuality { mode } => {
                 info!("Stream quality change requested: mode #{}", mode);
             }
+            InputPacket::TouchDirect { norm_x, norm_y, action } => {
+                self.touch_direct(norm_x, norm_y, action);
+            }
+            InputPacket::SetPrivacyCurtain { enabled: _ } => {}
+            InputPacket::ChangeResolution { mode } => {
+                Self::set_display_resolution(mode);
+            }
+            InputPacket::ChangeOrientation { vertical } => {
+                Self::set_display_orientation(vertical);
+            }
         }
     }
 
@@ -169,6 +179,92 @@ impl InputSimulator {
                 self.send_key_input(0, KEYEVENTF_UNICODE, ch);
                 // Up
                 self.send_key_input(0, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, ch);
+            }
+        }
+    }
+
+    pub fn touch_direct(&self, norm_x: u16, norm_y: u16, action: u8) {
+        #[cfg(windows)]
+        {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GetSystemMetrics, SetCursorPos, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+                SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+            };
+            let vx = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+            let vy = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+            let vw = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+            let vh = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+
+            let target_x = vx + (norm_x as i32 * vw) / 65535;
+            let target_y = vy + (norm_y as i32 * vh) / 65535;
+
+            unsafe {
+                let _ = SetCursorPos(target_x, target_y);
+            }
+
+            match action {
+                0 => self.send_mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0, 0),
+                1 => self.send_mouse_input(MOUSEEVENTF_MOVE, 0, 0, 0),
+                2 => self.send_mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0),
+                _ => {}
+            }
+        }
+    }
+
+    pub fn set_display_resolution(mode: u8) {
+        #[cfg(windows)]
+        {
+            use windows::Win32::Graphics::Gdi::{
+                ChangeDisplaySettingsW, DEVMODEW, DM_PELSHEIGHT, DM_PELSWIDTH,
+            };
+            let (w, h) = match mode {
+                1 => (1280, 720),
+                2 => (1920, 1080),
+                _ => (0, 0),
+            };
+
+            unsafe {
+                if w == 0 && h == 0 {
+                    let _ = ChangeDisplaySettingsW(None, Default::default());
+                    info!("Restored default host display resolution");
+                } else {
+                    let dm = DEVMODEW {
+                        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+                        dmFields: DM_PELSWIDTH | DM_PELSHEIGHT,
+                        dmPelsWidth: w,
+                        dmPelsHeight: h,
+                        ..Default::default()
+                    };
+                    let res = ChangeDisplaySettingsW(Some(&dm), Default::default());
+                    info!("Set display resolution to {}x{}: res={:?}", w, h, res);
+                }
+            }
+        }
+    }
+
+    pub fn set_display_orientation(vertical: bool) {
+        #[cfg(windows)]
+        {
+            use windows::Win32::Graphics::Gdi::{
+                ChangeDisplaySettingsW, DEVMODEW, DM_DISPLAYORIENTATION, DM_PELSHEIGHT,
+                DM_PELSWIDTH, DMDO_90,
+            };
+            unsafe {
+                if !vertical {
+                    let _ = ChangeDisplaySettingsW(None, Default::default());
+                    info!("Restored default landscape orientation");
+                } else {
+                    let mut dm = DEVMODEW {
+                        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+                        dmFields: DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT,
+                        dmPelsWidth: 1080,
+                        dmPelsHeight: 1920,
+                        ..Default::default()
+                    };
+                    dm.Anonymous1.Anonymous2.dmDisplayOrientation = DMDO_90;
+                    let res = ChangeDisplaySettingsW(Some(&dm), Default::default());
+                    info!("Set display orientation to vertical portrait: res={:?}", res);
+                }
             }
         }
     }
