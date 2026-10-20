@@ -81,8 +81,28 @@ impl HostSignaling {
         }
     }
 
+    /// Continuously maintains connection to the signaling server with exponential backoff.
+    pub async fn run_with_retry(&self) {
+        let mut retry_secs = 2u64;
+        loop {
+            match self.run().await {
+                Ok(_) => {
+                    info!("Signaling session closed gracefully. Reconnecting in 2s...");
+                    retry_secs = 2;
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    drop(e);
+                    tracing::warn!("Signaling connection error ({}). Retrying in {}s...", err_msg, retry_secs);
+                    tokio::time::sleep(std::time::Duration::from_secs(retry_secs)).await;
+                    retry_secs = (retry_secs * 2).min(30);
+                }
+            }
+        }
+    }
+
     /// Connects to the signaling server and maintains the session.
-    pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let ws_url = if self.server_url.starts_with("http://") {
             format!("{}/ws", self.server_url.replace("http://", "ws://"))
         } else if self.server_url.starts_with("https://") {

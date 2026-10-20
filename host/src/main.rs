@@ -23,6 +23,15 @@ use uuid::Uuid;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
+    // Emergency panic safety hook to guarantee display restoration
+    let orig_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        InputSimulator::set_display_resolution(0);
+        InputSimulator::set_display_orientation(false);
+        PowerManager::set_keep_awake(false);
+        orig_hook(panic_info);
+    }));
+
     info!("=======================================================");
     info!("          SWAY REMOTE HOST DAEMON (WINDOWS)            ");
     info!("=======================================================");
@@ -50,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let privacy = Arc::new(PrivacyCurtain::new());
 
     // Initialize signaling manager
-    let host = HostSignaling::new(signaling_url, device_id.clone(), token.clone(), privacy.clone());
+    let host = Arc::new(HostSignaling::new(signaling_url, device_id.clone(), token.clone(), privacy.clone()));
 
     // Render pairing QR code to terminal
     host.print_pairing_qr();
@@ -61,21 +70,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start UDP auto-discovery service on port 8088
     DiscoveryService::start(device_id.clone(), token.clone(), local_port);
 
-    // Spawn signaling background worker
-    tokio::select! {
-        res = host.run() => {
-            if let Err(e) = res {
-                tracing::error!("Signaling runner terminated: {}", e);
-            }
-        }
-        _ = tokio::signal::ctrl_c() => {
-            info!("Received shutdown signal (Ctrl+C). Restoring display settings and power policies...");
-            privacy.set_enabled(false);
-            InputSimulator::set_display_resolution(0);
-            InputSimulator::set_display_orientation(false);
-            PowerManager::set_keep_awake(false);
-        }
+    // Spawn signaling background worker with automatic reconnection
+    let host_signaling = host.clone();
+    let signaling_handle = tokio::spawn(async move {
+        host_signaling.run_with_retry().await;
+    });
+
+    // Wait for shutdown signal
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        tracing::error!("Failed to listen for Ctrl+C: {}", e);
     }
+
+    info!("Received shutdown signal (Ctrl+C). Restoring display settings and power policies...");
+    signaling_handle.abort();
+    privacy.set_enabled(false);
+    InputSimulator::set_display_resolution(0);
+    InputSimulator::set_display_orientation(false);
+    PowerManager::set_keep_awake(false);
 
     info!("Sway Host Daemon shut down cleanly.");
     Ok(())

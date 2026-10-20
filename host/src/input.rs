@@ -237,8 +237,10 @@ impl InputSimulator {
                 (0, 0, 1920, 1080)
             };
 
-            let target_x = mon_x + (norm_x as i32 * mon_w) / 65535;
-            let target_y = mon_y + (norm_y as i32 * mon_h) / 65535;
+            let raw_x = mon_x + (norm_x as i32 * mon_w) / 65535;
+            let raw_y = mon_y + (norm_y as i32 * mon_h) / 65535;
+            let target_x = raw_x.clamp(mon_x, mon_x + mon_w - 1);
+            let target_y = raw_y.clamp(mon_y, mon_y + mon_h - 1);
 
             unsafe {
                 let _ = SetCursorPos(target_x, target_y);
@@ -346,6 +348,7 @@ impl InputSimulator {
                 fn EmptyClipboard() -> i32;
                 fn SetClipboardData(uFormat: u32, hMem: isize) -> isize;
                 fn GlobalAlloc(uFlags: u32, dwBytes: usize) -> isize;
+                fn GlobalFree(hMem: isize) -> isize;
                 fn GlobalLock(hMem: isize) -> *mut u8;
                 fn GlobalUnlock(hMem: isize) -> i32;
             }
@@ -371,8 +374,13 @@ impl InputSimulator {
                         if !ptr.is_null() {
                             std::ptr::copy_nonoverlapping(utf16.as_ptr() as *const u8, ptr, byte_count);
                             let _ = GlobalUnlock(h_mem);
-                            let _ = SetClipboardData(13 /* CF_UNICODETEXT */, h_mem);
-                            info!("Synced clipboard text ({} chars) to Windows clipboard", text.chars().count());
+                            if SetClipboardData(13 /* CF_UNICODETEXT */, h_mem) == 0 {
+                                let _ = GlobalFree(h_mem);
+                            } else {
+                                info!("Synced clipboard text ({} chars) to Windows clipboard", text.chars().count());
+                            }
+                        } else {
+                            let _ = GlobalFree(h_mem);
                         }
                     }
                     let _ = CloseClipboard();

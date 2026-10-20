@@ -48,13 +48,17 @@ $TargetExe = "$AppDir\sway-host.exe"
 Copy-Item -Path $SourceExe -Destination $TargetExe -Force
 Write-Host "[+] Copied host binary to $TargetExe" -ForegroundColor Green
 
-# Create the silent launcher VBS script
+# Create the silent launcher VBS script with sanitized string literals
+$SafeUrl = $SignalingUrl.Replace('"', '""')
+$SafeId = $DeviceId.Replace('"', '""')
+$SafeToken = $Token.Replace('"', '""')
+
 $VbsContent = @"
 Set WshShell = CreateObject("WScript.Shell")
 Set WshEnv = WshShell.Environment("PROCESS")
-WshEnv("SWAY_SIGNALING_URL") = "$SignalingUrl"
-WshEnv("SWAY_DEVICE_ID") = "$DeviceId"
-WshEnv("SWAY_TOKEN") = "$Token"
+WshEnv("SWAY_SIGNALING_URL") = "$SafeUrl"
+WshEnv("SWAY_DEVICE_ID") = "$SafeId"
+WshEnv("SWAY_TOKEN") = "$SafeToken"
 WshShell.CurrentDirectory = "$AppDir"
 WshShell.Run """$TargetExe""", 0, False
 "@

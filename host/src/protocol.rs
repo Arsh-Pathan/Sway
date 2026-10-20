@@ -27,11 +27,17 @@ pub enum ProtocolError {
     TooShort,
     #[error("unrecognized opcode: {0:#04x}")]
     UnknownOpCode(u8),
+    #[error("payload exceeds maximum allowed length: {0} bytes")]
+    PayloadTooLarge(usize),
+    #[error("invalid parameter range: {0}")]
+    InvalidParameter(&'static str),
     #[error("invalid utf-8 text payload")]
     InvalidUtf8,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
+
+const MAX_TEXT_PAYLOAD_LEN: usize = 32 * 1024; // 32KB max safe text payload
 
 impl InputPacket {
     pub fn parse(buf: &[u8]) -> Result<Self, ProtocolError> {
@@ -50,10 +56,16 @@ impl InputPacket {
             }
             0x02 => {
                 let button = rdr.read_u8()?;
+                if button > 2 {
+                    return Err(ProtocolError::InvalidParameter("invalid mouse button"));
+                }
                 Ok(InputPacket::MouseDown { button })
             }
             0x03 => {
                 let button = rdr.read_u8()?;
+                if button > 2 {
+                    return Err(ProtocolError::InvalidParameter("invalid mouse button"));
+                }
                 Ok(InputPacket::MouseUp { button })
             }
             0x04 => {
@@ -72,11 +84,13 @@ impl InputPacket {
             }
             0x07 => {
                 let len = rdr.read_u16::<LittleEndian>()? as usize;
-                let remaining = &buf[3..];
-                if remaining.len() < len {
+                if len > MAX_TEXT_PAYLOAD_LEN {
+                    return Err(ProtocolError::PayloadTooLarge(len));
+                }
+                if buf.len() < 3 + len {
                     return Err(ProtocolError::TooShort);
                 }
-                let text = String::from_utf8(remaining[..len].to_vec())
+                let text = String::from_utf8(buf[3..3 + len].to_vec())
                     .map_err(|_| ProtocolError::InvalidUtf8)?;
                 Ok(InputPacket::TextInput { text })
             }
@@ -92,6 +106,9 @@ impl InputPacket {
                 let norm_x = rdr.read_u16::<LittleEndian>()?;
                 let norm_y = rdr.read_u16::<LittleEndian>()?;
                 let action = rdr.read_u8()?;
+                if action > 2 {
+                    return Err(ProtocolError::InvalidParameter("invalid touch action"));
+                }
                 Ok(InputPacket::TouchDirect { norm_x, norm_y, action })
             }
             0x0B => {
@@ -108,16 +125,21 @@ impl InputPacket {
             }
             0x0E => {
                 let len = rdr.read_u16::<LittleEndian>()? as usize;
-                let remaining = &buf[3..];
-                if remaining.len() < len {
+                if len > MAX_TEXT_PAYLOAD_LEN {
+                    return Err(ProtocolError::PayloadTooLarge(len));
+                }
+                if buf.len() < 3 + len {
                     return Err(ProtocolError::TooShort);
                 }
-                let text = String::from_utf8(remaining[..len].to_vec())
+                let text = String::from_utf8(buf[3..3 + len].to_vec())
                     .map_err(|_| ProtocolError::InvalidUtf8)?;
                 Ok(InputPacket::ClipboardSync { text })
             }
             0x0F => {
                 let action = rdr.read_u8()?;
+                if action < 1 || action > 5 {
+                    return Err(ProtocolError::InvalidParameter("invalid system command action"));
+                }
                 Ok(InputPacket::SystemCommand { action })
             }
             _ => Err(ProtocolError::UnknownOpCode(opcode)),
@@ -194,10 +216,23 @@ mod tests {
             InputPacket::ClipboardSync { text: "Sway".to_string() }
         );
 
-        let sys = vec![0x0F, 0x01];
+        let sys = vec![0x0F, 0x02];
         assert_eq!(
             InputPacket::parse(&sys).unwrap(),
-            InputPacket::SystemCommand { action: 1 }
+            InputPacket::SystemCommand { action: 2 }
         );
+    }
+
+    #[test]
+    fn test_protocol_security_bounds() {
+        // Invalid mouse button (>2)
+        assert!(InputPacket::parse(&[0x02, 0x05]).is_err());
+
+        // Invalid touch action (>2)
+        assert!(InputPacket::parse(&[0x0A, 0x00, 0x00, 0x00, 0x00, 0x09]).is_err());
+
+        // Invalid system command (<1 or >5)
+        assert!(InputPacket::parse(&[0x0F, 0x00]).is_err());
+        assert!(InputPacket::parse(&[0x0F, 0x06]).is_err());
     }
 }

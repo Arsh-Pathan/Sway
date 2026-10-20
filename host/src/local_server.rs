@@ -55,6 +55,28 @@ impl LocalServer {
                         let n = stream.read(&mut buf).await.unwrap_or(0);
                         let req = String::from_utf8_lossy(&buf[..n]);
 
+                        // CSRF / Cross-Origin Security Check for API endpoints
+                        if req.contains("POST /api/") {
+                            let lower = req.to_lowercase();
+                            let is_cross_site = lower.contains("sec-fetch-site: cross-site");
+                            let mut foreign_origin = false;
+                            for line in lower.lines() {
+                                if line.starts_with("origin:") || line.starts_with("referer:") {
+                                    let v = line.trim();
+                                    if !v.contains("localhost") && !v.contains("127.0.0.1") && !v.contains("192.168.") && !v.contains("10.") && !v.contains("172.") {
+                                        foreign_origin = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if is_cross_site || foreign_origin {
+                                let forbidden = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n403 Forbidden: Cross-origin request rejected.";
+                                let _ = stream.write_all(forbidden.as_bytes()).await;
+                                return;
+                            }
+                        }
+
                         let is_get_apk = req.contains("GET /sway.apk") || req.contains("GET /app.apk");
                         let is_head_apk = req.contains("HEAD /sway.apk") || req.contains("HEAD /app.apk");
 
@@ -158,7 +180,7 @@ impl LocalServer {
 
                         let html = include_str!("dashboard.html");
                         let resp = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: SAMEORIGIN\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             html.len(),
                             html
                         );

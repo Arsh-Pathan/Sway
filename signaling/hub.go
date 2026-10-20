@@ -188,6 +188,10 @@ func (h *Hub) handleRegister(client *Client, msg SignalingMessage) {
 		client.sendError("registration requires deviceId and token")
 		return
 	}
+	if len(msg.DeviceID) > 64 || len(msg.Token) > 128 {
+		client.sendError("deviceId or token exceeds maximum allowed length")
+		return
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -220,6 +224,10 @@ func (h *Hub) handleRegister(client *Client, msg SignalingMessage) {
 func (h *Hub) handleJoin(client *Client, msg SignalingMessage) {
 	if msg.DeviceID == "" || msg.Token == "" {
 		client.sendError("join requires deviceId and token")
+		return
+	}
+	if len(msg.DeviceID) > 64 || len(msg.Token) > 128 {
+		client.sendError("deviceId or token exceeds maximum allowed length")
 		return
 	}
 

@@ -223,10 +223,15 @@ class WebRtcManager(
     }
 
     fun release() {
-        inputDataChannel?.close()
-        peerConnection?.close()
-        videoRenderer?.release()
-        peerConnectionFactory?.dispose()
-        eglBase.release()
+        try {
+            remoteVideoTrack?.removeSink(videoRenderer)
+            inputDataChannel?.close()
+            peerConnection?.close()
+            videoRenderer?.release()
+            peerConnectionFactory?.dispose()
+            eglBase.release()
+        } catch (e: Exception) {
+            Log.e(tag, "Error releasing WebRTC resources", e)
+        }
     }
 }
