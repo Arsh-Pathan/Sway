@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # Sway WebSocket Signaling Hub
+  signaling:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sway-signaling
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - STUN_SERVER=stun:${VPS_PUBLIC_IP:-127.0.0.1}:3478,stun:stun.l.google.com:19302
+      - TURN_SERVER=turn:${VPS_PUBLIC_IP:-127.0.0.1}:3478?transport=udp,turn:${VPS_PUBLIC_IP:-127.0.0.1}:3478?transport=tcp
+      - TURN_USERNAME=${TURN_USER:-swayuser}
+      - TURN_CREDENTIAL=${TURN_PASS:-swaypass123}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # Coturn STUN / TURN Server for NAT traversal
+  coturn:
+    image: coturn/coturn:latest
+    container_name: sway-coturn
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - DETECT_EXTERNAL_IP=yes
+    command:
+      - "-n"
+      - "--log-file=stdout"
+      - "--min-port=49152"
+      - "--max-port=65535"
+      - "--fingerprint"
+      - "--lt-cred-mech"
+      - "--realm=sway.relay"
+      - "--user=${TURN_USER:-swayuser}:${TURN_PASS:-swaypass123}"
