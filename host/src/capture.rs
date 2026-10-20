@@ -93,11 +93,13 @@ impl ScreenCapture {
             extern "system" {
                 fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
                 fn SetThreadDesktop(hDesktop: isize) -> i32;
+                fn CloseDesktop(hDesktop: isize) -> i32;
             }
             unsafe {
                 let h_desk = OpenInputDesktop(0, 0, 0x01FF);
                 if h_desk != 0 {
                     let _ = SetThreadDesktop(h_desk);
+                    let _ = CloseDesktop(h_desk);
                 }
             }
         }
@@ -173,20 +175,6 @@ impl ScreenCapture {
     }
 
     pub fn capture_frame_jpeg(&self, quality: u8) -> Option<Vec<u8>> {
-        #[cfg(windows)]
-        {
-            extern "system" {
-                fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
-                fn SetThreadDesktop(hDesktop: isize) -> i32;
-            }
-            unsafe {
-                let h_desk = OpenInputDesktop(0, 0, 0x01FF);
-                if h_desk != 0 {
-                    let _ = SetThreadDesktop(h_desk);
-                }
-            }
-        }
-
         let all_monitors = Monitor::all().ok()?;
         if all_monitors.is_empty() {
             return None;

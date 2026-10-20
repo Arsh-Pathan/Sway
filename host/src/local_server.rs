@@ -42,7 +42,7 @@ impl LocalServer {
                 let req_head = String::from_utf8_lossy(&peek_buf[..n]);
 
                 // If this is a web browser request, serve Desktop Control Center GUI
-                if !req_head.contains("Upgrade: websocket") && !req_head.contains("upgrade: websocket") {
+                if !req_head.to_lowercase().contains("upgrade: websocket") {
                     let priv_curtain = privacy.clone();
                     tokio::spawn(async move {
                         use tokio::io::{AsyncReadExt, AsyncWriteExt};

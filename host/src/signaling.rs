@@ -189,10 +189,18 @@ impl HostSignaling {
                         match env.msg_type.as_str() {
                             "status" => {
                                 if let Some(p) = env.payload {
-                                    if p.to_string().contains("client_joined") {
+                                    let s = p.to_string();
+                                    if s.contains("client_joined") {
                                         info!("Mobile client paired and connected!");
                                         PowerManager::set_keep_awake(true);
                                         start_streaming();
+                                    } else if s.contains("client_left") {
+                                        info!("Mobile client disconnected. Restoring host screen state...");
+                                        is_streaming.store(false, Ordering::SeqCst);
+                                        self.privacy.set_enabled(false);
+                                        InputSimulator::set_display_resolution(0);
+                                        InputSimulator::set_display_orientation(false);
+                                        PowerManager::set_keep_awake(false);
                                     }
                                 }
                             }

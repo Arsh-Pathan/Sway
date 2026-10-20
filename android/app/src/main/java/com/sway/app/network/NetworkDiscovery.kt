@@ -37,7 +37,22 @@ class NetworkDiscovery {
 
             val pingData = "SWAY_DISCOVER".toByteArray(Charsets.UTF_8)
 
-            // Broadcast on local Wi-Fi subnet
+            // Broadcast on all active network interfaces to find exact subnet broadcast
+            try {
+                val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+                while (interfaces.hasMoreElements()) {
+                    val networkInterface = interfaces.nextElement()
+                    if (networkInterface.isLoopback || !networkInterface.isUp) continue
+                    for (interfaceAddress in networkInterface.interfaceAddresses) {
+                        val broadcast = interfaceAddress.broadcast ?: continue
+                        try {
+                            socket.send(DatagramPacket(pingData, pingData.size, broadcast, 8088))
+                        } catch (_: Exception) {}
+                    }
+                }
+            } catch (_: Exception) {}
+
+            // Global Wi-Fi broadcast
             try {
                 val broadcastPacket = DatagramPacket(
                     pingData,

@@ -60,7 +60,10 @@ fun PairingScreen(
     val discoveredHost by discovery.discoveredHost.collectAsState()
 
     LaunchedEffect(Unit) {
-        discovery.discover()
+        while (true) {
+            discovery.discover()
+            kotlinx.coroutines.delay(2500)
+        }
     }
 
     // Manual Form State

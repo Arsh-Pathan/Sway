@@ -54,6 +54,7 @@ impl PrivacyCurtain {
                         extern "system" {
                             fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
                             fn SetThreadDesktop(hDesktop: isize) -> i32;
+                            fn CloseDesktop(hDesktop: isize) -> i32;
                         }
                         let h_desk = OpenInputDesktop(0, 0, 0x01FF);
                         if h_desk != 0 {
@@ -120,6 +121,10 @@ impl PrivacyCurtain {
 
                             let _ = DestroyWindow(h);
                         }
+                        if h_desk != 0 {
+                            let _ = CloseDesktop(h_desk);
+                        }
+                        is_active.store(false, Ordering::SeqCst);
                         hwnd_store.store(0, Ordering::SeqCst);
                     }
                     info!("Privacy Curtain window closed");

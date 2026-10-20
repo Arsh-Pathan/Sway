@@ -52,6 +52,56 @@ enum class ControlMode {
     TOUCH_SCREEN
 }
 
+private fun mapTouchToNormalized(
+    touchX: Float,
+    touchY: Float,
+    boxWidth: Float,
+    boxHeight: Float,
+    frameWidth: Int?,
+    frameHeight: Int?,
+    isVerticalPc: Boolean,
+    scale: Float,
+    offsetX: Float,
+    offsetY: Float
+): Pair<Int, Int>? {
+    val fw = (frameWidth ?: if (isVerticalPc) 1080 else 1920).toFloat().coerceAtLeast(1f)
+    val fh = (frameHeight ?: if (isVerticalPc) 1920 else 1080).toFloat().coerceAtLeast(1f)
+    val streamAspect = fw / fh
+    val boxAspect = boxWidth / boxHeight.coerceAtLeast(1f)
+
+    val fitW: Float
+    val fitH: Float
+    val padX: Float
+    val padY: Float
+
+    if (boxAspect > streamAspect) {
+        fitH = boxHeight
+        fitW = fitH * streamAspect
+        padX = (boxWidth - fitW) / 2f
+        padY = 0f
+    } else {
+        fitW = boxWidth
+        fitH = fitW / streamAspect
+        padX = 0f
+        padY = (boxHeight - fitH) / 2f
+    }
+
+    // Invert zoom & pan from the center of the container
+    val unzoomedX = (touchX - boxWidth / 2f - offsetX) / scale + boxWidth / 2f
+    val unzoomedY = (touchY - boxHeight / 2f - offsetY) / scale + boxHeight / 2f
+
+    val contentX = unzoomedX - padX
+    val contentY = unzoomedY - padY
+
+    if (contentX < 0f || contentX > fitW || contentY < 0f || contentY > fitH) {
+        return null // Outside active video image
+    }
+
+    val normX = ((contentX / fitW) * 65535f).toInt().coerceIn(0, 65535)
+    val normY = ((contentY / fitH) * 65535f).toInt().coerceIn(0, 65535)
+    return Pair(normX, normY)
+}
+
 @Composable
 fun SessionScreen(
     webRtcManager: WebRtcManager,
@@ -83,7 +133,8 @@ fun SessionScreen(
     var showSettings by remember { mutableStateOf(false) }
 
     // Soft Keyboard state
-    var keyboardInput by remember { mutableStateOf(TextFieldValue("")) }
+    val baseBuffer = "  "
+    var keyboardInput by remember { mutableStateOf(TextFieldValue(baseBuffer, androidx.compose.ui.text.TextRange(baseBuffer.length))) }
     val focusRequester = remember { FocusRequester() }
     var isKeyboardOpen by remember { mutableStateOf(false) }
 
@@ -165,27 +216,39 @@ fun SessionScreen(
                                 }
                             }
                         }
-                        .pointerInput(controlMode, zoomScale) {
-                            if (controlMode == ControlMode.TOUCH_SCREEN && zoomScale <= 1.05f) {
+                        .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame) {
+                            if (controlMode == ControlMode.TOUCH_SCREEN) {
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
-                                    val normX = (down.position.x / size.width.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                    val normY = (down.position.y / size.height.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                    webRtcManager.sendInput(InputEvent.TouchDirect(normX, normY, InputEvent.TouchDirect.ACTION_DOWN))
+                                    val pt = mapTouchToNormalized(
+                                        down.position.x, down.position.y,
+                                        size.width.toFloat(), size.height.toFloat(),
+                                        currentFrame?.width, currentFrame?.height,
+                                        isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY
+                                    )
+                                    if (pt != null) {
+                                        webRtcManager.sendInput(InputEvent.TouchDirect(pt.first, pt.second, InputEvent.TouchDirect.ACTION_DOWN))
+                                    }
 
                                     val pointerId = down.id
                                     while (true) {
                                         val event = awaitPointerEvent()
                                         val current = event.changes.firstOrNull { it.id == pointerId } ?: break
+                                        val curPt = mapTouchToNormalized(
+                                            current.position.x, current.position.y,
+                                            size.width.toFloat(), size.height.toFloat(),
+                                            currentFrame?.width, currentFrame?.height,
+                                            isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY
+                                        )
                                         if (!current.pressed) {
-                                            val upNormX = (current.position.x / size.width.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                            val upNormY = (current.position.y / size.height.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                            webRtcManager.sendInput(InputEvent.TouchDirect(upNormX, upNormY, InputEvent.TouchDirect.ACTION_UP))
+                                            if (curPt != null) {
+                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                            }
                                             break
                                         }
-                                        val curNormX = (current.position.x / size.width.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                        val curNormY = (current.position.y / size.height.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                        webRtcManager.sendInput(InputEvent.TouchDirect(curNormX, curNormY, InputEvent.TouchDirect.ACTION_MOVE))
+                                        if (curPt != null) {
+                                            webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
+                                        }
                                         current.consume()
                                     }
                                 }
@@ -547,27 +610,39 @@ fun SessionScreen(
                                 }
                             }
                         }
-                        .pointerInput(controlMode, zoomScale) {
-                            if (controlMode == ControlMode.TOUCH_SCREEN && zoomScale <= 1.05f) {
+                        .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame) {
+                            if (controlMode == ControlMode.TOUCH_SCREEN) {
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
-                                    val normX = (down.position.x / size.width.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                    val normY = (down.position.y / size.height.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                    webRtcManager.sendInput(InputEvent.TouchDirect(normX, normY, InputEvent.TouchDirect.ACTION_DOWN))
+                                    val pt = mapTouchToNormalized(
+                                        down.position.x, down.position.y,
+                                        size.width.toFloat(), size.height.toFloat(),
+                                        currentFrame?.width, currentFrame?.height,
+                                        isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY
+                                    )
+                                    if (pt != null) {
+                                        webRtcManager.sendInput(InputEvent.TouchDirect(pt.first, pt.second, InputEvent.TouchDirect.ACTION_DOWN))
+                                    }
 
                                     val pointerId = down.id
                                     while (true) {
                                         val event = awaitPointerEvent()
                                         val current = event.changes.firstOrNull { it.id == pointerId } ?: break
+                                        val curPt = mapTouchToNormalized(
+                                            current.position.x, current.position.y,
+                                            size.width.toFloat(), size.height.toFloat(),
+                                            currentFrame?.width, currentFrame?.height,
+                                            isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY
+                                        )
                                         if (!current.pressed) {
-                                            val upNormX = (current.position.x / size.width.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                            val upNormY = (current.position.y / size.height.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                            webRtcManager.sendInput(InputEvent.TouchDirect(upNormX, upNormY, InputEvent.TouchDirect.ACTION_UP))
+                                            if (curPt != null) {
+                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                            }
                                             break
                                         }
-                                        val curNormX = (current.position.x / size.width.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                        val curNormY = (current.position.y / size.height.toFloat() * 65535f).toInt().coerceIn(0, 65535)
-                                        webRtcManager.sendInput(InputEvent.TouchDirect(curNormX, curNormY, InputEvent.TouchDirect.ACTION_MOVE))
+                                        if (curPt != null) {
+                                            webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
+                                        }
                                         current.consume()
                                     }
                                 }
@@ -683,22 +758,22 @@ fun SessionScreen(
             }
         }
 
-        // Hidden input field for IME native keyboard capture
+        // Hidden input field for IME native keyboard capture with fixed cyclic buffer
         BasicTextField(
             value = keyboardInput,
             onValueChange = { newValue ->
-                val oldText = keyboardInput.text
                 val newText = newValue.text
-
-                if (newText.length > oldText.length) {
-                    val added = newText.substring(oldText.length)
+                if (newText.length > baseBuffer.length) {
+                    val added = newText.substring(baseBuffer.length)
                     webRtcManager.sendInput(InputEvent.TextInput(added))
-                } else if (newText.length < oldText.length) {
-                    // Backspace
-                    webRtcManager.sendInput(InputEvent.KeyDown(0x08, 0))
-                    webRtcManager.sendInput(InputEvent.KeyUp(0x08))
+                } else if (newText.length < baseBuffer.length) {
+                    val diff = baseBuffer.length - newText.length
+                    for (i in 0 until diff) {
+                        webRtcManager.sendInput(InputEvent.KeyDown(0x08, 0))
+                        webRtcManager.sendInput(InputEvent.KeyUp(0x08))
+                    }
                 }
-                keyboardInput = newValue
+                keyboardInput = TextFieldValue(baseBuffer, androidx.compose.ui.text.TextRange(baseBuffer.length))
             },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = {

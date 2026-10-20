@@ -8,7 +8,7 @@ import (
 
 func createMockClient(role, deviceID, token string) *Client {
 	return &Client{
-		send:     make(chan []byte, 100),
+		send:     make(chan WSMessage, 100),
 		role:     role,
 		deviceID: deviceID,
 		token:    token,
@@ -42,7 +42,7 @@ func TestRegisterHost(t *testing.T) {
 	select {
 	case resp := <-host.send:
 		var ack SignalingMessage
-		if err := json.Unmarshal(resp, &ack); err != nil {
+		if err := json.Unmarshal(resp.data, &ack); err != nil {
 			t.Fatalf("failed to parse ack: %v", err)
 		}
 		if ack.Type != TypeStatus {
@@ -80,7 +80,7 @@ func TestJoinAuthentication(t *testing.T) {
 	select {
 	case resp := <-clientBad.send:
 		var errMsg SignalingMessage
-		_ = json.Unmarshal(resp, &errMsg)
+		_ = json.Unmarshal(resp.data, &errMsg)
 		if errMsg.Type != TypeError {
 			t.Fatalf("expected TypeError for bad token, got %s", errMsg.Type)
 		}
@@ -101,7 +101,7 @@ func TestJoinAuthentication(t *testing.T) {
 	select {
 	case resp := <-clientGood.send:
 		var ack SignalingMessage
-		_ = json.Unmarshal(resp, &ack)
+		_ = json.Unmarshal(resp.data, &ack)
 		if ack.Type != TypeStatus {
 			t.Fatalf("expected TypeStatus for successful join, got %s", ack.Type)
 		}
@@ -113,7 +113,7 @@ func TestJoinAuthentication(t *testing.T) {
 	select {
 	case hostNotif := <-host.send:
 		var notif SignalingMessage
-		_ = json.Unmarshal(hostNotif, &notif)
+		_ = json.Unmarshal(hostNotif.data, &notif)
 		if notif.Type != TypeStatus {
 			t.Fatalf("expected TypeStatus on host, got %s", notif.Type)
 		}
@@ -148,7 +148,7 @@ func TestRouteOfferAndAnswer(t *testing.T) {
 	select {
 	case received := <-client.send:
 		var forwarded SignalingMessage
-		_ = json.Unmarshal(received, &forwarded)
+		_ = json.Unmarshal(received.data, &forwarded)
 		if forwarded.Type != TypeOffer {
 			t.Fatalf("client did not receive offer, got %s", forwarded.Type)
 		}
@@ -168,7 +168,7 @@ func TestRouteOfferAndAnswer(t *testing.T) {
 	select {
 	case received := <-host.send:
 		var forwarded SignalingMessage
-		_ = json.Unmarshal(received, &forwarded)
+		_ = json.Unmarshal(received.data, &forwarded)
 		if forwarded.Type != TypeAnswer {
 			t.Fatalf("host did not receive answer, got %s", forwarded.Type)
 		}

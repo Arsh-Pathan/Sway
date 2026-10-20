@@ -25,12 +25,21 @@ type WSMessage struct {
 
 // Client represents a connected WebSocket peer (either a Host or an Android Client).
 type Client struct {
-	hub      *Hub
-	conn     *websocket.Conn
-	send     chan WSMessage
-	role     string // "host" or "client"
-	deviceID string
-	token    string
+	hub       *Hub
+	conn      *websocket.Conn
+	send      chan WSMessage
+	closeOnce sync.Once
+	closed    bool
+	role      string // "host" or "client"
+	deviceID  string
+	token     string
+}
+
+func (c *Client) Close() {
+	c.closeOnce.Do(func() {
+		c.closed = true
+		close(c.send)
+	})
 }
 
 // Hub maintains the set of active clients and handles message routing.
@@ -104,9 +113,22 @@ func (h *Hub) handleDisconnect(client *Client) {
 				break
 			}
 		}
+
+		// If no more mobile clients remain for this host, notify host
+		if len(h.clients[client.deviceID]) == 0 {
+			if host, exists := h.hosts[client.deviceID]; exists {
+				notifyHost, _ := json.Marshal(SignalingMessage{
+					Type:     TypeStatus,
+					Role:     "client",
+					DeviceID: client.deviceID,
+					Payload:  json.RawMessage(`{"status":"client_left"}`),
+				})
+				host.sendSafe(WSMessage{msgType: websocket.TextMessage, data: notifyHost})
+			}
+		}
 	}
 
-	close(client.send)
+	client.Close()
 }
 
 // ProcessBinary relays binary frames (screen captures and input events) directly between host and mobile.
@@ -172,7 +194,7 @@ func (h *Hub) handleRegister(client *Client, msg SignalingMessage) {
 			client.sendError("deviceId already registered with different token")
 			return
 		}
-		close(existing.send)
+		existing.Close()
 	}
 
 	client.role = "host"
@@ -264,10 +286,16 @@ func (h *Hub) routePeerMessage(client *Client, msg SignalingMessage, raw []byte)
 }
 
 func (c *Client) sendSafe(msg WSMessage) {
+	if c.closed {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
 	select {
 	case c.send <- msg:
 	default:
-		log.Printf("[Client] Send buffer full, dropping message")
+		// Send buffer full, drop frame (standard for live video)
 	}
 }
 

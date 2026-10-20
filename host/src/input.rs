@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU8, Ordering};
 use tracing::{debug, info};
 
 #[cfg(windows)]
@@ -11,11 +12,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 use crate::protocol::InputPacket;
 
-pub struct InputSimulator;
+pub struct InputSimulator {
+    active_modifiers: AtomicU8,
+}
 
 impl InputSimulator {
     pub fn new() -> Self {
-        Self
+        Self {
+            active_modifiers: AtomicU8::new(0),
+        }
     }
 
     /// Dispatches an input packet to the native OS input subsystem.
@@ -148,18 +153,20 @@ impl InputSimulator {
     pub fn key_down(&self, vkey: u16, modifiers: u8) {
         #[cfg(windows)]
         {
-            // Apply modifiers if flagged
-            if modifiers & 0x01 != 0 {
-                self.send_key_input(VK_CONTROL.0, KEYBD_EVENT_FLAGS(0), 0);
-            }
-            if modifiers & 0x02 != 0 {
-                self.send_key_input(VK_SHIFT.0, KEYBD_EVENT_FLAGS(0), 0);
-            }
-            if modifiers & 0x04 != 0 {
-                self.send_key_input(VK_MENU.0, KEYBD_EVENT_FLAGS(0), 0);
-            }
-            if modifiers & 0x08 != 0 {
-                self.send_key_input(VK_LWIN.0, KEYBD_EVENT_FLAGS(0), 0);
+            if modifiers != 0 {
+                self.active_modifiers.store(modifiers, Ordering::Relaxed);
+                if modifiers & 0x01 != 0 {
+                    self.send_key_input(VK_CONTROL.0, KEYBD_EVENT_FLAGS(0), 0);
+                }
+                if modifiers & 0x02 != 0 {
+                    self.send_key_input(VK_SHIFT.0, KEYBD_EVENT_FLAGS(0), 0);
+                }
+                if modifiers & 0x04 != 0 {
+                    self.send_key_input(VK_MENU.0, KEYBD_EVENT_FLAGS(0), 0);
+                }
+                if modifiers & 0x08 != 0 {
+                    self.send_key_input(VK_LWIN.0, KEYBD_EVENT_FLAGS(0), 0);
+                }
             }
 
             self.send_key_input(vkey, KEYBD_EVENT_FLAGS(0), 0);
@@ -168,7 +175,24 @@ impl InputSimulator {
 
     pub fn key_up(&self, vkey: u16) {
         #[cfg(windows)]
-        self.send_key_input(vkey, KEYEVENTF_KEYUP, 0);
+        {
+            self.send_key_input(vkey, KEYEVENTF_KEYUP, 0);
+
+            // Automatically release any transient modifier keys from key chords
+            let prev_mods = self.active_modifiers.swap(0, Ordering::Relaxed);
+            if prev_mods & 0x01 != 0 {
+                self.send_key_input(VK_CONTROL.0, KEYEVENTF_KEYUP, 0);
+            }
+            if prev_mods & 0x02 != 0 {
+                self.send_key_input(VK_SHIFT.0, KEYEVENTF_KEYUP, 0);
+            }
+            if prev_mods & 0x04 != 0 {
+                self.send_key_input(VK_MENU.0, KEYEVENTF_KEYUP, 0);
+            }
+            if prev_mods & 0x08 != 0 {
+                self.send_key_input(VK_LWIN.0, KEYEVENTF_KEYUP, 0);
+            }
+        }
     }
 
     pub fn text_input(&self, text: &str) {

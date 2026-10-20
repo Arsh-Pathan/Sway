@@ -47,6 +47,15 @@ fun ModifierDock(
     var shiftActive by remember { mutableStateOf(false) }
     var winActive by remember { mutableStateOf(false) }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            if (ctrlActive) onInputEvent(InputEvent.KeyUp(0x11))
+            if (altActive) onInputEvent(InputEvent.KeyUp(0x12))
+            if (shiftActive) onInputEvent(InputEvent.KeyUp(0x10))
+            if (winActive) onInputEvent(InputEvent.KeyUp(0x5B))
+        }
+    }
+
     fun calculateModifierMask(): Byte {
         var mask = 0
         if (ctrlActive) mask = mask or 0x01
@@ -79,25 +88,37 @@ fun ModifierDock(
                 label = "CTRL",
                 isActive = ctrlActive,
                 modifier = Modifier.weight(1f),
-                onClick = { ctrlActive = !ctrlActive }
+                onClick = {
+                    ctrlActive = !ctrlActive
+                    if (ctrlActive) onInputEvent(InputEvent.KeyDown(0x11, 0)) else onInputEvent(InputEvent.KeyUp(0x11))
+                }
             )
             ModifierKeyButton(
                 label = "ALT",
                 isActive = altActive,
                 modifier = Modifier.weight(1f),
-                onClick = { altActive = !altActive }
+                onClick = {
+                    altActive = !altActive
+                    if (altActive) onInputEvent(InputEvent.KeyDown(0x12, 0)) else onInputEvent(InputEvent.KeyUp(0x12))
+                }
             )
             ModifierKeyButton(
                 label = "SHIFT",
                 isActive = shiftActive,
                 modifier = Modifier.weight(1f),
-                onClick = { shiftActive = !shiftActive }
+                onClick = {
+                    shiftActive = !shiftActive
+                    if (shiftActive) onInputEvent(InputEvent.KeyDown(0x10, 0)) else onInputEvent(InputEvent.KeyUp(0x10))
+                }
             )
             ModifierKeyButton(
                 label = "WIN",
                 isActive = winActive,
                 modifier = Modifier.weight(1f),
-                onClick = { winActive = !winActive }
+                onClick = {
+                    winActive = !winActive
+                    if (winActive) onInputEvent(InputEvent.KeyDown(0x5B, 0)) else onInputEvent(InputEvent.KeyUp(0x5B))
+                }
             )
             ActionKeyButton(
                 label = "ESC",
