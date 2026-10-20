@@ -139,6 +139,11 @@ sealed class InputEvent {
             const val DEFAULT: Byte = 0
             const val MOBILE_720P: Byte = 1
             const val DESKTOP_1080P: Byte = 2
+            const val BALANCED_900P: Byte = 3
+            const val COMPACT_1024: Byte = 4
+            const val QHD_1440P: Byte = 5
+            const val VERTICAL_1080P: Byte = 10
+            const val VERTICAL_720P: Byte = 11
         }
     }
 

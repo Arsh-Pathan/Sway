@@ -18,8 +18,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, PostMessageW, PostQuitMessage, RegisterClassExW, SetWindowDisplayAffinity,
     ShowWindow, TranslateMessage, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, WINDOW_DISPLAY_AFFINITY, WM_CLOSE,
-    WM_DESTROY, WM_KEYDOWN, WM_PAINT, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-    WS_VISIBLE,
+    WM_DESTROY, WM_KEYDOWN, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
 };
 
 // WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Windows 10 2004+)
@@ -77,7 +77,7 @@ impl PrivacyCurtain {
                         let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
                         let hwnd = CreateWindowExW(
-                            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED,
                             class_name,
                             w!("Sway Remote Privacy Curtain"),
                             WS_POPUP | WS_VISIBLE,
@@ -169,6 +169,10 @@ unsafe extern "system" fn curtain_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_NCHITTEST => {
+            // Return HTTRANSPARENT (-1) so mouse clicks and touches pass directly through to desktop windows!
+            LRESULT(-1)
+        }
         WM_KEYDOWN => {
             // If user presses Escape on host laptop keyboard, immediately dismiss curtain
             if wparam.0 == 0x1B { // VK_ESCAPE

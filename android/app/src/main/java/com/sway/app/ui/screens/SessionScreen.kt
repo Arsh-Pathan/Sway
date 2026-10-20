@@ -37,10 +37,13 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.viewinterop.AndroidView
 import com.sway.app.model.InputEvent
 import com.sway.app.ui.components.ModifierDock
 import com.sway.app.ui.components.QuickActionsSheet
+import com.sway.app.ui.components.ResolutionSheet
 import com.sway.app.ui.components.SettingsSheet
 import com.sway.app.ui.components.TrackpadSurface
 import com.sway.app.ui.theme.*
@@ -54,6 +57,12 @@ enum class ControlMode {
     TOUCH_SCREEN
 }
 
+enum class ViewFitMode {
+    FIT,
+    FILL,
+    ROTATE_90
+}
+
 private fun mapTouchToNormalized(
     touchX: Float,
     touchY: Float,
@@ -64,10 +73,22 @@ private fun mapTouchToNormalized(
     isVerticalPc: Boolean,
     scale: Float,
     offsetX: Float,
-    offsetY: Float
+    offsetY: Float,
+    fitMode: ViewFitMode = ViewFitMode.FIT
 ): Pair<Int, Int>? {
     val fw = (frameWidth ?: if (isVerticalPc) 1080 else 1920).toFloat().coerceAtLeast(1f)
     val fh = (frameHeight ?: if (isVerticalPc) 1920 else 1080).toFloat().coerceAtLeast(1f)
+
+    // Invert zoom & pan from the center of the container
+    val unzoomedX = (touchX - boxWidth / 2f - offsetX) / scale + boxWidth / 2f
+    val unzoomedY = (touchY - boxHeight / 2f - offsetY) / scale + boxHeight / 2f
+
+    if (fitMode == ViewFitMode.FILL) {
+        val normX = ((unzoomedX / boxWidth.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
+        val normY = ((unzoomedY / boxHeight.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
+        return Pair(normX, normY)
+    }
+
     val streamAspect = fw / fh
     val boxAspect = boxWidth / boxHeight.coerceAtLeast(1f)
 
@@ -88,10 +109,6 @@ private fun mapTouchToNormalized(
         padY = (boxHeight - fitH) / 2f
     }
 
-    // Invert zoom & pan from the center of the container
-    val unzoomedX = (touchX - boxWidth / 2f - offsetX) / scale + boxWidth / 2f
-    val unzoomedY = (touchY - boxHeight / 2f - offsetY) / scale + boxHeight / 2f
-
     val contentX = unzoomedX - padX
     val contentY = unzoomedY - padY
 
@@ -107,6 +124,7 @@ private fun mapTouchToNormalized(
 @Composable
 private fun DesktopStreamCanvas(
     frame: android.graphics.Bitmap?,
+    fitMode: ViewFitMode = ViewFitMode.FIT,
     modifier: Modifier = Modifier
 ) {
     if (frame != null) {
@@ -125,23 +143,53 @@ private fun DesktopStreamCanvas(
             val padX: Float
             val padY: Float
 
-            if (canvasAspect > streamAspect) {
-                fitH = canvasHeight
-                fitW = fitH * streamAspect
-                padX = (canvasWidth - fitW) / 2f
-                padY = 0f
-            } else {
+            if (fitMode == ViewFitMode.FILL) {
                 fitW = canvasWidth
-                fitH = fitW / streamAspect
+                fitH = canvasHeight
                 padX = 0f
-                padY = (canvasHeight - fitH) / 2f
+                padY = 0f
+            } else if (fitMode == ViewFitMode.ROTATE_90) {
+                val rotAspect = imgH / imgW
+                if (canvasAspect > rotAspect) {
+                    fitH = canvasHeight
+                    fitW = fitH * rotAspect
+                    padX = (canvasWidth - fitW) / 2f
+                    padY = 0f
+                } else {
+                    fitW = canvasWidth
+                    fitH = fitW / rotAspect
+                    padX = 0f
+                    padY = (canvasHeight - fitH) / 2f
+                }
+            } else {
+                if (canvasAspect > streamAspect) {
+                    fitH = canvasHeight
+                    fitW = fitH * streamAspect
+                    padX = (canvasWidth - fitW) / 2f
+                    padY = 0f
+                } else {
+                    fitW = canvasWidth
+                    fitH = fitW / streamAspect
+                    padX = 0f
+                    padY = (canvasHeight - fitH) / 2f
+                }
             }
 
-            drawImage(
-                image = imageBitmap,
-                dstOffset = androidx.compose.ui.unit.IntOffset(padX.toInt(), padY.toInt()),
-                dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt())
-            )
+            if (fitMode == ViewFitMode.ROTATE_90) {
+                rotate(degrees = 90f, pivot = androidx.compose.ui.geometry.Offset(canvasWidth / 2f, canvasHeight / 2f)) {
+                    drawImage(
+                        image = imageBitmap,
+                        dstOffset = androidx.compose.ui.unit.IntOffset(padX.toInt(), padY.toInt()),
+                        dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt())
+                    )
+                }
+            } else {
+                drawImage(
+                    image = imageBitmap,
+                    dstOffset = androidx.compose.ui.unit.IntOffset(padX.toInt(), padY.toInt()),
+                    dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt())
+                )
+            }
         }
     }
 }
@@ -176,6 +224,9 @@ fun SessionScreen(
     var currentQuality by remember { mutableStateOf<Byte>(InputEvent.SetQuality.TURBO) }
     var showSettings by remember { mutableStateOf(false) }
     var showQuickActions by remember { mutableStateOf(false) }
+    var showResolutionSheet by remember { mutableStateOf(false) }
+    var viewFitMode by remember { mutableStateOf(ViewFitMode.FIT) }
+    var currentResMode by remember { mutableStateOf(InputEvent.ChangeResolution.DEFAULT) }
 
     val liveFps by webRtcManager.fps.collectAsState()
     val liveRtt by webRtcManager.rttMs.collectAsState()
@@ -201,6 +252,7 @@ fun SessionScreen(
     fun switchMonitor() {
         currentMonitor = (currentMonitor + 1) % 2
         webRtcManager.sendInput(InputEvent.SwitchMonitor(currentMonitor.toByte()))
+        Toast.makeText(context, "Switched to Display #${currentMonitor + 1}", Toast.LENGTH_SHORT).show()
     }
 
     fun toggleOrientation() {
@@ -278,7 +330,7 @@ fun SessionScreen(
                                 }
                             }
                         }
-                        .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame) {
+                        .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame, viewFitMode) {
                             if (controlMode == ControlMode.TOUCH_SCREEN) {
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
@@ -287,7 +339,8 @@ fun SessionScreen(
                                         down.position.x, down.position.y,
                                         size.width.toFloat(), size.height.toFloat(),
                                         currentFrame?.width, currentFrame?.height,
-                                        isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY
+                                        isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                        viewFitMode
                                     )
                                     if (pt != null) {
                                         webRtcManager.sendInput(InputEvent.TouchDirect(pt.first, pt.second, InputEvent.TouchDirect.ACTION_DOWN))
@@ -301,7 +354,8 @@ fun SessionScreen(
                                             current.position.x, current.position.y,
                                             size.width.toFloat(), size.height.toFloat(),
                                             currentFrame?.width, currentFrame?.height,
-                                            isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY
+                                            isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                            viewFitMode
                                         )
                                         if (!current.pressed) {
                                             touchRipplePos = null
@@ -341,7 +395,7 @@ fun SessionScreen(
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else if (currentFrame != null) {
-                            DesktopStreamCanvas(frame = currentFrame)
+                            DesktopStreamCanvas(frame = currentFrame, fitMode = viewFitMode)
                         } else {
                             Surface(
                                 modifier = Modifier
@@ -545,17 +599,17 @@ fun SessionScreen(
                             )
                         }
 
-                        // Resolution preset toggle (720p / 1080p)
+                        // Resolution & Display Scaling sheet
                         IconButton(
-                            onClick = { toggleResolution() },
+                            onClick = { showResolutionSheet = true },
                             colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (is720pMode) AccentIndigo else SurfaceDark.copy(alpha = 0.85f)
+                                containerColor = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) AccentIndigo else SurfaceDark.copy(alpha = 0.85f)
                             )
                         ) {
                             Icon(
                                 Icons.Default.AspectRatio,
-                                contentDescription = "Resolution",
-                                tint = if (is720pMode) TextPrimary else TextMuted
+                                contentDescription = "Resolution & Scaling",
+                                tint = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) TextPrimary else TextMuted
                             )
                         }
 
@@ -732,6 +786,20 @@ fun SessionScreen(
                             )
                         }
 
+                        // Resolution & Display Scaling sheet
+                        IconButton(
+                            onClick = { showResolutionSheet = true },
+                            colors = IconButtonDefaults.iconButtonColors(
+                                containerColor = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) AccentIndigo else SurfaceDark
+                            )
+                        ) {
+                            Icon(
+                                Icons.Default.AspectRatio,
+                                contentDescription = "Resolution & Scaling",
+                                tint = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) TextPrimary else TextMuted
+                            )
+                        }
+
                         // Vertical PC Mode toggle (Rotate Windows to 1080x1920 to fit phone vertically!)
                         IconButton(
                             onClick = { toggleVerticalPcMode() },
@@ -814,7 +882,7 @@ fun SessionScreen(
                                 }
                             }
                         }
-                        .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame) {
+                        .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame, viewFitMode) {
                             if (controlMode == ControlMode.TOUCH_SCREEN) {
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
@@ -823,7 +891,8 @@ fun SessionScreen(
                                         down.position.x, down.position.y,
                                         size.width.toFloat(), size.height.toFloat(),
                                         currentFrame?.width, currentFrame?.height,
-                                        isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY
+                                        isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                        viewFitMode
                                     )
                                     if (pt != null) {
                                         webRtcManager.sendInput(InputEvent.TouchDirect(pt.first, pt.second, InputEvent.TouchDirect.ACTION_DOWN))
@@ -837,7 +906,8 @@ fun SessionScreen(
                                             current.position.x, current.position.y,
                                             size.width.toFloat(), size.height.toFloat(),
                                             currentFrame?.width, currentFrame?.height,
-                                            isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY
+                                            isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                            viewFitMode
                                         )
                                         if (!current.pressed) {
                                             touchRipplePos = null
@@ -877,7 +947,7 @@ fun SessionScreen(
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else if (currentFrame != null) {
-                            DesktopStreamCanvas(frame = currentFrame)
+                            DesktopStreamCanvas(frame = currentFrame, fitMode = viewFitMode)
                         } else {
                             Surface(
                                 modifier = Modifier
@@ -947,16 +1017,18 @@ fun SessionScreen(
                     }
                 }
 
-                // Middle: Dedicated Virtual Trackpad
-                TrackpadSurface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1.3f),
-                    sensitivity = sensitivity,
-                    scrollSpeed = scrollSpeed,
-                    hapticsEnabled = hapticsEnabled,
-                    onInputEvent = { webRtcManager.sendInput(it) }
-                )
+                // Middle: Dedicated Virtual Trackpad (Only displayed in Trackpad mode)
+                if (controlMode == ControlMode.TRACKPAD) {
+                    TrackpadSurface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1.3f),
+                        sensitivity = sensitivity,
+                        scrollSpeed = scrollSpeed,
+                        hapticsEnabled = hapticsEnabled,
+                        onInputEvent = { webRtcManager.sendInput(it) }
+                    )
+                }
 
                 // Bottom: Sticky Modifier Dock
                 ModifierDock(
@@ -1028,6 +1100,28 @@ fun SessionScreen(
             QuickActionsSheet(
                 onSendInput = { webRtcManager.sendInput(it) },
                 onDismiss = { showQuickActions = false }
+            )
+        }
+
+        // Display Resolution & Scaling Sheet
+        if (showResolutionSheet) {
+            ResolutionSheet(
+                currentResMode = currentResMode,
+                currentFitMode = viewFitMode,
+                isVerticalPc = isVerticalPcMode,
+                onSelectRes = { mode ->
+                    currentResMode = mode
+                    webRtcManager.sendInput(InputEvent.ChangeResolution(mode))
+                    showResolutionSheet = false
+                },
+                onSelectFit = { fit ->
+                    viewFitMode = fit
+                    showResolutionSheet = false
+                },
+                onToggleVerticalPc = {
+                    toggleVerticalPcMode()
+                },
+                onDismiss = { showResolutionSheet = false }
             )
         }
     }

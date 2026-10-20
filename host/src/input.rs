@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use tracing::{debug, info, warn};
 
 #[cfg(windows)]
@@ -14,12 +14,14 @@ use crate::protocol::InputPacket;
 
 pub struct InputSimulator {
     active_modifiers: AtomicU8,
+    active_monitor: AtomicUsize,
 }
 
 impl InputSimulator {
     pub fn new() -> Self {
         Self {
             active_modifiers: AtomicU8::new(0),
+            active_monitor: AtomicUsize::new(0),
         }
     }
 
@@ -35,6 +37,7 @@ impl InputSimulator {
             InputPacket::TextInput { text } => self.text_input(&text),
             InputPacket::SwitchMonitor { monitor_index } => {
                 info!("Monitor switch requested to display: #{}", monitor_index);
+                self.active_monitor.store(monitor_index as usize, Ordering::SeqCst);
             }
             InputPacket::SetQuality { mode } => {
                 info!("Stream quality change requested: mode #{}", mode);
@@ -216,17 +219,26 @@ impl InputSimulator {
     pub fn touch_direct(&self, norm_x: u16, norm_y: u16, action: u8) {
         #[cfg(windows)]
         {
-            use windows::Win32::UI::WindowsAndMessaging::{
-                GetSystemMetrics, SetCursorPos, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-                SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-            };
-            let vx = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
-            let vy = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
-            let vw = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
-            let vh = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+            use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
-            let target_x = vx + (norm_x as i32 * vw) / 65535;
-            let target_y = vy + (norm_y as i32 * vh) / 65535;
+            let cur_idx = self.active_monitor.load(Ordering::SeqCst);
+            let (mon_x, mon_y, mon_w, mon_h) = if let Ok(all) = xcap::Monitor::all() {
+                if let Some(m) = all.get(cur_idx).or_else(|| all.first()) {
+                    (
+                        m.x().unwrap_or(0),
+                        m.y().unwrap_or(0),
+                        m.width().unwrap_or(1920).max(1) as i32,
+                        m.height().unwrap_or(1080).max(1) as i32,
+                    )
+                } else {
+                    (0, 0, 1920, 1080)
+                }
+            } else {
+                (0, 0, 1920, 1080)
+            };
+
+            let target_x = mon_x + (norm_x as i32 * mon_w) / 65535;
+            let target_y = mon_y + (norm_y as i32 * mon_h) / 65535;
 
             unsafe {
                 let _ = SetCursorPos(target_x, target_y);
@@ -245,27 +257,39 @@ impl InputSimulator {
         #[cfg(windows)]
         {
             use windows::Win32::Graphics::Gdi::{
-                ChangeDisplaySettingsW, DEVMODEW, DM_PELSHEIGHT, DM_PELSWIDTH,
-            };
-            let (w, h) = match mode {
-                1 => (1280, 720),
-                2 => (1920, 1080),
-                _ => (0, 0),
+                ChangeDisplaySettingsExW, EnumDisplaySettingsW, DEVMODEW,
+                DM_PELSHEIGHT, DM_PELSWIDTH, ENUM_CURRENT_SETTINGS, CDS_UPDATEREGISTRY,
             };
 
             unsafe {
-                if w == 0 && h == 0 {
-                    let _ = ChangeDisplaySettingsW(None, Default::default());
+                if mode == 0 {
+                    let _ = ChangeDisplaySettingsExW(None, None, None, Default::default(), None);
                     info!("Restored default host display resolution");
-                } else {
-                    let dm = DEVMODEW {
-                        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
-                        dmFields: DM_PELSWIDTH | DM_PELSHEIGHT,
-                        dmPelsWidth: w,
-                        dmPelsHeight: h,
-                        ..Default::default()
+                    return;
+                }
+
+                let mut dm = DEVMODEW {
+                    dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+                    ..Default::default()
+                };
+
+                if EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, &mut dm).as_bool() {
+                    let (w, h) = match mode {
+                        1 => (1280, 720),   // 720p Mobile
+                        2 => (1920, 1080),  // 1080p Full HD
+                        3 => (1600, 900),   // 900p Balanced
+                        4 => (1024, 768),   // Compact 4:3
+                        5 => (2560, 1440),  // 1440p QHD
+                        10 => (1080, 1920), // Vertical 1080p
+                        11 => (720, 1280),  // Vertical 720p
+                        _ => (1920, 1080),
                     };
-                    let res = ChangeDisplaySettingsW(Some(&dm), Default::default());
+
+                    dm.dmPelsWidth = w;
+                    dm.dmPelsHeight = h;
+                    dm.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
+
+                    let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_UPDATEREGISTRY, None);
                     info!("Set display resolution to {}x{}: res={:?}", w, h, res);
                 }
             }
@@ -276,24 +300,38 @@ impl InputSimulator {
         #[cfg(windows)]
         {
             use windows::Win32::Graphics::Gdi::{
-                ChangeDisplaySettingsW, DEVMODEW, DM_DISPLAYORIENTATION, DM_PELSHEIGHT,
-                DM_PELSWIDTH, DMDO_90,
+                ChangeDisplaySettingsExW, EnumDisplaySettingsW, DEVMODEW,
+                DM_DISPLAYORIENTATION, DM_PELSHEIGHT, DM_PELSWIDTH,
+                DMDO_DEFAULT, DMDO_90, ENUM_CURRENT_SETTINGS, CDS_UPDATEREGISTRY,
             };
+
             unsafe {
-                if !vertical {
-                    let _ = ChangeDisplaySettingsW(None, Default::default());
-                    info!("Restored default landscape orientation");
-                } else {
-                    let mut dm = DEVMODEW {
-                        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
-                        dmFields: DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT,
-                        dmPelsWidth: 1080,
-                        dmPelsHeight: 1920,
-                        ..Default::default()
-                    };
-                    dm.Anonymous1.Anonymous2.dmDisplayOrientation = DMDO_90;
-                    let res = ChangeDisplaySettingsW(Some(&dm), Default::default());
-                    info!("Set display orientation to vertical portrait: res={:?}", res);
+                let mut dm = DEVMODEW {
+                    dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+                    ..Default::default()
+                };
+
+                if EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, &mut dm).as_bool() {
+                    let is_already_vertical = dm.Anonymous1.Anonymous2.dmDisplayOrientation == DMDO_90
+                        || dm.dmPelsWidth < dm.dmPelsHeight;
+
+                    if vertical && !is_already_vertical {
+                        let temp = dm.dmPelsWidth;
+                        dm.dmPelsWidth = dm.dmPelsHeight;
+                        dm.dmPelsHeight = temp;
+                        dm.Anonymous1.Anonymous2.dmDisplayOrientation = DMDO_90;
+                        dm.dmFields |= DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT;
+                        let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_UPDATEREGISTRY, None);
+                        info!("Rotated display to vertical portrait: res={:?}", res);
+                    } else if !vertical && is_already_vertical {
+                        let temp = dm.dmPelsWidth;
+                        dm.dmPelsWidth = dm.dmPelsHeight;
+                        dm.dmPelsHeight = temp;
+                        dm.Anonymous1.Anonymous2.dmDisplayOrientation = DMDO_DEFAULT;
+                        dm.dmFields |= DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT;
+                        let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_UPDATEREGISTRY, None);
+                        info!("Restored display to horizontal landscape: res={:?}", res);
+                    }
                 }
             }
         }
