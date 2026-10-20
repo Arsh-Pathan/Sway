@@ -29,9 +29,13 @@ import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.sway.app.R
 import com.sway.app.model.PairedDevice
 import com.sway.app.network.NetworkDiscovery
 import com.sway.app.ui.theme.*
+import com.sway.app.util.NotificationHelper
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
 import java.util.concurrent.Executors
@@ -59,6 +63,15 @@ fun PairingScreen(
     val discovery = remember { NetworkDiscovery() }
     val discoveredHost by discovery.discoveredHost.collectAsState()
 
+    var notifiedHostId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(discoveredHost) {
+        val host = discoveredHost
+        if (host != null && host.deviceId != notifiedHostId) {
+            notifiedHostId = host.deviceId
+            NotificationHelper.notifyHostDiscovered(context, host)
+        }
+    }
+
     LaunchedEffect(Unit) {
         while (true) {
             discovery.discover()
@@ -84,22 +97,15 @@ fun PairingScreen(
         // App Header
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Box(
+            Image(
+                painter = painterResource(id = R.drawable.ic_sway_logo),
+                contentDescription = "Sway Logo",
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(46.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(AccentIndigoGlow),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Smartphone,
-                    contentDescription = null,
-                    tint = AccentIndigoBright,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
+            )
             Column {
                 Text(
                     text = "Sway",

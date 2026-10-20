@@ -1,15 +1,78 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
+    android:viewportWidth="124"
+    android:viewportHeight="124">
+
+    <!-- Outer Squircle Background -->
     <path
-        android:fillColor="#090A0F"
-        android:pathData="M0,0h108v108h-108z"/>
+        android:pathData="M28,0h68a28,28 0 0 1 28,28v68a28,28 0 0 1 -28,28h-68a28,28 0 0 1 -28,-28v-68a28,28 0 0 1 28,-28z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="14"
+                android:startY="8"
+                android:endX="110"
+                android:endY="116"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF242832" />
+                <item android:offset="1.0" android:color="#FF08090C" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Bezel -->
     <path
-        android:fillColor="#6366F1"
-        android:pathData="M34,30 h40 a10,10 0 0 1 10,10 v28 a10,10 0 0 1 -10,10 h-40 a10,10 0 0 1 -10,-10 v-28 a10,10 0 0 1 10,-10 z"/>
+        android:pathData="M29,22h66a6,6 0 0 1 6,6v45a6,6 0 0 1 -6,6h-66a6,6 0 0 1 -6,-6v-45a6,6 0 0 1 6,-6z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="62"
+                android:startY="22"
+                android:endX="62"
+                android:endY="79"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FFFFFFFF" />
+                <item android:offset="1.0" android:color="#FFE7EAF0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Screen Glass -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M48,46 h12 v16 h-12 z"/>
+        android:pathData="M30,27h64a2,2 0 0 1 2,2v43a2,2 0 0 1 -2,2h-64a2,2 0 0 1 -2,-2v-43a2,2 0 0 1 2,-2z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="62"
+                android:startY="27"
+                android:endX="62"
+                android:endY="74"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF171B25" />
+                <item android:offset="1.0" android:color="#FF050609" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Laptop Base -->
+    <path
+        android:pathData="M18,83h88l8,11c1.2,1.7 0,4 -2.2,4H12.2c-2.2,0 -3.4,-2.3 -2.2,-4l8,-11Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="62"
+                android:startY="83"
+                android:endX="62"
+                android:endY="98"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FFFFFFFF" />
+                <item android:offset="1.0" android:color="#FFD9DEE8" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Trackpad / Opening Notch -->
+    <path
+        android:pathData="M52,91h20"
+        android:strokeColor="#FF525866"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"/>
 </vector>
