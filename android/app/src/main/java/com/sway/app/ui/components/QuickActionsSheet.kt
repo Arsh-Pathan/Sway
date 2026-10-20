@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -187,6 +188,7 @@ private fun QuickActionRow(
         onClick = onClick,
         color = SurfaceCard,
         shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -200,13 +202,14 @@ private fun QuickActionRow(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(accentColor.copy(alpha = 0.2f)),
+                    .background(SurfaceDark)
+                    .border(1.dp, SurfaceCardBorder, RoundedCornerShape(10.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = accentColor,
+                    tint = TextPrimary,
                     modifier = Modifier.size(20.dp)
                 )
             }

@@ -417,12 +417,12 @@ fun SessionScreen(
                         touchRipplePos?.let { pos ->
                             androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
                                 drawCircle(
-                                    color = AccentIndigo.copy(alpha = 0.35f),
+                                    color = Color.White.copy(alpha = 0.25f),
                                     radius = 28.dp.toPx(),
                                     center = pos
                                 )
                                 drawCircle(
-                                    color = AccentIndigoBright,
+                                    color = Color.White,
                                     radius = 6.dp.toPx(),
                                     center = pos
                                 )
@@ -482,8 +482,8 @@ fun SessionScreen(
                                 )
                             },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = AccentIndigo,
-                                selectedLabelColor = TextPrimary,
+                                selectedContainerColor = Color.White,
+                                selectedLabelColor = Color.Black,
                                 containerColor = SurfaceDark.copy(alpha = 0.85f),
                                 labelColor = TextSecondary
                             )
@@ -493,10 +493,7 @@ fun SessionScreen(
                         Surface(
                             color = SurfaceDark.copy(alpha = 0.85f),
                             shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(
-                                1.dp,
-                                if (liveFps >= 45) Color(0xFF10B981).copy(alpha = 0.5f) else AccentIndigo.copy(alpha = 0.4f)
-                            )
+                            border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
@@ -507,7 +504,7 @@ fun SessionScreen(
                                     modifier = Modifier
                                         .size(6.dp)
                                         .clip(CircleShape)
-                                        .background(if (liveFps >= 45) Color(0xFF10B981) else Color(0xFFF59E0B))
+                                        .background(Color.White)
                                 )
                                 Text(
                                     text = "${liveFps} FPS",
@@ -520,7 +517,7 @@ fun SessionScreen(
                                     text = "${liveRtt}ms",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = if (liveRtt <= 10) Color(0xFF10B981) else AccentIndigoBright
+                                    color = Color.White
                                 )
                             }
                         }
@@ -538,8 +535,8 @@ fun SessionScreen(
                                 Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = AccentIndigo,
-                                selectedLabelColor = TextPrimary,
+                                selectedContainerColor = Color.White,
+                                selectedLabelColor = Color.Black,
                                 containerColor = SurfaceDark.copy(alpha = 0.85f),
                                 labelColor = TextSecondary
                             )
@@ -548,17 +545,17 @@ fun SessionScreen(
                         // Privacy shield badge
                         if (privacyCurtainActive) {
                             Surface(
-                                color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                color = SurfaceCard,
                                 shape = RoundedCornerShape(16.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF10B981))
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    Icon(Icons.Default.Security, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(14.dp))
-                                    Text("Stealth Active", color = Color(0xFF10B981), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Icon(Icons.Default.Security, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                    Text("Stealth Active", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -579,23 +576,23 @@ fun SessionScreen(
                                 }
                             },
                             colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (zoomScale > 1.0f) AccentIndigo else SurfaceDark.copy(alpha = 0.85f)
+                                containerColor = if (zoomScale > 1.0f) Color.White else SurfaceDark.copy(alpha = 0.85f)
                             )
                         ) {
-                            Icon(Icons.Default.ZoomIn, contentDescription = "Zoom", tint = if (zoomScale > 1.0f) TextPrimary else TextMuted)
+                            Icon(Icons.Default.ZoomIn, contentDescription = "Zoom", tint = if (zoomScale > 1.0f) Color.Black else TextMuted)
                         }
 
                         // Privacy curtain toggle
                         IconButton(
                             onClick = { togglePrivacyCurtain() },
                             colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (privacyCurtainActive) Color(0xFF10B981) else SurfaceDark.copy(alpha = 0.85f)
+                                containerColor = if (privacyCurtainActive) Color.White else SurfaceDark.copy(alpha = 0.85f)
                             )
                         ) {
                             Icon(
                                 Icons.Default.Security,
                                 contentDescription = "Privacy Shield",
-                                tint = if (privacyCurtainActive) Color.White else TextMuted
+                                tint = if (privacyCurtainActive) Color.Black else TextMuted
                             )
                         }
 
@@ -603,13 +600,13 @@ fun SessionScreen(
                         IconButton(
                             onClick = { showResolutionSheet = true },
                             colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) AccentIndigo else SurfaceDark.copy(alpha = 0.85f)
+                                containerColor = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) Color.White else SurfaceDark.copy(alpha = 0.85f)
                             )
                         ) {
                             Icon(
                                 Icons.Default.AspectRatio,
                                 contentDescription = "Resolution & Scaling",
-                                tint = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) TextPrimary else TextMuted
+                                tint = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) Color.Black else TextMuted
                             )
                         }
 
@@ -748,8 +745,8 @@ fun SessionScreen(
                             Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         },
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = AccentIndigo,
-                            selectedLabelColor = TextPrimary,
+                            selectedContainerColor = Color.White,
+                            selectedLabelColor = Color.Black,
                             containerColor = SurfaceDark,
                             labelColor = TextSecondary
                         )
@@ -766,23 +763,23 @@ fun SessionScreen(
                                 }
                             },
                             colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (zoomScale > 1.0f) AccentIndigo else SurfaceDark
+                                containerColor = if (zoomScale > 1.0f) Color.White else SurfaceDark
                             )
                         ) {
-                            Icon(Icons.Default.ZoomIn, contentDescription = "Zoom", tint = if (zoomScale > 1.0f) TextPrimary else TextMuted)
+                            Icon(Icons.Default.ZoomIn, contentDescription = "Zoom", tint = if (zoomScale > 1.0f) Color.Black else TextMuted)
                         }
 
                         // Privacy shield toggle
                         IconButton(
                             onClick = { togglePrivacyCurtain() },
                             colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (privacyCurtainActive) Color(0xFF10B981) else SurfaceDark
+                                containerColor = if (privacyCurtainActive) Color.White else SurfaceDark
                             )
                         ) {
                             Icon(
                                 Icons.Default.Security,
                                 contentDescription = "Privacy Shield",
-                                tint = if (privacyCurtainActive) Color.White else TextMuted
+                                tint = if (privacyCurtainActive) Color.Black else TextMuted
                             )
                         }
 
@@ -790,13 +787,13 @@ fun SessionScreen(
                         IconButton(
                             onClick = { showResolutionSheet = true },
                             colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) AccentIndigo else SurfaceDark
+                                containerColor = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) Color.White else SurfaceDark
                             )
                         ) {
                             Icon(
                                 Icons.Default.AspectRatio,
                                 contentDescription = "Resolution & Scaling",
-                                tint = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) TextPrimary else TextMuted
+                                tint = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) Color.Black else TextMuted
                             )
                         }
 
@@ -804,13 +801,13 @@ fun SessionScreen(
                         IconButton(
                             onClick = { toggleVerticalPcMode() },
                             colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (isVerticalPcMode) AccentIndigo else SurfaceDark
+                                containerColor = if (isVerticalPcMode) Color.White else SurfaceDark
                             )
                         ) {
                             Icon(
                                 Icons.Default.StayCurrentPortrait,
                                 contentDescription = "Fit Vertical PC",
-                                tint = if (isVerticalPcMode) TextPrimary else TextMuted
+                                tint = if (isVerticalPcMode) Color.Black else TextMuted
                             )
                         }
 
@@ -969,12 +966,12 @@ fun SessionScreen(
                         touchRipplePos?.let { pos ->
                             androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
                                 drawCircle(
-                                    color = AccentIndigo.copy(alpha = 0.35f),
+                                    color = Color.White.copy(alpha = 0.25f),
                                     radius = 28.dp.toPx(),
                                     center = pos
                                 )
                                 drawCircle(
-                                    color = AccentIndigoBright,
+                                    color = Color.White,
                                     radius = 6.dp.toPx(),
                                     center = pos
                                 )

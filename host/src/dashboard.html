@@ -4,71 +4,205 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sway - Desktop Control Center</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 124 124'%3E%3Crect width='124' height='124' rx='28' fill='%23111'/%3E%3Crect x='23' y='22' width='78' height='57' rx='6' fill='%23fff'/%3E%3Crect x='28' y='27' width='68' height='47' rx='2' fill='%23000'/%3E%3Cpath d='M18 83h88l8 11c1.2 1.7 0 4-2.2 4H12.2c-2.2 0-3.4-2.3-2.2-4l8-11Z' fill='%23fff'/%3E%3C/svg%3E">
   <style>
     :root {
-      --bg: #0b0f19;
-      --card: #131c2e;
-      --card-border: #1e293b;
-      --accent: #6366f1;
-      --accent-glow: rgba(99, 102, 241, 0.35);
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
-      --green: #10b981;
-      --green-glow: rgba(16, 185, 129, 0.25);
-      --red: #ef4444;
+      --bg: #000000;
+      --card: #0d0d0d;
+      --card-border: #222222;
+      --card-border-hover: #383838;
+      --accent: #ffffff;
+      --accent-text: #000000;
+      --text: #ffffff;
+      --text-muted: #8e8e93;
+      --pill-bg: #141414;
+      --pill-border: #2a2a2a;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body { background: var(--bg); color: var(--text); padding: 32px 16px; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 36px 16px; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
     .container { max-width: 960px; width: 100%; display: flex; flex-direction: column; gap: 20px; }
-    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--card-border); padding-bottom: 18px; }
-    .title-group { display: flex; align-items: center; gap: 14px; }
-    .logo-badge { width: 44px; height: 44px; border-radius: 12px; background: var(--accent); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 20px var(--accent-glow); font-size: 22px; font-weight: bold; }
-    .status-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; background: var(--green-glow); color: var(--green); border: 1px solid var(--green); }
+    
+    .header { 
+      display: flex; 
+      justify-content: space-between; 
+      align-items: center; 
+      border-bottom: 1px solid var(--card-border); 
+      padding-bottom: 20px; 
+    }
+    .title-group { display: flex; align-items: center; gap: 16px; }
+    .logo-container { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; }
+    .logo-container svg { width: 100%; height: 100%; border-radius: 12px; }
+    
+    .status-pill { 
+      display: inline-flex; 
+      align-items: center; 
+      gap: 8px; 
+      padding: 6px 14px; 
+      border-radius: 20px; 
+      font-size: 13px; 
+      font-weight: 600; 
+      background: var(--pill-bg); 
+      color: var(--text); 
+      border: 1px solid var(--pill-border); 
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
+    }
+    
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
-    .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 12px; position: relative; overflow: hidden; }
-    .card h3 { font-size: 15px; font-weight: 600; color: var(--text-muted); display: flex; align-items: center; gap: 8px; }
-    .val { font-size: 20px; font-weight: 700; color: var(--text); }
-    .btn { background: var(--accent); color: white; border: none; padding: 10px 16px; border-radius: 10px; font-weight: 600; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; text-decoration: none; }
-    .btn:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 14px var(--accent-glow); }
-    .btn-stealth { background: #1e293b; color: var(--text); border: 1px solid var(--card-border); }
-    .btn-stealth:hover { background: #334155; }
-    .btn-stealth.active { background: var(--green); color: black; font-weight: bold; box-shadow: 0 0 16px var(--green-glow); }
-    .btn-danger { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; }
-    .btn-danger:hover { background: var(--red); color: white; }
+    .card { 
+      background: var(--card); 
+      border: 1px solid var(--card-border); 
+      border-radius: 16px; 
+      padding: 20px; 
+      display: flex; 
+      flex-direction: column; 
+      gap: 12px; 
+      transition: border-color 0.2s; 
+    }
+    .card:hover { border-color: var(--card-border-hover); }
+    .card h3 { font-size: 14px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px; }
+    .val { font-size: 18px; font-weight: 700; color: var(--text); }
+    
+    .btn { 
+      background: var(--accent); 
+      color: var(--accent-text); 
+      border: 1px solid transparent; 
+      padding: 10px 16px; 
+      border-radius: 10px; 
+      font-weight: 700; 
+      cursor: pointer; 
+      transition: all 0.2s; 
+      display: inline-flex; 
+      align-items: center; 
+      justify-content: center; 
+      gap: 8px; 
+      font-size: 13px; 
+      text-decoration: none; 
+    }
+    .btn:hover { opacity: 0.88; transform: translateY(-1px); }
+    
+    .btn-stealth { 
+      background: #141414; 
+      color: var(--text); 
+      border: 1px solid var(--card-border); 
+    }
+    .btn-stealth:hover { 
+      background: #202020; 
+      border-color: #383838; 
+    }
+    .btn-stealth.active { 
+      background: #ffffff; 
+      color: #000000; 
+      font-weight: 700; 
+      border-color: #ffffff; 
+    }
+    
+    .btn-danger { 
+      background: #1a1a1a; 
+      color: #ffffff; 
+      border: 1px solid #444444; 
+    }
+    .btn-danger:hover { 
+      background: #ffffff; 
+      color: #000000; 
+    }
+    
     .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
     .badge-bar { display: flex; gap: 8px; flex-wrap: wrap; }
-    .badge { padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; background: #1e293b; color: #cbd5e1; }
-    .preview-canvas { width: 100%; height: auto; max-height: 380px; border-radius: 10px; border: 1px solid var(--card-border); background: #000; object-fit: contain; }
-    .footer { text-align: center; color: var(--text-muted); font-size: 13px; margin-top: 16px; }
-    input[type="text"] { background: #0f172a; border: 1px solid var(--card-border); border-radius: 8px; color: var(--text); padding: 8px 12px; font-size: 13px; outline: none; width: 100%; }
-    input[type="text"]:focus { border-color: var(--accent); }
+    .badge { 
+      padding: 4px 10px; 
+      border-radius: 6px; 
+      font-size: 12px; 
+      font-weight: 600; 
+      background: #141414; 
+      border: 1px solid var(--card-border); 
+      color: #e4e4e7; 
+    }
+    
+    .preview-canvas { 
+      width: 100%; 
+      height: auto; 
+      max-height: 380px; 
+      border-radius: 10px; 
+      border: 1px solid var(--card-border); 
+      background: #000000; 
+      object-fit: contain; 
+    }
+    
+    .footer { text-align: center; color: var(--text-muted); font-size: 13px; margin-top: 20px; }
+    input[type="text"] { 
+      background: #141414; 
+      border: 1px solid var(--card-border); 
+      border-radius: 8px; 
+      color: var(--text); 
+      padding: 9px 12px; 
+      font-size: 13px; 
+      outline: none; 
+      width: 100%; 
+      transition: border-color 0.2s; 
+    }
+    input[type="text"]:focus { border-color: #ffffff; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
       <div class="title-group">
-        <div class="logo-badge">⚡</div>
+        <div class="logo-container">
+          <svg viewBox="0 0 124 124" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="swayBg" x1="14" y1="8" x2="110" y2="116" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#242832"/>
+                <stop offset="1" stop-color="#08090C"/>
+              </linearGradient>
+              <linearGradient id="swayScreen" x1="62" y1="27" x2="62" y2="74" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#171B25"/>
+                <stop offset="1" stop-color="#050609"/>
+              </linearGradient>
+              <linearGradient id="swayBody" x1="62" y1="83" x2="62" y2="98" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#FFFFFF"/>
+                <stop offset="1" stop-color="#D9DEE8"/>
+              </linearGradient>
+              <linearGradient id="swayBezel" x1="62" y1="22" x2="62" y2="79" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#FFFFFF"/>
+                <stop offset="1" stop-color="#E7EAF0"/>
+              </linearGradient>
+            </defs>
+            <rect width="124" height="124" rx="28" fill="url(#swayBg)"/>
+            <rect x="23" y="22" width="78" height="57" rx="6" fill="url(#swayBezel)"/>
+            <rect x="28" y="27" width="68" height="47" rx="2" fill="url(#swayScreen)"/>
+            <path d="M18 83h88l8 11c1.2 1.7 0 4-2.2 4H12.2c-2.2 0-3.4-2.3-2.2-4l8-11Z" fill="url(#swayBody)"/>
+            <path d="M52 91h20" stroke="#525866" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
         <div>
           <h2>Sway Control Center</h2>
           <p style="color: var(--text-muted); font-size: 13px;">Ultra-Low Latency Windows Remote Host Daemon</p>
         </div>
       </div>
-      <div style="display: flex; gap: 10px; align-items: center;">
-        <a href="/sway.apk" class="btn" style="background: #10b981; color: black; font-weight: bold;">
+      <div style="display: flex; gap: 12px; align-items: center;">
+        <a href="/sway.apk" class="btn">
           📲 Download Sway APK
         </a>
-        <div class="status-pill">● Host Online</div>
+        <div class="status-pill">
+          <div class="status-dot"></div>
+          Host Online
+        </div>
       </div>
     </div>
 
     <!-- Live Stream Preview -->
     <div class="card">
       <div style="display: flex; justify-content: space-between; align-items: center;">
-        <h3>🖥️ Live Desktop Stream Monitor</h3>
+        <h3>Live Desktop Stream Monitor</h3>
         <div style="display: flex; gap: 8px;">
-          <span id="fpsBadge" class="badge" style="background: var(--accent); color: white;">Connecting...</span>
-          <span class="badge" style="background: #065f46; color: #34d399;">Direct3D 11</span>
+          <span id="fpsBadge" class="badge">Connecting...</span>
+          <span class="badge" style="background: #ffffff; color: #000000; font-weight: 700;">Direct3D 11</span>
         </div>
       </div>
       <img id="liveImg" class="preview-canvas" alt="Live Desktop View" />
@@ -77,14 +211,14 @@
     <div class="grid">
       <!-- Card 1: Connection Endpoints -->
       <div class="card">
-        <h3>🌐 Connection Info</h3>
+        <h3>Connection Info</h3>
         <div>
           <p style="font-size: 12px; color: var(--text-muted);">Direct Wi-Fi / LAN (1ms Latency):</p>
-          <div class="val" style="font-size: 16px; color: #38bdf8;">ws://0.0.0.0:8089/ws</div>
+          <div class="val" style="font-size: 16px;">ws://0.0.0.0:8089/ws</div>
         </div>
         <div>
           <p style="font-size: 12px; color: var(--text-muted);">Cloud Relay (Global 4G/5G):</p>
-          <div style="font-size: 13px; color: #a5b4fc; font-weight: 600;">51.79.249.143:8080</div>
+          <div style="font-size: 13px; color: #d4d4d8; font-weight: 600;">51.79.249.143:8080</div>
         </div>
         <div class="badge-bar">
           <span class="badge">UDP Beacon: 8088</span>
@@ -94,8 +228,8 @@
 
       <!-- Card 2: Stealth Privacy Curtain -->
       <div class="card">
-        <h3>🛡️ Stealth Privacy Curtain</h3>
-        <p style="font-size: 12px; color: var(--text-muted);">Blacks out laptop screen so people nearby cannot see what you are doing while you control it remotely.</p>
+        <h3>Stealth Privacy Curtain</h3>
+        <p style="font-size: 12px; color: var(--text-muted);">Blacks out laptop screen with click-through transparency so nearby people cannot see your display.</p>
         <button id="btnPrivacy" class="btn btn-stealth" onclick="togglePrivacy()">
           🛡️ Enable Privacy Shield
         </button>
@@ -103,7 +237,7 @@
 
       <!-- Card 3: Display & Mobile Fit -->
       <div class="card">
-        <h3>📱 Display & Mobile Fit</h3>
+        <h3>Display & Mobile Fit</h3>
         <p style="font-size: 12px; color: var(--text-muted);">Rotate PC to portrait to fill phone screen without letterbox bars, or toggle 720p resolution.</p>
         <div class="btn-row">
           <button class="btn" style="flex: 1;" onclick="setOrientation(true)">📱 Fit Vertical PC</button>
@@ -117,7 +251,7 @@
 
       <!-- Card 4: Quick Power & System Actions -->
       <div class="card">
-        <h3>⚡ Power & System Shortcuts</h3>
+        <h3>Power & System Shortcuts</h3>
         <div class="btn-row">
           <button class="btn btn-stealth" style="flex: 1;" onclick="sendSystemCommand(1)">🔒 Lock PC</button>
           <button class="btn btn-stealth" style="flex: 1;" onclick="sendSystemCommand(2)">🖥️ Win+D</button>
@@ -131,7 +265,7 @@
 
       <!-- Card 5: Quick Clipboard Sync -->
       <div class="card">
-        <h3>📋 Clipboard Quick-Sync</h3>
+        <h3>Clipboard Quick-Sync</h3>
         <p style="font-size: 12px; color: var(--text-muted);">Send text directly into Windows clipboard from your browser:</p>
         <div style="display: flex; gap: 8px;">
           <input type="text" id="clipText" placeholder="Type or paste text to send to PC..." />

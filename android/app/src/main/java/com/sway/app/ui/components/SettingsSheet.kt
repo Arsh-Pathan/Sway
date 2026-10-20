@@ -1,6 +1,7 @@
 package com.sway.app.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -113,8 +114,10 @@ fun SettingsSheet(
                     checked = hapticsEnabled,
                     onCheckedChange = onHapticsToggle,
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = TextPrimary,
-                        checkedTrackColor = AccentIndigo
+                        checkedThumbColor = androidx.compose.ui.graphics.Color.Black,
+                        checkedTrackColor = androidx.compose.ui.graphics.Color.White,
+                        uncheckedThumbColor = TextMuted,
+                        uncheckedTrackColor = SurfaceCard
                     )
                 )
             }
@@ -178,7 +181,8 @@ fun QualityOption(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
-            .background(if (isSelected) AccentIndigoGlow else SurfaceCard)
+            .background(if (isSelected) AccentWhite else SurfaceCard)
+            .border(1.dp, if (isSelected) AccentWhite else SurfaceCardBorder, RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
             .padding(vertical = 10.dp, horizontal = 4.dp),
         contentAlignment = Alignment.Center
@@ -187,7 +191,7 @@ fun QualityOption(
             text = label,
             fontSize = 11.sp,
             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-            color = if (isSelected) AccentIndigoBright else TextSecondary,
+            color = if (isSelected) androidx.compose.ui.graphics.Color.Black else TextSecondary,
             lineHeight = 15.sp,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )

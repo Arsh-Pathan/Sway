@@ -124,9 +124,9 @@ fun PairingScreen(
         discoveredHost?.let { host ->
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                color = AccentIndigo.copy(alpha = 0.2f),
+                color = SurfaceCard,
                 shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, AccentIndigo)
+                border = BorderStroke(1.dp, SurfaceCardBorder)
             ) {
                 Row(
                     modifier = Modifier.padding(14.dp),
@@ -136,7 +136,7 @@ fun PairingScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             "✨ Auto-Discovered Laptop",
-                            color = AccentIndigoBright,
+                            color = AccentWhite,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -156,7 +156,10 @@ fun PairingScreen(
                         onClick = {
                             onConnect("${host.ipAddress}:${host.port}", host.deviceId, host.token)
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentIndigo),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = androidx.compose.ui.graphics.Color.White,
+                            contentColor = androidx.compose.ui.graphics.Color.Black
+                        ),
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Text("Auto-Connect", fontWeight = FontWeight.Bold)
@@ -281,8 +284,8 @@ fun PairingScreen(
                         label = { Text("Direct Wi-Fi (1ms)", fontSize = 12.sp) },
                         modifier = Modifier.weight(1f),
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = AccentIndigo,
-                            selectedLabelColor = TextPrimary
+                            selectedContainerColor = androidx.compose.ui.graphics.Color.White,
+                            selectedLabelColor = androidx.compose.ui.graphics.Color.Black
                         )
                     )
                     FilterChip(
@@ -293,8 +296,8 @@ fun PairingScreen(
                         label = { Text("Cloud Relay (4G)", fontSize = 12.sp) },
                         modifier = Modifier.weight(1f),
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = AccentIndigo,
-                            selectedLabelColor = TextPrimary
+                            selectedContainerColor = androidx.compose.ui.graphics.Color.White,
+                            selectedLabelColor = androidx.compose.ui.graphics.Color.Black
                         )
                     )
                 }
@@ -306,7 +309,7 @@ fun PairingScreen(
                     placeholder = { Text("192.168.x.x:8089 or vps:8080") },
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AccentIndigo,
+                        focusedBorderColor = AccentWhite,
                         unfocusedBorderColor = SurfaceCardBorder,
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
@@ -321,7 +324,7 @@ fun PairingScreen(
                     placeholder = { Text("sway-laptop-XXXX") },
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AccentIndigo,
+                        focusedBorderColor = AccentWhite,
                         unfocusedBorderColor = SurfaceCardBorder,
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
@@ -336,7 +339,7 @@ fun PairingScreen(
                     placeholder = { Text("Enter secret token") },
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AccentIndigo,
+                        focusedBorderColor = AccentWhite,
                         unfocusedBorderColor = SurfaceCardBorder,
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary
@@ -355,7 +358,12 @@ fun PairingScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(50.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentIndigo),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = androidx.compose.ui.graphics.Color.White,
+                        contentColor = androidx.compose.ui.graphics.Color.Black,
+                        disabledContainerColor = SurfaceCard,
+                        disabledContentColor = TextMuted
+                    ),
                     shape = RoundedCornerShape(12.dp),
                     enabled = deviceId.isNotBlank() && token.isNotBlank()
                 ) {

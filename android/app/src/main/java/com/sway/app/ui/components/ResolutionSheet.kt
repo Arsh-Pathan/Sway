@@ -1,6 +1,7 @@
 package com.sway.app.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -175,7 +176,8 @@ private fun FitModeChip(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(if (isSelected) AccentIndigo else SurfaceCard)
+            .background(if (isSelected) AccentWhite else SurfaceCard)
+            .border(1.dp, if (isSelected) AccentWhite else SurfaceCardBorder, RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
             .padding(vertical = 10.dp, horizontal = 6.dp),
         contentAlignment = Alignment.Center
@@ -185,12 +187,12 @@ private fun FitModeChip(
                 text = title,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
-                color = if (isSelected) Color.White else TextPrimary
+                color = if (isSelected) Color.Black else TextPrimary
             )
             Text(
                 text = desc,
                 fontSize = 10.sp,
-                color = if (isSelected) Color.White.copy(alpha = 0.85f) else TextSecondary
+                color = if (isSelected) Color(0xFF333333) else TextSecondary
             )
         }
     }
@@ -205,9 +207,9 @@ private fun ResolutionRow(
 ) {
     Surface(
         onClick = onClick,
-        color = if (isSelected) AccentIndigoGlow else SurfaceCard,
+        color = if (isSelected) SurfaceElevated else SurfaceCard,
         shape = RoundedCornerShape(12.dp),
-        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.5.dp, AccentIndigo) else null,
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (isSelected) AccentWhite else SurfaceCardBorder),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -222,7 +224,7 @@ private fun ResolutionRow(
                     text = title,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = if (isSelected) AccentIndigoBright else TextPrimary
+                    color = if (isSelected) AccentWhite else TextPrimary
                 )
                 Text(
                     text = subtitle,
@@ -234,7 +236,7 @@ private fun ResolutionRow(
                 Icon(
                     imageVector = Icons.Default.Check,
                     contentDescription = "Selected",
-                    tint = AccentIndigoBright,
+                    tint = AccentWhite,
                     modifier = Modifier.size(18.dp)
                 )
             }

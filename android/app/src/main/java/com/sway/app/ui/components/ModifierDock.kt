@@ -11,7 +11,9 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.foundation.border
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -79,6 +81,7 @@ fun ModifierDock(
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(SurfaceDark)
+            .border(1.dp, SurfaceCardBorder, RoundedCornerShape(16.dp))
             .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
@@ -206,6 +209,7 @@ fun ModifierKeyButton(
             .height(38.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(if (isActive) KeyModifierActive else KeyModifierInactive)
+            .border(1.dp, if (isActive) AccentWhite else SurfaceCardBorder, RoundedCornerShape(8.dp))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -213,7 +217,7 @@ fun ModifierKeyButton(
             text = label,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            color = if (isActive) TextPrimary else TextSecondary
+            color = if (isActive) Color.Black else TextPrimary
         )
     }
 }
@@ -229,6 +233,7 @@ fun ActionKeyButton(
             .height(38.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(SurfaceCard)
+            .border(1.dp, SurfaceCardBorder, RoundedCornerShape(8.dp))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -252,6 +257,7 @@ fun IconButton(
             .height(38.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(SurfaceCard)
+            .border(1.dp, SurfaceCardBorder, RoundedCornerShape(8.dp))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
