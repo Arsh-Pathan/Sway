@@ -1,0 +1,36 @@
+# Environment & OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.local
+
+# Rust
+host/target/
+host/**/*.rs.bk
+host/Cargo.lock
+
+# Android & Gradle
+.gradle/
+build/
+android/*/build/
+android/.gradle/
+android/local.properties
+*.iml
+.idea/
+*.apk
+*.aab
+
+# Node.js (if signaling uses Node)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Go (if signaling uses Go)
+signaling/bin/
+signaling/*.exe
+
+# Docker & Logs
+*.log
+.env
+.env.local
