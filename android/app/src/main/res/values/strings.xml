@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Sway</string>
+    <string name="connect">Connect</string>
+    <string name="scan_qr">Scan Host QR</string>
+    <string name="pairing_instructions">Point your camera at the QR code displayed in the Sway desktop application on your laptop.</string>
+    <string name="trackpad">Trackpad</string>
+    <string name="keyboard">Keyboard</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="settings">Settings</string>
+    <string name="sensitivity">Cursor Sensitivity</string>
+    <string name="scroll_speed">Scroll Speed</string>
+    <string name="haptics">Haptic Feedback</string>
+    <string name="stream_quality">Stream Quality</string>
+</resources>
