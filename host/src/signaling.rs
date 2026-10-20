@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use qrcode::render::unicode;
@@ -118,6 +118,44 @@ impl HostSignaling {
 
         let simulator = self.simulator.clone();
         let is_streaming = Arc::new(AtomicBool::new(false));
+        let active_monitor = Arc::new(AtomicUsize::new(0));
+        let stream_quality = Arc::new(AtomicU8::new(60));
+
+        let start_streaming = {
+            let is_streaming = is_streaming.clone();
+            let active_monitor = active_monitor.clone();
+            let stream_quality = stream_quality.clone();
+            let out_tx = out_tx.clone();
+            move || {
+                if !is_streaming.load(Ordering::SeqCst) {
+                    is_streaming.store(true, Ordering::SeqCst);
+                    let stream_flag = is_streaming.clone();
+                    let monitor_flag = active_monitor.clone();
+                    let quality_flag = stream_quality.clone();
+                    let frame_tx = out_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let mut capture = ScreenCapture::new();
+                        let target_interval = std::time::Duration::from_millis(33); // ~30 fps
+                        info!("Started screen capture & streaming loop at 30 FPS");
+                        while stream_flag.load(Ordering::Relaxed) {
+                            let start = std::time::Instant::now();
+                            capture.active_monitor = monitor_flag.load(Ordering::Relaxed);
+                            let q = quality_flag.load(Ordering::Relaxed);
+                            if let Some(frame) = capture.capture_frame_jpeg(q) {
+                                if frame_tx.blocking_send(Message::Binary(frame)).is_err() {
+                                    break;
+                                }
+                            }
+                            let elapsed = start.elapsed();
+                            if elapsed < target_interval {
+                                std::thread::sleep(target_interval - elapsed);
+                            }
+                        }
+                        info!("Screen capture loop stopped");
+                    });
+                }
+            }
+        };
 
         while let Some(msg) = read.next().await {
             match msg {
@@ -129,31 +167,7 @@ impl HostSignaling {
                                     if p.to_string().contains("client_joined") {
                                         info!("Mobile client paired and connected!");
                                         PowerManager::set_keep_awake(true);
-
-                                        // Start screen streaming to mobile client
-                                        if !is_streaming.load(Ordering::SeqCst) {
-                                            is_streaming.store(true, Ordering::SeqCst);
-                                            let stream_flag = is_streaming.clone();
-                                            let frame_tx = out_tx.clone();
-                                            tokio::task::spawn_blocking(move || {
-                                                let capture = ScreenCapture::new();
-                                                let target_interval = std::time::Duration::from_millis(33); // ~30 fps
-                                                info!("Started screen capture & streaming loop at 30 FPS");
-                                                while stream_flag.load(Ordering::Relaxed) {
-                                                    let start = std::time::Instant::now();
-                                                    if let Some(frame) = capture.capture_frame_jpeg(60) {
-                                                        if frame_tx.blocking_send(Message::Binary(frame)).is_err() {
-                                                            break;
-                                                        }
-                                                    }
-                                                    let elapsed = start.elapsed();
-                                                    if elapsed < target_interval {
-                                                        std::thread::sleep(target_interval - elapsed);
-                                                    }
-                                                }
-                                                info!("Screen capture loop stopped");
-                                            });
-                                        }
+                                        start_streaming();
                                     }
                                 }
                             }
@@ -175,7 +189,22 @@ impl HostSignaling {
                 }
                 Ok(Message::Binary(bin)) => {
                     // Direct input packet forwarded over WebSocket or DataChannel
+                    start_streaming();
                     if let Ok(packet) = InputPacket::parse(&bin) {
+                        match &packet {
+                            InputPacket::SwitchMonitor { monitor_index } => {
+                                active_monitor.store(*monitor_index as usize, Ordering::SeqCst);
+                            }
+                            InputPacket::SetQuality { mode } => {
+                                let q = match mode {
+                                    0 => 40,
+                                    1 => 60,
+                                    _ => 80,
+                                };
+                                stream_quality.store(q, Ordering::SeqCst);
+                            }
+                            _ => {}
+                        }
                         simulator.dispatch(packet);
                     }
                 }

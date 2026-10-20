@@ -1,4 +1,7 @@
+use image::codecs::jpeg::JpegEncoder;
+use image::ColorType;
 use tracing::info;
+use xcap::Monitor;
 
 #[derive(Debug, Clone)]
 pub struct MonitorInfo {
@@ -10,26 +13,54 @@ pub struct MonitorInfo {
 }
 
 pub struct ScreenCapture {
-    #[allow(dead_code)]
     pub active_monitor: usize,
     pub monitors: Vec<MonitorInfo>,
 }
 
 impl ScreenCapture {
     pub fn new() -> Self {
+        #[cfg(windows)]
+        {
+            extern "system" {
+                fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
+                fn SetThreadDesktop(hDesktop: isize) -> i32;
+            }
+            unsafe {
+                let h_desk = OpenInputDesktop(0, 0, 0x01FF);
+                if h_desk != 0 {
+                    let _ = SetThreadDesktop(h_desk);
+                }
+            }
+        }
+
         let monitors = Self::detect_monitors();
+        let mut active_index = 0;
+
+        // Auto-detect which display actually has active desktop content (ignoring alpha channel)
+        if let Ok(all) = Monitor::all() {
+            for (idx, m) in all.iter().enumerate() {
+                if let Ok(img) = m.capture_image() {
+                    let has_content = img.chunks_exact(4).any(|c| c[0] > 15 || c[1] > 15 || c[2] > 15);
+                    if has_content {
+                        active_index = idx;
+                        info!("Auto-detected active desktop stream on Monitor #{} ({:?})", idx, m.name());
+                        break;
+                    }
+                }
+            }
+        }
+
         info!("Detected {} connected monitor(s)", monitors.len());
         for m in &monitors {
             info!("  Monitor #{}: {} ({}x{}) primary={}", m.index, m.name, m.width, m.height, m.is_primary);
         }
 
         Self {
-            active_monitor: 0,
+            active_monitor: active_index,
             monitors,
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_active_monitor(&mut self, index: usize) -> bool {
         if index < self.monitors.len() {
             self.active_monitor = index;
@@ -41,129 +72,137 @@ impl ScreenCapture {
     }
 
     pub fn detect_monitors() -> Vec<MonitorInfo> {
+        if let Ok(all) = Monitor::all() {
+            if !all.is_empty() {
+                return all
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, m)| {
+                        let name = m.name().unwrap_or_else(|_| format!("Display #{}", i));
+                        let width = m.width().unwrap_or(1920) as i32;
+                        let height = m.height().unwrap_or(1080) as i32;
+                        let is_primary = m.is_primary().unwrap_or(false);
+                        MonitorInfo {
+                            index: i,
+                            name,
+                            width,
+                            height,
+                            is_primary,
+                        }
+                    })
+                    .collect();
+            }
+        }
+
+        vec![MonitorInfo {
+            index: 0,
+            name: "Primary Display".to_string(),
+            width: 1920,
+            height: 1080,
+            is_primary: true,
+        }]
+    }
+
+    pub fn capture_frame_jpeg(&self, quality: u8) -> Option<Vec<u8>> {
         #[cfg(windows)]
         {
-            use windows::Win32::UI::WindowsAndMessaging::{
-                GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
-            };
-
+            extern "system" {
+                fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
+                fn SetThreadDesktop(hDesktop: isize) -> i32;
+            }
             unsafe {
-                let width = GetSystemMetrics(SM_CXSCREEN);
-                let height = GetSystemMetrics(SM_CYSCREEN);
-
-                vec![MonitorInfo {
-                    index: 0,
-                    name: "Primary Display".to_string(),
-                    width,
-                    height,
-                    is_primary: true,
-                }]
+                let h_desk = OpenInputDesktop(0, 0, 0x01FF);
+                if h_desk != 0 {
+                    let _ = SetThreadDesktop(h_desk);
+                }
             }
         }
 
-        #[cfg(not(windows))]
+        let all_monitors = Monitor::all().ok()?;
+        if all_monitors.is_empty() {
+            return None;
+        }
+
+        let monitor = if self.active_monitor < all_monitors.len() {
+            &all_monitors[self.active_monitor]
+        } else {
+            all_monitors
+                .iter()
+                .find(|m| m.is_primary().unwrap_or(false))
+                .unwrap_or(&all_monitors[0])
+        };
+
+        let rgba_image = match monitor.capture_image() {
+            Ok(img) => {
+                let has_rgb = img.chunks_exact(4).any(|c| c[0] > 15 || c[1] > 15 || c[2] > 15);
+                if !has_rgb && all_monitors.len() > 1 {
+                    let alt_idx = (self.active_monitor + 1) % all_monitors.len();
+                    if let Ok(alt_img) = all_monitors[alt_idx].capture_image() {
+                        if alt_img.chunks_exact(4).any(|c| c[0] > 15 || c[1] > 15 || c[2] > 15) {
+                            alt_img
+                        } else {
+                            img
+                        }
+                    } else {
+                        img
+                    }
+                } else {
+                    img
+                }
+            }
+            Err(_) => return None,
+        };
+        let width = rgba_image.width();
+        let height = rgba_image.height();
+
+        // Downscale to 1280 max width for 30+ FPS low-latency streaming
+        let target_image = if width > 1280 {
+            let target_w = 1280;
+            let target_h = (height * 1280) / width;
+            image::imageops::resize(
+                &rgba_image,
+                target_w,
+                target_h,
+                image::imageops::FilterType::Nearest,
+            )
+        } else {
+            rgba_image
+        };
+
+        let rgb_image = image::DynamicImage::ImageRgba8(target_image).into_rgb8();
+
+        let mut jpeg_bytes = Vec::new();
+        let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_bytes, quality);
+        if encoder
+            .encode(
+                rgb_image.as_raw(),
+                rgb_image.width(),
+                rgb_image.height(),
+                ColorType::Rgb8.into(),
+            )
+            .is_ok()
         {
-            vec![MonitorInfo {
-                index: 0,
-                name: "Virtual Display".to_string(),
-                width: 1920,
-                height: 1080,
-                is_primary: true,
-            }]
+            Some(jpeg_bytes)
+        } else {
+            None
         }
     }
+}
 
-    #[cfg(windows)]
-    pub fn capture_frame_jpeg(&self, quality: u8) -> Option<Vec<u8>> {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::Graphics::Gdi::{
-            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-            GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-            DIB_RGB_COLORS, SRCCOPY,
-        };
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
-        };
-        use image::codecs::jpeg::JpegEncoder;
-        use image::ColorType;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        unsafe {
-            let width = GetSystemMetrics(SM_CXSCREEN);
-            let height = GetSystemMetrics(SM_CYSCREEN);
-            if width <= 0 || height <= 0 {
-                return None;
-            }
-
-            let hdc_screen = GetDC(HWND(std::ptr::null_mut()));
-            if hdc_screen.0.is_null() {
-                return None;
-            }
-
-            let hdc_mem = CreateCompatibleDC(hdc_screen);
-            let h_bitmap = CreateCompatibleBitmap(hdc_screen, width, height);
-            let old_bmp = SelectObject(hdc_mem, h_bitmap);
-
-            // Blit screen to memory DC
-            let _ = BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY);
-
-            let mut bmi = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width,
-                    biHeight: -height, // top-down bitmap
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [windows::Win32::Graphics::Gdi::RGBQUAD::default()],
-            };
-
-            let mut bgra_buf: Vec<u8> = vec![0u8; (width * height * 4) as usize];
-            GetDIBits(
-                hdc_mem,
-                h_bitmap,
-                0,
-                height as u32,
-                Some(bgra_buf.as_mut_ptr() as *mut _),
-                &mut bmi,
-                DIB_RGB_COLORS,
-            );
-
-            // Cleanup GDI objects
-            let _ = SelectObject(hdc_mem, old_bmp);
-            let _ = DeleteObject(h_bitmap);
-            let _ = DeleteDC(hdc_mem);
-            let _ = ReleaseDC(HWND(std::ptr::null_mut()), hdc_screen);
-
-            // Convert BGRA to RGB
-            let mut rgb_buf = Vec::with_capacity((width * height * 3) as usize);
-            for chunk in bgra_buf.chunks_exact(4) {
-                rgb_buf.push(chunk[2]); // R
-                rgb_buf.push(chunk[1]); // G
-                rgb_buf.push(chunk[0]); // B
-            }
-
-            // Encode to JPEG
-            let mut jpeg_bytes = Vec::new();
-            let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_bytes, quality);
-            if encoder
-                .encode(&rgb_buf, width as u32, height as u32, ColorType::Rgb8.into())
-                .is_ok()
-            {
-                Some(jpeg_bytes)
-            } else {
-                None
-            }
-        }
-    }
-
-    #[cfg(not(windows))]
-    pub fn capture_frame_jpeg(&self, _quality: u8) -> Option<Vec<u8>> {
-        None
+    #[test]
+    fn test_capture_screen() {
+        let capture = ScreenCapture::new();
+        let frame = capture.capture_frame_jpeg(50);
+        assert!(frame.is_some(), "Capture failed to produce a frame");
+        let bytes = frame.unwrap();
+        println!("Captured JPEG size: {} bytes", bytes.len());
+        assert!(bytes.len() > 1000);
+        assert_eq!(bytes[0], 0xFF);
+        assert_eq!(bytes[1], 0xD8);
+        assert_eq!(bytes[2], 0xFF);
     }
 }
