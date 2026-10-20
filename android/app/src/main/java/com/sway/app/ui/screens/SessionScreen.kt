@@ -3,6 +3,7 @@ package com.sway.app.ui.screens
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -239,6 +240,10 @@ fun SessionScreen(
         webRtcManager.sendInput(InputEvent.ChangeOrientation(false))
         webRtcManager.sendInput(InputEvent.ChangeResolution(InputEvent.ChangeResolution.DEFAULT))
         onDisconnect()
+    }
+
+    BackHandler {
+        handleDisconnect()
     }
 
     DisposableEffect(Unit) {

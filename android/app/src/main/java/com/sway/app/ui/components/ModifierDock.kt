@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -159,7 +161,7 @@ fun ModifierDock(
                 onClick = { sendKeyPress(VK_BACK) }
             )
             IconButton(
-                icon = Icons.Default.ArrowBack,
+                icon = Icons.AutoMirrored.Filled.ArrowBack,
                 modifier = Modifier.weight(0.9f),
                 onClick = { sendKeyPress(VK_LEFT) }
             )
@@ -174,7 +176,7 @@ fun ModifierDock(
                 onClick = { sendKeyPress(VK_DOWN) }
             )
             IconButton(
-                icon = Icons.Default.ArrowForward,
+                icon = Icons.AutoMirrored.Filled.ArrowForward,
                 modifier = Modifier.weight(0.9f),
                 onClick = { sendKeyPress(VK_RIGHT) }
             )

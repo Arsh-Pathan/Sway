@@ -35,18 +35,21 @@ impl LocalServer {
 
             while let Ok((mut stream, peer_addr)) = listener.accept().await {
                 let _ = stream.set_nodelay(true);
-                let mut peek_buf = [0u8; 1024];
-                let n = match stream.peek(&mut peek_buf).await {
-                    Ok(n) => n,
-                    Err(_) => continue,
-                };
-                let req_head = String::from_utf8_lossy(&peek_buf[..n]);
+                let sim = simulator.clone();
+                let priv_curtain = privacy.clone();
 
-                // If this is a web browser request, serve Desktop Control Center GUI
-                if !req_head.to_lowercase().contains("upgrade: websocket") {
-                    let priv_curtain = privacy.clone();
-                    tokio::spawn(async move {
-                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+                    let mut peek_buf = [0u8; 1024];
+                    let n = match tokio::time::timeout(std::time::Duration::from_secs(5), stream.peek(&mut peek_buf)).await {
+                        Ok(Ok(n)) if n > 0 => n,
+                        _ => return,
+                    };
+                    let req_head = String::from_utf8_lossy(&peek_buf[..n]);
+
+                    // If this is a web browser request, serve Desktop Control Center GUI
+                    if !req_head.to_lowercase().contains("upgrade: websocket") {
                         let mut buf = vec![0u8; 4096];
                         let n = stream.read(&mut buf).await.unwrap_or(0);
                         let req = String::from_utf8_lossy(&buf[..n]);
@@ -159,15 +162,12 @@ impl LocalServer {
                             html
                         );
                         let _ = stream.write_all(resp.as_bytes()).await;
-                    });
-                    continue;
-                }
+                        return;
+                    }
 
-                info!("Direct local Wi-Fi client connected from: {}", peer_addr);
-                let sim = simulator.clone();
-                let priv_curtain = privacy.clone();
+                    // WebSocket Connection
+                    info!("Direct local Wi-Fi client connected from: {}", peer_addr);
 
-                tokio::spawn(async move {
                     let ws_stream = match accept_async(stream).await {
                         Ok(ws) => ws,
                         Err(e) => {

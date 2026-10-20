@@ -80,7 +80,10 @@ sealed class InputEvent {
     data class TextInput(val text: String) : InputEvent() {
         override val opCode: Byte = 0x07
         override fun toByteArray(): ByteArray {
-            val bytes = text.toByteArray(Charsets.UTF_8)
+            var bytes = text.toByteArray(Charsets.UTF_8)
+            if (bytes.size > 65535) {
+                bytes = bytes.copyOf(65535)
+            }
             return ByteBuffer.allocate(3 + bytes.size)
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .put(opCode)
@@ -147,7 +150,10 @@ sealed class InputEvent {
     data class ClipboardSync(val text: String) : InputEvent() {
         override val opCode: Byte = 0x0E
         override fun toByteArray(): ByteArray {
-            val bytes = text.toByteArray(Charsets.UTF_8)
+            var bytes = text.toByteArray(Charsets.UTF_8)
+            if (bytes.size > 65535) {
+                bytes = bytes.copyOf(65535)
+            }
             return ByteBuffer.allocate(3 + bytes.size)
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .put(opCode)
