@@ -18,8 +18,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, PostMessageW, PostQuitMessage, RegisterClassExW, SetWindowDisplayAffinity,
     ShowWindow, TranslateMessage, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, WINDOW_DISPLAY_AFFINITY, WM_CLOSE,
-    WM_DESTROY, WM_KEYDOWN, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
+    WM_DESTROY, WM_KEYDOWN, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
 // WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Windows 10 2004+)
@@ -62,11 +62,13 @@ impl PrivacyCurtain {
                         }
 
                         let class_name = w!("SwayPrivacyCurtainClass");
+                        let black_brush = CreateSolidBrush(COLORREF(0x00000000));
                         let wc = WNDCLASSEXW {
                             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
                             lpfnWndProc: Some(curtain_wnd_proc),
                             hInstance: windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default().into(),
                             lpszClassName: class_name,
+                            hbrBackground: black_brush,
                             ..Default::default()
                         };
                         let _ = RegisterClassExW(&wc);
@@ -77,7 +79,7 @@ impl PrivacyCurtain {
                         let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
                         let hwnd = CreateWindowExW(
-                            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED,
+                            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
                             class_name,
                             w!("Sway Remote Privacy Curtain"),
                             WS_POPUP | WS_VISIBLE,
@@ -120,6 +122,7 @@ impl PrivacyCurtain {
                             }
 
                             let _ = DestroyWindow(h);
+                            let _ = DeleteObject(black_brush);
                         }
                         if h_desk != 0 {
                             let _ = CloseDesktop(h_desk);
