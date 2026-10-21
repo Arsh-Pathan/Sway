@@ -48,17 +48,22 @@ $TargetExe = "$AppDir\sway-host.exe"
 Copy-Item -Path $SourceExe -Destination $TargetExe -Force
 Write-Host "[+] Copied host binary to $TargetExe" -ForegroundColor Green
 
-# Create the silent launcher VBS script with sanitized string literals
-$SafeUrl = $SignalingUrl.Replace('"', '""')
-$SafeId = $DeviceId.Replace('"', '""')
-$SafeToken = $Token.Replace('"', '""')
+# Save or update config.json in application directory
+$ConfigPath = "$AppDir\config.json"
+if (-not (Test-Path $ConfigPath)) {
+    $ConfigJson = @{
+        signaling_url = $SignalingUrl
+        device_id = $DeviceId
+        token = $Token
+        local_port = 8089
+    } | ConvertTo-Json -Compress
+    Set-Content -Path $ConfigPath -Value $ConfigJson -Encoding UTF8
+    Write-Host "[+] Created configuration: $ConfigPath" -ForegroundColor Green
+}
 
+# Create the silent launcher VBS script
 $VbsContent = @"
 Set WshShell = CreateObject("WScript.Shell")
-Set WshEnv = WshShell.Environment("PROCESS")
-WshEnv("SWAY_SIGNALING_URL") = "$SafeUrl"
-WshEnv("SWAY_DEVICE_ID") = "$SafeId"
-WshEnv("SWAY_TOKEN") = "$SafeToken"
 WshShell.CurrentDirectory = "$AppDir"
 WshShell.Run """$TargetExe""", 0, False
 "@

@@ -19,6 +19,67 @@ use signaling::HostSignaling;
 use tracing::info;
 use uuid::Uuid;
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct HostConfig {
+    pub signaling_url: String,
+    pub device_id: String,
+    pub token: String,
+    pub local_port: u16,
+}
+
+impl HostConfig {
+    pub fn load_or_create() -> Self {
+        let config_dir = if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            std::path::PathBuf::from(local_app_data).join("Sway")
+        } else {
+            std::path::PathBuf::from(".")
+        };
+        let config_path = config_dir.join("config.json");
+
+        let mut config = if config_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&config_path) {
+                serde_json::from_str::<HostConfig>(&content).unwrap_or_else(|_| Self::default_config())
+            } else {
+                Self::default_config()
+            }
+        } else {
+            let def = Self::default_config();
+            let _ = std::fs::create_dir_all(&config_dir);
+            if let Ok(content) = serde_json::to_string_pretty(&def) {
+                let _ = std::fs::write(&config_path, content);
+            }
+            def
+        };
+
+        // Environment overrides
+        if let Ok(url) = env::var("SWAY_SIGNALING_URL") {
+            config.signaling_url = url;
+        }
+        if let Ok(id) = env::var("SWAY_DEVICE_ID") {
+            config.device_id = id;
+        }
+        if let Ok(t) = env::var("SWAY_TOKEN") {
+            config.token = t;
+        }
+        if let Ok(p) = env::var("SWAY_LOCAL_PORT") {
+            if let Ok(port) = p.parse::<u16>() {
+                config.local_port = port;
+            }
+        }
+
+        config
+    }
+
+    fn default_config() -> Self {
+        Self {
+            signaling_url: "127.0.0.1:8080".to_string(),
+            device_id: format!("sway-laptop-{}", &Uuid::new_v4().to_string()[..8]),
+            token: Uuid::new_v4().to_string()[..12].to_string(),
+            local_port: 8089,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -36,20 +97,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("          SWAY REMOTE HOST DAEMON (WINDOWS)            ");
     info!("=======================================================");
 
-    // Read environment or command-line args for configuration
-    let signaling_url = env::var("SWAY_SIGNALING_URL")
-        .unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-
-    let device_id = env::var("SWAY_DEVICE_ID")
-        .unwrap_or_else(|_| format!("sway-laptop-{}", &Uuid::new_v4().to_string()[..8]));
-
-    let token = env::var("SWAY_TOKEN")
-        .unwrap_or_else(|_| Uuid::new_v4().to_string()[..12].to_string());
-
-    let local_port = env::var("SWAY_LOCAL_PORT")
-        .ok()
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(8089);
+    // Read config from file or environment overrides
+    let config = HostConfig::load_or_create();
+    let signaling_url = config.signaling_url;
+    let device_id = config.device_id;
+    let token = config.token;
+    let local_port = config.local_port;
 
     // Initialize screen capture and detect monitors
     let capture = ScreenCapture::new();
@@ -77,11 +130,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Wait for shutdown signal
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::error!("Failed to listen for Ctrl+C: {}", e);
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => {
+            info!("Received shutdown signal (Ctrl+C). Restoring display settings and power policies...");
+        }
+        Err(e) => {
+            tracing::warn!("Ctrl+C handler unavailable (background daemon mode): {}. Keeping daemon alive.", e);
+            std::future::pending::<()>().await;
+        }
     }
 
-    info!("Received shutdown signal (Ctrl+C). Restoring display settings and power policies...");
     signaling_handle.abort();
     privacy.set_enabled(false);
     InputSimulator::set_display_resolution(0);
