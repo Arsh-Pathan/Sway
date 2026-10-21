@@ -101,7 +101,7 @@ impl InputSimulator {
                 self.refresh_monitors();
             }
             InputPacket::ChangeOrientation { vertical } => {
-                Self::set_display_orientation(vertical);
+                self.change_display_orientation(vertical);
             }
             InputPacket::ClipboardSync { text } => {
                 Self::set_clipboard_text(&text);
@@ -357,6 +357,11 @@ impl InputSimulator {
         }
     }
 
+    pub fn change_display_orientation(&self, vertical: bool) {
+        Self::set_display_orientation(vertical);
+        self.refresh_monitors();
+    }
+
     pub fn set_display_orientation(vertical: bool) {
         #[cfg(windows)]
         {
@@ -383,7 +388,10 @@ impl InputSimulator {
                         dm.Anonymous1.Anonymous2.dmDisplayOrientation = DMDO_90;
                         dm.dmFields |= DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT;
                         let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_UPDATEREGISTRY, None);
-                        info!("Rotated display to vertical portrait: res={:?}", res);
+                        if res.0 != 0 {
+                            let _ = ChangeDisplaySettingsExW(None, Some(&dm), None, Default::default(), None);
+                        }
+                        info!("Rotated display to vertical portrait");
                     } else if !vertical && is_already_vertical {
                         let temp = dm.dmPelsWidth;
                         dm.dmPelsWidth = dm.dmPelsHeight;
@@ -391,7 +399,10 @@ impl InputSimulator {
                         dm.Anonymous1.Anonymous2.dmDisplayOrientation = DMDO_DEFAULT;
                         dm.dmFields |= DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT;
                         let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_UPDATEREGISTRY, None);
-                        info!("Restored display to horizontal landscape: res={:?}", res);
+                        if res.0 != 0 {
+                            let _ = ChangeDisplaySettingsExW(None, Some(&dm), None, Default::default(), None);
+                        }
+                        info!("Restored display to horizontal landscape");
                     }
                 }
             }

@@ -296,12 +296,16 @@ impl LocalServer {
                     let is_streaming = Arc::new(AtomicBool::new(true));
                     let active_monitor = Arc::new(AtomicUsize::new(0));
                     let stream_quality = Arc::new(AtomicU8::new(45)); // Default to Fast 60 FPS on direct local connection
+                    let client_ack = Arc::new(AtomicBool::new(true));
+                    let last_ack_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
-                    // Direct capture thread at ultra-fluid up to 60 FPS
+                    // Direct capture thread at ultra-fluid up to 60 FPS with zero-bufferbloat flow control
                     let stream_flag = is_streaming.clone();
                     let monitor_flag = active_monitor.clone();
                     let quality_flag = stream_quality.clone();
                     let ft_tx = frame_tx.clone();
+                    let client_ack_flag = client_ack.clone();
+                    let last_ack_ref = last_ack_time.clone();
 
                     let capture_handle = tokio::task::spawn_blocking(move || {
                         let mut capture = ScreenCapture::new();
@@ -318,11 +322,31 @@ impl LocalServer {
                                 _ => std::time::Duration::from_millis(20),        // ~50 FPS Balanced Mode
                             };
 
-                            if let Some(frame) = capture.capture_frame_jpeg(q) {
-                                match ft_tx.try_send(Message::Binary(frame)) {
-                                    Ok(_) => {}
-                                    Err(mpsc::error::TrySendError::Full(_)) => {}
-                                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+                            // Zero-Bufferbloat Flow Control:
+                            // Check if client has acknowledged the previous frame or if 45ms watchdog expired.
+                            // If client is still processing or Wi-Fi dropped packets, drop intermediate frames
+                            // and send only the newest real-time screen image to eliminate latency drift.
+                            let is_ready = client_ack_flag.load(Ordering::Relaxed) || {
+                                if let Ok(guard) = last_ack_ref.lock() {
+                                    guard.elapsed() >= std::time::Duration::from_millis(45)
+                                } else {
+                                    true
+                                }
+                            };
+
+                            if is_ready {
+                                if let Some(frame) = capture.capture_frame_jpeg(q) {
+                                    client_ack_flag.store(false, Ordering::Relaxed);
+                                    if let Ok(mut guard) = last_ack_ref.lock() {
+                                        *guard = std::time::Instant::now();
+                                    }
+                                    match ft_tx.try_send(Message::Binary(frame)) {
+                                        Ok(_) => {}
+                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                            client_ack_flag.store(true, Ordering::Relaxed);
+                                        }
+                                        Err(mpsc::error::TrySendError::Closed(_)) => break,
+                                    }
                                 }
                             }
 
@@ -337,6 +361,15 @@ impl LocalServer {
                     while let Some(msg) = read.next().await {
                         match msg {
                             Ok(Message::Binary(bin)) => {
+                                if bin.len() == 1 && bin[0] == 0xAA {
+                                    // Client frame acknowledgment - unblocks next real-time frame
+                                    client_ack.store(true, Ordering::Relaxed);
+                                    if let Ok(mut guard) = last_ack_time.lock() {
+                                        *guard = std::time::Instant::now();
+                                    }
+                                    continue;
+                                }
+
                                 if let Ok(packet) = InputPacket::parse(&bin) {
                                     match &packet {
                                         InputPacket::SwitchMonitor { monitor_index } => {
@@ -357,7 +390,7 @@ impl LocalServer {
                                             InputSimulator::set_display_resolution(*mode);
                                         }
                                         InputPacket::ChangeOrientation { vertical } => {
-                                            InputSimulator::set_display_orientation(*vertical);
+                                            sim.change_display_orientation(*vertical);
                                         }
                                         _ => {}
                                     }
@@ -368,6 +401,13 @@ impl LocalServer {
                                 let _ = ctrl_tx.send(Message::Pong(p)).await;
                             }
                             Ok(Message::Text(t)) => {
+                                if t.contains("\"ack\"") {
+                                    client_ack.store(true, Ordering::Relaxed);
+                                    if let Ok(mut guard) = last_ack_time.lock() {
+                                        *guard = std::time::Instant::now();
+                                    }
+                                    continue;
+                                }
                                 if t.contains("\"ping\"") {
                                     let pong = t.replace("\"ping\"", "\"pong\"");
                                     let _ = ctrl_tx.send(Message::Text(pong)).await;

@@ -35,7 +35,6 @@ import com.sway.app.R
 import com.sway.app.model.PairedDevice
 import com.sway.app.network.NetworkDiscovery
 import com.sway.app.ui.theme.*
-import com.sway.app.util.NotificationHelper
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
 import java.util.concurrent.Executors
@@ -62,15 +61,6 @@ fun PairingScreen(
 
     val discovery = remember { NetworkDiscovery() }
     val discoveredHost by discovery.discoveredHost.collectAsState()
-
-    var notifiedHostId by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(discoveredHost) {
-        val host = discoveredHost
-        if (host != null && host.deviceId != notifiedHostId) {
-            notifiedHostId = host.deviceId
-            NotificationHelper.notifyHostDiscovered(context, host)
-        }
-    }
 
     LaunchedEffect(Unit) {
         while (true) {

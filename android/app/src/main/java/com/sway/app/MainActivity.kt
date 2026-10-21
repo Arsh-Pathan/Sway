@@ -137,13 +137,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun cleanupSession() {
-        val host = currentHostName
         webRtcManager?.release()
         webRtcManager = null
         signalingClient?.disconnect()
         signalingClient = null
 
-        NotificationHelper.notifySessionEnded(this, host)
+        NotificationHelper.cancelSessionNotification(this)
     }
 
     override fun onDestroy() {

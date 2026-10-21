@@ -90,6 +90,42 @@ private fun mapTouchToNormalized(
         return Pair(normX, normY)
     }
 
+    if (fitMode == ViewFitMode.ROTATE_90) {
+        val rotAspect = fh / fw
+        val boxAspect = boxWidth / boxHeight.coerceAtLeast(1f)
+        val fitW: Float
+        val fitH: Float
+        val padX: Float
+        val padY: Float
+
+        if (boxAspect > rotAspect) {
+            fitH = boxHeight
+            fitW = fitH * rotAspect
+            padX = (boxWidth - fitW) / 2f
+            padY = 0f
+        } else {
+            fitW = boxWidth
+            fitH = fitW / rotAspect
+            padX = 0f
+            padY = (boxHeight - fitH) / 2f
+        }
+
+        val contentX = unzoomedX - padX
+        val contentY = unzoomedY - padY
+        if (contentX < 0f || contentX > fitW || contentY < 0f || contentY > fitH) {
+            return null
+        }
+
+        // Clockwise 90-degree coordinate inversion:
+        // Rendered X relates to (1 - original Y), Rendered Y relates to original X
+        val normRotX = contentX / fitW
+        val normRotY = contentY / fitH
+
+        val origNormX = (normRotY * 65535f).toInt().coerceIn(0, 65535)
+        val origNormY = ((1f - normRotX) * 65535f).toInt().coerceIn(0, 65535)
+        return Pair(origNormX, origNormY)
+    }
+
     val streamAspect = fw / fh
     val boxAspect = boxWidth / boxHeight.coerceAtLeast(1f)
 
@@ -280,13 +316,36 @@ fun SessionScreen(
         webRtcManager.sendInput(InputEvent.ChangeResolution(mode))
     }
 
+    var isPanelHidden by remember { mutableStateOf(false) }
+
+    fun cycleZoom() {
+        zoomScale = when {
+            zoomScale < 1.4f -> 1.5f
+            zoomScale < 1.9f -> 2.0f
+            zoomScale < 2.9f -> 3.0f
+            zoomScale < 4.9f -> 5.0f
+            else -> 1.0f
+        }
+        if (zoomScale == 1.0f) {
+            zoomOffsetX = 0f
+            zoomOffsetY = 0f
+        }
+    }
+
     fun toggleVerticalPcMode() {
         isVerticalPcMode = !isVerticalPcMode
         webRtcManager.sendInput(InputEvent.ChangeOrientation(isVerticalPcMode))
+        zoomScale = 1.0f
+        zoomOffsetX = 0f
+        zoomOffsetY = 0f
         if (isVerticalPcMode) {
-            zoomScale = 1.0f
-            zoomOffsetX = 0f
-            zoomOffsetY = 0f
+            controlMode = ControlMode.TOUCH_SCREEN
+            viewFitMode = ViewFitMode.FIT
+            Toast.makeText(context, "Vertical PC: Direct Touch Active", Toast.LENGTH_SHORT).show()
+        } else {
+            controlMode = ControlMode.TRACKPAD
+            viewFitMode = ViewFitMode.FIT
+            Toast.makeText(context, "Landscape PC: Trackpad Active", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -324,7 +383,7 @@ fun SessionScreen(
                         .fillMaxSize()
                         .pointerInput(Unit) {
                             detectTransformGestures { _, pan, zoom, _ ->
-                                zoomScale = (zoomScale * zoom).coerceIn(1.0f, 4.0f)
+                                zoomScale = (zoomScale * zoom).coerceIn(1.0f, 5.0f)
                                 if (zoomScale > 1.0f) {
                                     zoomOffsetX += pan.x
                                     zoomOffsetY += pan.y
@@ -474,218 +533,416 @@ fun SessionScreen(
                 }
 
                 // Floating Action Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                if (!isPanelHidden) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(
-                            onClick = { handleDisconnect() },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", tint = TextPrimary)
-                        }
-
-                        // Mode chip
-                        FilterChip(
-                            selected = controlMode == ControlMode.TOUCH_SCREEN,
-                            onClick = {
-                                controlMode = if (controlMode == ControlMode.TRACKPAD) ControlMode.TOUCH_SCREEN else ControlMode.TRACKPAD
-                            },
-                            label = {
-                                Text(
-                                    if (controlMode == ControlMode.TOUCH_SCREEN) "Touch Slate" else "Trackpad",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    if (controlMode == ControlMode.TOUCH_SCREEN) Icons.Default.TouchApp else Icons.Default.Mouse,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = Color.White,
-                                selectedLabelColor = Color.Black,
-                                containerColor = SurfaceDark.copy(alpha = 0.85f),
-                                labelColor = TextSecondary
-                            )
-                        )
-
-                        // Real-time Live Performance HUD (FPS & Latency)
-                        Surface(
-                            color = SurfaceDark.copy(alpha = 0.85f),
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            IconButton(
+                                onClick = { handleDisconnect() },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.White)
+                                Icon(Icons.Default.Close, contentDescription = "Close", tint = TextPrimary)
+                            }
+
+                            // Mode chip
+                            FilterChip(
+                                selected = controlMode == ControlMode.TOUCH_SCREEN,
+                                onClick = {
+                                    controlMode = if (controlMode == ControlMode.TRACKPAD) ControlMode.TOUCH_SCREEN else ControlMode.TRACKPAD
+                                },
+                                label = {
+                                    Text(
+                                        if (controlMode == ControlMode.TOUCH_SCREEN) "Touch Slate" else "Trackpad",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        if (controlMode == ControlMode.TOUCH_SCREEN) Icons.Default.TouchApp else Icons.Default.Mouse,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color.White,
+                                    selectedLabelColor = Color.Black,
+                                    containerColor = SurfaceDark.copy(alpha = 0.85f),
+                                    labelColor = TextSecondary
                                 )
-                                Text(
-                                    text = "${liveFps} FPS",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextPrimary
+                            )
+
+                            // Real-time Live Performance HUD (FPS & Latency)
+                            Surface(
+                                color = SurfaceDark.copy(alpha = 0.85f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.White)
+                                    )
+                                    Text(
+                                        text = "${liveFps} FPS",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextPrimary
+                                    )
+                                    Text(text = "•", fontSize = 10.sp, color = TextMuted)
+                                    Text(
+                                        text = "${liveRtt}ms",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+
+                            // One-tap Performance Mode Switcher (Turbo 60 FPS / Balanced 45 FPS / HQ 30 FPS)
+                            FilterChip(
+                                selected = currentQuality == InputEvent.SetQuality.TURBO,
+                                onClick = { cyclePerformanceMode() },
+                                label = {
+                                    val label = when (currentQuality) {
+                                        InputEvent.SetQuality.TURBO -> "60 FPS"
+                                        InputEvent.SetQuality.BALANCED -> "45 FPS"
+                                        else -> "HQ"
+                                    }
+                                    Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color.White,
+                                    selectedLabelColor = Color.Black,
+                                    containerColor = SurfaceDark.copy(alpha = 0.85f),
+                                    labelColor = TextSecondary
                                 )
-                                Text(text = "•", fontSize = 10.sp, color = TextMuted)
-                                Text(
-                                    text = "${liveRtt}ms",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color.White
-                                )
+                            )
+
+                            // Privacy shield badge
+                            if (privacyCurtainActive) {
+                                Surface(
+                                    color = SurfaceCard,
+                                    shape = RoundedCornerShape(16.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(Icons.Default.Security, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                        Text("Stealth Active", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
                             }
                         }
 
-                        // One-tap Performance Mode Switcher (Turbo 60 FPS / Balanced 45 FPS / HQ 30 FPS)
-                        FilterChip(
-                            selected = currentQuality == InputEvent.SetQuality.TURBO,
-                            onClick = { cyclePerformanceMode() },
-                            label = {
-                                val label = when (currentQuality) {
-                                    InputEvent.SetQuality.TURBO -> "60 FPS"
-                                    InputEvent.SetQuality.BALANCED -> "45 FPS"
-                                    else -> "HQ"
-                                }
-                                Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = Color.White,
-                                selectedLabelColor = Color.Black,
-                                containerColor = SurfaceDark.copy(alpha = 0.85f),
-                                labelColor = TextSecondary
-                            )
-                        )
-
-                        // Privacy shield badge
-                        if (privacyCurtainActive) {
-                            Surface(
-                                color = SurfaceCard,
-                                shape = RoundedCornerShape(16.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)
+                        // Right action buttons
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Quick Zoom button (Cycles 1.0x -> 1.5x -> 2.0x -> 3.0x -> 5.0x)
+                            IconButton(
+                                onClick = { cycleZoom() },
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    containerColor = if (zoomScale > 1.0f) Color.White else SurfaceDark.copy(alpha = 0.85f)
+                                )
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Icon(Icons.Default.Security, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
-                                    Text("Stealth Active", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                if (zoomScale > 1.0f) {
+                                    Text(
+                                        text = String.format("%.1fx", zoomScale),
+                                        color = Color.Black,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                } else {
+                                    Icon(Icons.Default.ZoomIn, contentDescription = "Zoom", tint = TextMuted)
                                 }
+                            }
+
+                            // Privacy curtain toggle
+                            IconButton(
+                                onClick = { togglePrivacyCurtain() },
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    containerColor = if (privacyCurtainActive) Color.White else SurfaceDark.copy(alpha = 0.85f)
+                                )
+                            ) {
+                                Icon(
+                                    Icons.Default.Security,
+                                    contentDescription = "Privacy Shield",
+                                    tint = if (privacyCurtainActive) Color.Black else TextMuted
+                                )
+                            }
+
+                            // Resolution & Display Scaling sheet
+                            IconButton(
+                                onClick = { showResolutionSheet = true },
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    containerColor = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) Color.White else SurfaceDark.copy(alpha = 0.85f)
+                                )
+                            ) {
+                                Icon(
+                                    Icons.Default.AspectRatio,
+                                    contentDescription = "Resolution & Scaling",
+                                    tint = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) Color.Black else TextMuted
+                                )
+                            }
+
+                            // Native Keyboard button
+                            IconButton(
+                                onClick = {
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
+                                },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
+                            ) {
+                                Icon(Icons.Default.Keyboard, contentDescription = "Keyboard", tint = TextPrimary)
+                            }
+
+                            // Rotate button
+                            IconButton(
+                                onClick = { toggleOrientation() },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
+                            ) {
+                                Icon(Icons.Default.ScreenRotation, contentDescription = "Rotate", tint = TextPrimary)
+                            }
+
+                            // Quick Actions & Power button
+                            IconButton(
+                                onClick = { showQuickActions = true },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
+                            ) {
+                                Icon(Icons.Default.Bolt, contentDescription = "Quick Actions", tint = AccentIndigoBright)
+                            }
+
+                            // Hide Panel / Immersive button
+                            IconButton(
+                                onClick = { isPanelHidden = true },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
+                            ) {
+                                Icon(Icons.Default.Fullscreen, contentDescription = "Hide Panels", tint = TextPrimary)
+                            }
+
+                            // Settings button
+                            IconButton(
+                                onClick = { showSettings = true },
+                                colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
+                            ) {
+                                Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TextPrimary)
                             }
                         }
                     }
-
-                    // Right action buttons
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                } else {
+                    // Floating pill to unhide controls in Landscape
+                    Surface(
+                        onClick = { isPanelHidden = false },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(16.dp),
+                        color = SurfaceDark.copy(alpha = 0.85f),
+                        shape = RoundedCornerShape(20.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
                     ) {
-                        // Quick Zoom button
-                        IconButton(
-                            onClick = {
-                                zoomScale = if (zoomScale >= 2.0f) 1.0f else (zoomScale + 0.5f)
-                                if (zoomScale == 1.0f) {
-                                    zoomOffsetX = 0f
-                                    zoomOffsetY = 0f
-                                }
-                            },
-                            colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (zoomScale > 1.0f) Color.White else SurfaceDark.copy(alpha = 0.85f)
-                            )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.Default.ZoomIn, contentDescription = "Zoom", tint = if (zoomScale > 1.0f) Color.Black else TextMuted)
-                        }
-
-                        // Privacy curtain toggle
-                        IconButton(
-                            onClick = { togglePrivacyCurtain() },
-                            colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (privacyCurtainActive) Color.White else SurfaceDark.copy(alpha = 0.85f)
-                            )
-                        ) {
-                            Icon(
-                                Icons.Default.Security,
-                                contentDescription = "Privacy Shield",
-                                tint = if (privacyCurtainActive) Color.Black else TextMuted
-                            )
-                        }
-
-                        // Resolution & Display Scaling sheet
-                        IconButton(
-                            onClick = { showResolutionSheet = true },
-                            colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) Color.White else SurfaceDark.copy(alpha = 0.85f)
-                            )
-                        ) {
-                            Icon(
-                                Icons.Default.AspectRatio,
-                                contentDescription = "Resolution & Scaling",
-                                tint = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) Color.Black else TextMuted
-                            )
-                        }
-
-                        // Native Keyboard button
-                        IconButton(
-                            onClick = {
-                                focusRequester.requestFocus()
-                                keyboardController?.show()
-                            },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
-                        ) {
-                            Icon(Icons.Default.Keyboard, contentDescription = "Keyboard", tint = TextPrimary)
-                        }
-
-                        // Rotate button
-                        IconButton(
-                            onClick = { toggleOrientation() },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
-                        ) {
-                            Icon(Icons.Default.ScreenRotation, contentDescription = "Rotate", tint = TextPrimary)
-                        }
-
-                        // Quick Actions & Power button
-                        IconButton(
-                            onClick = { showQuickActions = true },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
-                        ) {
-                            Icon(Icons.Default.Bolt, contentDescription = "Quick Actions", tint = AccentIndigoBright)
-                        }
-
-                        // Settings button
-                        IconButton(
-                            onClick = { showSettings = true },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
-                        ) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TextPrimary)
+                            Icon(Icons.Default.FullscreenExit, contentDescription = "Show Controls", tint = Color.White, modifier = Modifier.size(16.dp))
+                            Text("Controls", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
             }
         } else {
             // ==================== PORTRAIT MODE: HYBRID CONTROLLER ====================
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+            if (isPanelHidden) {
+                // Immersive full-screen video in portrait
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                zoomScale = (zoomScale * zoom).coerceIn(1.0f, 5.0f)
+                                if (zoomScale > 1.0f) {
+                                    zoomOffsetX += pan.x
+                                    zoomOffsetY += pan.y
+                                } else {
+                                    zoomOffsetX = 0f
+                                    zoomOffsetY = 0f
+                                }
+                            }
+                        }
+                        .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame, viewFitMode) {
+                            if (controlMode == ControlMode.TOUCH_SCREEN) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown()
+                                    touchRipplePos = down.position
+                                    val pt = mapTouchToNormalized(
+                                        down.position.x, down.position.y,
+                                        size.width.toFloat(), size.height.toFloat(),
+                                        currentFrame?.width, currentFrame?.height,
+                                        isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                        viewFitMode
+                                    )
+                                    if (pt != null) {
+                                        webRtcManager.sendInput(InputEvent.TouchDirect(pt.first, pt.second, InputEvent.TouchDirect.ACTION_DOWN))
+                                    }
+
+                                    val pointerId = down.id
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val current = event.changes.firstOrNull { it.id == pointerId } ?: break
+                                        val curPt = mapTouchToNormalized(
+                                            current.position.x, current.position.y,
+                                            size.width.toFloat(), size.height.toFloat(),
+                                            currentFrame?.width, currentFrame?.height,
+                                            isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                            viewFitMode
+                                        )
+                                        if (!current.pressed) {
+                                            touchRipplePos = null
+                                            if (curPt != null) {
+                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                            }
+                                            break
+                                        }
+                                        touchRipplePos = current.position
+                                        if (curPt != null) {
+                                            webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
+                                        }
+                                        current.consume()
+                                    }
+                                }
+                            }
+                        }
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer(
+                                scaleX = zoomScale,
+                                scaleY = zoomScale,
+                                translationX = zoomOffsetX,
+                                translationY = zoomOffsetY
+                            )
+                    ) {
+                        if (webRtcManager.isDirectLocal || currentFrame != null) {
+                            if (currentFrame != null) {
+                                DesktopStreamCanvas(frame = currentFrame, sequence = currentSequence, fitMode = viewFitMode)
+                            } else {
+                                Surface(
+                                    modifier = Modifier
+                                        .align(Alignment.Center)
+                                        .padding(8.dp),
+                                    color = SurfaceDark.copy(alpha = 0.85f),
+                                    shape = MaterialTheme.shapes.medium
+                                ) {
+                                    val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                        "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
+                                    } else {
+                                        "Connecting to desktop..."
+                                    }
+                                    Text(
+                                        text = statusMsg,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        style = Typography.bodyMedium,
+                                        color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                                    )
+                                }
+                            }
+                        } else if (rtcState is RtcConnectionState.Connected) {
+                            AndroidView(
+                                factory = { ctx ->
+                                    SurfaceViewRenderer(ctx).apply {
+                                        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                                        webRtcManager.attachRenderer(this)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Surface(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(8.dp),
+                                color = SurfaceDark.copy(alpha = 0.85f),
+                                shape = MaterialTheme.shapes.medium
+                            ) {
+                                val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                    "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
+                                } else {
+                                    "Connecting to desktop..."
+                                }
+                                Text(
+                                    text = statusMsg,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    style = Typography.bodyMedium,
+                                    color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                                )
+                            }
+                        }
+
+                        // Real-time Visual Touch Ripple Glow
+                        touchRipplePos?.let { pos ->
+                            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                                drawCircle(
+                                    color = Color.White.copy(alpha = 0.25f),
+                                    radius = 28.dp.toPx(),
+                                    center = pos
+                                )
+                                drawCircle(
+                                    color = Color.White,
+                                    radius = 6.dp.toPx(),
+                                    center = pos
+                                )
+                            }
+                        }
+                    }
+
+                    // Floating pill to unhide controls in portrait
+                    Surface(
+                        onClick = { isPanelHidden = false },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(16.dp),
+                        color = SurfaceDark.copy(alpha = 0.85f),
+                        shape = RoundedCornerShape(20.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Default.FullscreenExit, contentDescription = "Show Controls", tint = Color.White, modifier = Modifier.size(16.dp))
+                            Text("Controls", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                 // Top Control Bar
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -784,20 +1041,23 @@ fun SessionScreen(
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        // Quick Zoom button
+                        // Quick Zoom button (Cycles 1.0x -> 1.5x -> 2.0x -> 3.0x -> 5.0x)
                         IconButton(
-                            onClick = {
-                                zoomScale = if (zoomScale >= 2.0f) 1.0f else (zoomScale + 0.5f)
-                                if (zoomScale == 1.0f) {
-                                    zoomOffsetX = 0f
-                                    zoomOffsetY = 0f
-                                }
-                            },
+                            onClick = { cycleZoom() },
                             colors = IconButtonDefaults.iconButtonColors(
                                 containerColor = if (zoomScale > 1.0f) Color.White else SurfaceDark
                             )
                         ) {
-                            Icon(Icons.Default.ZoomIn, contentDescription = "Zoom", tint = if (zoomScale > 1.0f) Color.Black else TextMuted)
+                            if (zoomScale > 1.0f) {
+                                Text(
+                                    text = String.format("%.1fx", zoomScale),
+                                    color = Color.Black,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            } else {
+                                Icon(Icons.Default.ZoomIn, contentDescription = "Zoom", tint = TextMuted)
+                            }
                         }
 
                         // Privacy shield toggle
@@ -858,6 +1118,14 @@ fun SessionScreen(
                             Icon(Icons.Default.Bolt, contentDescription = "Quick Actions", tint = AccentIndigoBright)
                         }
 
+                        // Hide Panel / Immersive Fullscreen Button
+                        IconButton(
+                            onClick = { isPanelHidden = true },
+                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark)
+                        ) {
+                            Icon(Icons.Default.Fullscreen, contentDescription = "Hide Panels", tint = TextPrimary)
+                        }
+
                         IconButton(
                             onClick = { showSettings = true },
                             colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark)
@@ -900,7 +1168,7 @@ fun SessionScreen(
                         .background(SurfaceDark)
                         .pointerInput(Unit) {
                             detectTransformGestures { _, pan, zoom, _ ->
-                                zoomScale = (zoomScale * zoom).coerceIn(1.0f, 4.0f)
+                                zoomScale = (zoomScale * zoom).coerceIn(1.0f, 5.0f)
                                 if (zoomScale > 1.0f) {
                                     zoomOffsetX += pan.x
                                     zoomOffsetY += pan.y
@@ -1103,6 +1371,7 @@ fun SessionScreen(
                 )
             }
         }
+    }
 
         // Hidden input field for IME native keyboard capture with fixed cyclic buffer
         BasicTextField(

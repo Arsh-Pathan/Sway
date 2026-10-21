@@ -116,7 +116,12 @@ class SignalingClient(
     private var pendingFrameBytes: ByteArray? = null
     private var frameSeq = 0L
 
+    private val ackByteString = okio.ByteString.of(0xAA.toByte())
+
     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+        // Send instantaneous 1-byte frame ack to host to pace capture loop and eliminate bufferbloat
+        webSocket.send(ackByteString)
+
         pendingFrameBytes = bytes.toByteArray()
 
         // Update real-time FPS counter
