@@ -392,9 +392,17 @@ impl LocalServer {
                                         InputPacket::ChangeOrientation { vertical } => {
                                             sim.change_display_orientation(*vertical);
                                         }
+                                        InputPacket::TouchDirect { norm_x, norm_y, action } => {
+                                            let is_text = sim.touch_direct(*norm_x, *norm_y, *action);
+                                            if is_text && (*action == 0 || *action == 2) {
+                                                let _ = ctrl_tx.send(Message::Text("{\"type\":\"text_focus\"}".to_string())).await;
+                                            }
+                                        }
                                         _ => {}
                                     }
-                                    sim.dispatch(packet);
+                                    if !matches!(packet, InputPacket::TouchDirect { .. }) {
+                                        sim.dispatch(packet);
+                                    }
                                 }
                             }
                             Ok(Message::Ping(p)) => {

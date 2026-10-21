@@ -134,9 +134,9 @@ fun TrackpadSurface(
                                 hasMoved = true
                             }
 
-                            // Natural wheel delta
-                            val scrollDeltaY = (-dragY * scrollSpeed * 12f).toInt().coerceIn(-32767, 32767).toShort()
-                            val scrollDeltaX = (dragX * scrollSpeed * 12f).toInt().coerceIn(-32767, 32767).toShort()
+                            // Natural responsive wheel delta
+                            val scrollDeltaY = (-dragY * scrollSpeed * 25f).toInt().coerceIn(-32767, 32767).toShort()
+                            val scrollDeltaX = (dragX * scrollSpeed * 25f).toInt().coerceIn(-32767, 32767).toShort()
                             if (scrollDeltaY != 0.toShort() || scrollDeltaX != 0.toShort()) {
                                 onInputEvent(InputEvent.MouseScroll(scrollDeltaY, scrollDeltaX))
                             }
@@ -145,21 +145,5 @@ fun TrackpadSurface(
                     }
                 }
             }
-    ) {
-        // Visual touch indicator
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            touchPoint?.let { pos ->
-                drawCircle(
-                    color = AccentIndigoBright.copy(alpha = 0.25f),
-                    radius = 45f,
-                    center = pos
-                )
-                drawCircle(
-                    color = AccentIndigo,
-                    radius = 16f,
-                    center = pos
-                )
-            }
-        }
-    }
+    )
 }

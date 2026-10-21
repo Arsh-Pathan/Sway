@@ -40,6 +40,7 @@ class WebRtcManager(
     val currentFrame: kotlinx.coroutines.flow.StateFlow<com.sway.app.network.StreamFrame?> = signalingClient.currentFrame
     val fps = signalingClient.fps
     val rttMs = signalingClient.rttMs
+    val textFocusEvents: kotlinx.coroutines.flow.SharedFlow<Unit> = signalingClient.textFocusEvents
 
     private var remoteVideoTrack: VideoTrack? = null
     private var videoRenderer: SurfaceViewRenderer? = null

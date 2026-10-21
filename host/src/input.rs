@@ -4,7 +4,7 @@ use tracing::{debug, info, warn};
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS,
     VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
@@ -93,7 +93,7 @@ impl InputSimulator {
                 info!("Stream quality change requested: mode #{}", mode);
             }
             InputPacket::TouchDirect { norm_x, norm_y, action } => {
-                self.touch_direct(norm_x, norm_y, action);
+                let _ = self.touch_direct(norm_x, norm_y, action);
             }
             InputPacket::SetPrivacyCurtain { enabled: _ } => {}
             InputPacket::ChangeResolution { mode } => {
@@ -216,11 +216,13 @@ impl InputSimulator {
         {
             if delta_y != 0 {
                 // Vertical wheel (WHEEL_DELTA is 120 per click in Windows)
-                self.send_mouse_input(MOUSEEVENTF_WHEEL, 0, 0, (delta_y as i32) as u32);
+                let val = (delta_y as i32) * 2;
+                self.send_mouse_input(MOUSEEVENTF_WHEEL, 0, 0, val as u32);
             }
             if delta_x != 0 {
                 // Horizontal wheel
-                self.send_mouse_input(MOUSEEVENTF_HWHEEL, 0, 0, (delta_x as i32) as u32);
+                let val = (delta_x as i32) * 2;
+                self.send_mouse_input(MOUSEEVENTF_HWHEEL, 0, 0, val as u32);
             }
         }
     }
@@ -282,11 +284,14 @@ impl InputSimulator {
         }
     }
 
-    pub fn touch_direct(&self, norm_x: u16, norm_y: u16, action: u8) {
+    pub fn touch_direct(&self, norm_x: u16, norm_y: u16, action: u8) -> bool {
         #[cfg(windows)]
         {
             Self::ensure_input_desktop();
-            use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GetCursorInfo, GetSystemMetrics, LoadCursorW, SetCursorPos,
+                CURSORINFO, CURSOR_SHOWING, IDC_IBEAM, SM_CXSCREEN, SM_CYSCREEN,
+            };
 
             let cur_idx = self.active_monitor.load(Ordering::Relaxed);
             let (mon_x, mon_y, mon_w, mon_h) = {
@@ -301,16 +306,63 @@ impl InputSimulator {
             let target_x = raw_x.clamp(mon_x, mon_x + mon_w - 1);
             let target_y = raw_y.clamp(mon_y, mon_y + mon_h - 1);
 
+            let scr_w = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1);
+            let scr_h = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(1);
+            let abs_x = ((target_x as f64 / scr_w as f64) * 65535.0).round() as i32;
+            let abs_y = ((target_y as f64 / scr_h as f64) * 65535.0).round() as i32;
+
             unsafe {
                 let _ = SetCursorPos(target_x, target_y);
             }
 
             match action {
-                0 => self.send_mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0, 0),
-                1 => self.send_mouse_input(MOUSEEVENTF_MOVE, 0, 0, 0),
-                2 => self.send_mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0),
+                0 => {
+                    self.send_mouse_input(
+                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
+                        abs_x,
+                        abs_y,
+                        0,
+                    );
+                }
+                1 => {
+                    self.send_mouse_input(
+                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+                        abs_x,
+                        abs_y,
+                        0,
+                    );
+                }
+                2 => {
+                    self.send_mouse_input(
+                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP,
+                        abs_x,
+                        abs_y,
+                        0,
+                    );
+                }
                 _ => {}
             }
+
+            // Check if cursor is over a text input field (I-Beam cursor)
+            let mut is_text = false;
+            unsafe {
+                let mut ci = CURSORINFO {
+                    cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+                    ..Default::default()
+                };
+                if GetCursorInfo(&mut ci).is_ok() && ci.flags == CURSOR_SHOWING {
+                    if let Ok(ibeam) = LoadCursorW(None, IDC_IBEAM) {
+                        if ci.hCursor == ibeam {
+                            is_text = true;
+                        }
+                    }
+                }
+            }
+            is_text
+        }
+        #[cfg(not(windows))]
+        {
+            false
         }
     }
 

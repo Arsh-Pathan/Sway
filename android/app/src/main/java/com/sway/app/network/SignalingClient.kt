@@ -70,6 +70,8 @@ class SignalingClient(
     private val _answers = MutableSharedFlow<SdpPayload>()
     val answers = _answers.asSharedFlow()
 
+    val textFocusEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
     private val _candidates = MutableSharedFlow<CandidatePayload>()
     val candidates = _candidates.asSharedFlow()
 
@@ -163,6 +165,11 @@ class SignalingClient(
 
     override fun onMessage(webSocket: WebSocket, text: String) {
         try {
+            if (text.contains("\"text_focus\"")) {
+                scope.launch { textFocusEvents.emit(Unit) }
+                return
+            }
+
             // Handle real-time RTT pong response
             if (text.contains("\"pong\"")) {
                 if (lastPingTimestamp > 0) {

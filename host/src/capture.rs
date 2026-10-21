@@ -299,20 +299,6 @@ impl ScreenCapture {
             d += 3;
         }
 
-        // Fast lightweight 64-sample checksum to detect static screen
-        let mut checksum: u64 = 0;
-        let step = (rgb_len / 64).max(1);
-        for i in (0..rgb_len).step_by(step) {
-            checksum = checksum.wrapping_add(dst[i] as u64).rotate_left(3);
-        }
-
-        let is_identical = checksum == self.last_checksum && !cursor_changed;
-        self.last_checksum = checksum;
-
-        // If screen is unchanged and cursor hasn't moved, throttle to ~5 FPS to save battery & airtime
-        if is_identical && self.last_frame_time.elapsed().as_millis() < 200 {
-            return None;
-        }
         self.last_frame_time = std::time::Instant::now();
 
         let mut jpeg_bytes = Vec::with_capacity(32 * 1024);

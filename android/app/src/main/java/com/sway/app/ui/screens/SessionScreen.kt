@@ -112,16 +112,13 @@ private fun mapTouchToNormalized(
             padY = (boxHeight - fitH) / 2f
         }
 
-        val contentX = unzoomedX - padX
-        val contentY = unzoomedY - padY
-        if (contentX < 0f || contentX > fitW || contentY < 0f || contentY > fitH) {
-            return null
-        }
+        val contentX = (unzoomedX - padX).coerceIn(0f, fitW)
+        val contentY = (unzoomedY - padY).coerceIn(0f, fitH)
 
         // Clockwise 90-degree coordinate inversion:
         // Rendered X relates to (1 - original Y), Rendered Y relates to original X
-        val normRotX = contentX / fitW
-        val normRotY = contentY / fitH
+        val normRotX = contentX / fitW.coerceAtLeast(1f)
+        val normRotY = contentY / fitH.coerceAtLeast(1f)
 
         val origNormX = (normRotY * 65535f).toInt().coerceIn(0, 65535)
         val origNormY = ((1f - normRotX) * 65535f).toInt().coerceIn(0, 65535)
@@ -148,15 +145,11 @@ private fun mapTouchToNormalized(
         padY = (boxHeight - fitH) / 2f
     }
 
-    val contentX = unzoomedX - padX
-    val contentY = unzoomedY - padY
+    val contentX = (unzoomedX - padX).coerceIn(0f, fitW)
+    val contentY = (unzoomedY - padY).coerceIn(0f, fitH)
 
-    if (contentX < 0f || contentX > fitW || contentY < 0f || contentY > fitH) {
-        return null // Outside active video image
-    }
-
-    val normX = ((contentX / fitW) * 65535f).toInt().coerceIn(0, 65535)
-    val normY = ((contentY / fitH) * 65535f).toInt().coerceIn(0, 65535)
+    val normX = ((contentX / fitW.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
+    val normY = ((contentY / fitH.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
     return Pair(normX, normY)
 }
 
@@ -272,7 +265,28 @@ fun SessionScreen(
 
     val liveFps by webRtcManager.fps.collectAsState()
     val liveRtt by webRtcManager.rttMs.collectAsState()
-    var touchRipplePos by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
+
+    // Soft Keyboard state
+    val baseBuffer = "  "
+    var keyboardInput by remember { mutableStateOf(TextFieldValue(baseBuffer, androidx.compose.ui.text.TextRange(baseBuffer.length))) }
+    val focusRequester = remember { FocusRequester() }
+    var isKeyboardOpen by remember { mutableStateOf(false) }
+
+    // Auto-open software keyboard when text field receives focus or text focus signal arrives
+    LaunchedEffect(Unit) {
+        webRtcManager.textFocusEvents.collect {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+
+    var currentMonitor by remember { mutableIntStateOf(0) }
+
+    fun switchMonitor() {
+        currentMonitor = (currentMonitor + 1) % 2
+        webRtcManager.sendInput(InputEvent.SwitchMonitor(currentMonitor.toByte()))
+        Toast.makeText(context, "Switched to Display #${currentMonitor + 1}", Toast.LENGTH_SHORT).show()
+    }
 
     fun cyclePerformanceMode() {
         currentQuality = when (currentQuality) {
@@ -281,20 +295,6 @@ fun SessionScreen(
             else -> InputEvent.SetQuality.TURBO
         }
         webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
-    }
-
-    // Soft Keyboard state
-    val baseBuffer = "  "
-    var keyboardInput by remember { mutableStateOf(TextFieldValue(baseBuffer, androidx.compose.ui.text.TextRange(baseBuffer.length))) }
-    val focusRequester = remember { FocusRequester() }
-    var isKeyboardOpen by remember { mutableStateOf(false) }
-
-    var currentMonitor by remember { mutableIntStateOf(0) }
-
-    fun switchMonitor() {
-        currentMonitor = (currentMonitor + 1) % 2
-        webRtcManager.sendInput(InputEvent.SwitchMonitor(currentMonitor.toByte()))
-        Toast.makeText(context, "Switched to Display #${currentMonitor + 1}", Toast.LENGTH_SHORT).show()
     }
 
     fun toggleOrientation() {
@@ -342,11 +342,13 @@ fun SessionScreen(
         zoomOffsetY = 0f
         if (isVerticalPcMode) {
             controlMode = ControlMode.TOUCH_SCREEN
-            viewFitMode = ViewFitMode.FIT
-            Toast.makeText(context, "Vertical PC: Direct Touch Active", Toast.LENGTH_SHORT).show()
+            viewFitMode = ViewFitMode.FILL // Full screen fill, larger scale matching phone screen
+            isPanelHidden = true           // Automatically fullscreen with zero black bars
+            Toast.makeText(context, "Vertical PC: Fullscreen Touch Active", Toast.LENGTH_SHORT).show()
         } else {
             controlMode = ControlMode.TRACKPAD
             viewFitMode = ViewFitMode.FIT
+            isPanelHidden = false
             Toast.makeText(context, "Landscape PC: Trackpad Active", Toast.LENGTH_SHORT).show()
         }
     }
@@ -397,9 +399,11 @@ fun SessionScreen(
                         }
                         .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame, viewFitMode) {
                             if (controlMode == ControlMode.TOUCH_SCREEN) {
+                                var lastTapTime = 0L
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
-                                    touchRipplePos = down.position
+                                    val downTime = System.currentTimeMillis()
+                                    var hasDragged = false
                                     val pt = mapTouchToNormalized(
                                         down.position.x, down.position.y,
                                         size.width.toFloat(), size.height.toFloat(),
@@ -423,13 +427,21 @@ fun SessionScreen(
                                             viewFitMode
                                         )
                                         if (!current.pressed) {
-                                            touchRipplePos = null
                                             if (curPt != null) {
                                                 webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
                                             }
+                                            val tapDuration = System.currentTimeMillis() - downTime
+                                            if (tapDuration < 280 && !hasDragged) {
+                                                if (System.currentTimeMillis() - lastTapTime < 350) {
+                                                    // Double tap detected: auto-open software keyboard
+                                                    focusRequester.requestFocus()
+                                                    keyboardController?.show()
+                                                }
+                                                lastTapTime = System.currentTimeMillis()
+                                            }
                                             break
                                         }
-                                        touchRipplePos = current.position
+                                        hasDragged = true
                                         if (curPt != null) {
                                             webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
                                         }
@@ -501,22 +513,6 @@ fun SessionScreen(
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = Typography.bodyMedium,
                                     color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
-                                )
-                            }
-                        }
-
-                        // Real-time Visual Touch Ripple Glow
-                        touchRipplePos?.let { pos ->
-                            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                                drawCircle(
-                                    color = Color.White.copy(alpha = 0.25f),
-                                    radius = 28.dp.toPx(),
-                                    center = pos
-                                )
-                                drawCircle(
-                                    color = Color.White,
-                                    radius = 6.dp.toPx(),
-                                    center = pos
                                 )
                             }
                         }
@@ -783,9 +779,11 @@ fun SessionScreen(
                         }
                         .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame, viewFitMode) {
                             if (controlMode == ControlMode.TOUCH_SCREEN) {
+                                var lastTapTime = 0L
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
-                                    touchRipplePos = down.position
+                                    val downTime = System.currentTimeMillis()
+                                    var hasDragged = false
                                     val pt = mapTouchToNormalized(
                                         down.position.x, down.position.y,
                                         size.width.toFloat(), size.height.toFloat(),
@@ -809,13 +807,21 @@ fun SessionScreen(
                                             viewFitMode
                                         )
                                         if (!current.pressed) {
-                                            touchRipplePos = null
                                             if (curPt != null) {
                                                 webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
                                             }
+                                            val tapDuration = System.currentTimeMillis() - downTime
+                                            if (tapDuration < 280 && !hasDragged) {
+                                                if (System.currentTimeMillis() - lastTapTime < 350) {
+                                                    // Double tap detected: auto-open software keyboard
+                                                    focusRequester.requestFocus()
+                                                    keyboardController?.show()
+                                                }
+                                                lastTapTime = System.currentTimeMillis()
+                                            }
                                             break
                                         }
-                                        touchRipplePos = current.position
+                                        hasDragged = true
                                         if (curPt != null) {
                                             webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
                                         }
@@ -887,22 +893,6 @@ fun SessionScreen(
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = Typography.bodyMedium,
                                     color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
-                                )
-                            }
-                        }
-
-                        // Real-time Visual Touch Ripple Glow
-                        touchRipplePos?.let { pos ->
-                            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                                drawCircle(
-                                    color = Color.White.copy(alpha = 0.25f),
-                                    radius = 28.dp.toPx(),
-                                    center = pos
-                                )
-                                drawCircle(
-                                    color = Color.White,
-                                    radius = 6.dp.toPx(),
-                                    center = pos
                                 )
                             }
                         }
@@ -1243,9 +1233,11 @@ fun SessionScreen(
                         }
                         .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame, viewFitMode) {
                             if (controlMode == ControlMode.TOUCH_SCREEN) {
+                                var lastTapTime = 0L
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
-                                    touchRipplePos = down.position
+                                    val downTime = System.currentTimeMillis()
+                                    var hasDragged = false
                                     val pt = mapTouchToNormalized(
                                         down.position.x, down.position.y,
                                         size.width.toFloat(), size.height.toFloat(),
@@ -1269,13 +1261,21 @@ fun SessionScreen(
                                             viewFitMode
                                         )
                                         if (!current.pressed) {
-                                            touchRipplePos = null
                                             if (curPt != null) {
                                                 webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
                                             }
+                                            val tapDuration = System.currentTimeMillis() - downTime
+                                            if (tapDuration < 280 && !hasDragged) {
+                                                if (System.currentTimeMillis() - lastTapTime < 350) {
+                                                    // Double tap detected: auto-open software keyboard
+                                                    focusRequester.requestFocus()
+                                                    keyboardController?.show()
+                                                }
+                                                lastTapTime = System.currentTimeMillis()
+                                            }
                                             break
                                         }
-                                        touchRipplePos = current.position
+                                        hasDragged = true
                                         if (curPt != null) {
                                             webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
                                         }
@@ -1347,22 +1347,6 @@ fun SessionScreen(
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = Typography.bodyMedium,
                                     color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
-                                )
-                            }
-                        }
-
-                        // Real-time Visual Touch Ripple Glow in Portrait
-                        touchRipplePos?.let { pos ->
-                            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                                drawCircle(
-                                    color = Color.White.copy(alpha = 0.25f),
-                                    radius = 28.dp.toPx(),
-                                    center = pos
-                                )
-                                drawCircle(
-                                    color = Color.White,
-                                    radius = 6.dp.toPx(),
-                                    center = pos
                                 )
                             }
                         }
