@@ -19,7 +19,27 @@ pub struct InputSimulator {
 }
 
 impl InputSimulator {
+    #[cfg(windows)]
+    pub fn ensure_input_desktop() {
+        extern "system" {
+            fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
+            fn SetThreadDesktop(hDesktop: isize) -> i32;
+        }
+        unsafe {
+            let h_desk = OpenInputDesktop(0, 0, 0x01FF);
+            if h_desk != 0 {
+                let _ = SetThreadDesktop(h_desk);
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn ensure_input_desktop() {}
+
     pub fn new() -> Self {
+        #[cfg(windows)]
+        Self::ensure_input_desktop();
+
         let sim = Self {
             active_modifiers: AtomicU8::new(0),
             active_monitor: AtomicUsize::new(0),
@@ -30,6 +50,9 @@ impl InputSimulator {
     }
 
     pub fn refresh_monitors(&self) {
+        #[cfg(windows)]
+        Self::ensure_input_desktop();
+
         if let Ok(all) = xcap::Monitor::all() {
             let bounds: Vec<(i32, i32, i32, i32)> = all
                 .into_iter()
@@ -50,6 +73,9 @@ impl InputSimulator {
 
     /// Dispatches an input packet to the native OS input subsystem.
     pub fn dispatch(&self, packet: InputPacket) {
+        #[cfg(windows)]
+        Self::ensure_input_desktop();
+
         match packet {
             InputPacket::MouseMove { dx, dy } => self.mouse_move(dx, dy),
             InputPacket::MouseDown { button } => self.mouse_down(button),
@@ -88,6 +114,7 @@ impl InputSimulator {
 
     #[cfg(windows)]
     fn send_mouse_input(&self, flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, mouse_data: u32) {
+        Self::ensure_input_desktop();
         unsafe {
             let input = INPUT {
                 r#type: INPUT_MOUSE,
@@ -112,6 +139,7 @@ impl InputSimulator {
 
     #[cfg(windows)]
     fn send_key_input(&self, vkey: u16, flags: KEYBD_EVENT_FLAGS, scan: u16) {
+        Self::ensure_input_desktop();
         unsafe {
             let input = INPUT {
                 r#type: INPUT_KEYBOARD,
@@ -141,7 +169,20 @@ impl InputSimulator {
 
     pub fn mouse_move(&self, dx: i16, dy: i16) {
         #[cfg(windows)]
-        self.send_mouse_input(MOUSEEVENTF_MOVE, dx as i32, dy as i32, 0);
+        {
+            Self::ensure_input_desktop();
+            use windows::Win32::Foundation::POINT;
+            use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
+            let mut pt = POINT::default();
+            if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+                let new_x = pt.x + dx as i32;
+                let new_y = pt.y + dy as i32;
+                unsafe {
+                    let _ = SetCursorPos(new_x, new_y);
+                }
+            }
+            self.send_mouse_input(MOUSEEVENTF_MOVE, dx as i32, dy as i32, 0);
+        }
     }
 
     pub fn mouse_down(&self, button: u8) {
@@ -244,6 +285,7 @@ impl InputSimulator {
     pub fn touch_direct(&self, norm_x: u16, norm_y: u16, action: u8) {
         #[cfg(windows)]
         {
+            Self::ensure_input_desktop();
             use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
             let cur_idx = self.active_monitor.load(Ordering::Relaxed);

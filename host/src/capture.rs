@@ -189,12 +189,13 @@ impl ScreenCapture {
     }
 
     pub fn capture_frame_jpeg(&mut self, quality: u8) -> Option<Vec<u8>> {
+        #[cfg(windows)]
+        crate::input::InputSimulator::ensure_input_desktop();
+
         if self.cached_monitors.is_empty() {
             if let Ok(all) = Monitor::all() {
                 self.cached_monitors = all;
                 self.last_monitor_refresh = std::time::Instant::now();
-            } else {
-                return None;
             }
         }
 
@@ -210,25 +211,28 @@ impl ScreenCapture {
             Some(img) => img,
             None => {
                 // If capture failed (e.g. resolution change, desktop switch, or DXGI reset),
-                // rate-limit refresh to once per second to avoid handle exhaustion
-                if self.last_monitor_refresh.elapsed() >= std::time::Duration::from_millis(1000) {
+                // refresh monitors if at least 250ms have passed
+                if self.last_monitor_refresh.elapsed() >= std::time::Duration::from_millis(250) {
                     if let Ok(all) = Monitor::all() {
                         self.cached_monitors = all;
                         self.last_monitor_refresh = std::time::Instant::now();
-                        if let Some(m) = self.cached_monitors.get(monitor_idx) {
-                            match m.capture_image() {
-                                Ok(img) => img,
-                                Err(_) => return None,
-                            }
-                        } else {
-                            return None;
-                        }
+                        self.cached_monitors.get(monitor_idx).and_then(|m| m.capture_image().ok())
                     } else {
-                        return None;
+                        None
                     }
                 } else {
-                    return None;
+                    None
                 }
+                .or_else(|| {
+                    #[cfg(windows)]
+                    {
+                        Self::capture_gdi_fallback()
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        None
+                    }
+                })?
             }
         };
 
@@ -325,6 +329,82 @@ impl ScreenCapture {
             Some(jpeg_bytes)
         } else {
             None
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn capture_gdi_fallback() -> Option<image::RgbaImage> {
+        use windows::Win32::Graphics::Gdi::*;
+        use windows::Win32::UI::WindowsAndMessaging::*;
+
+        unsafe {
+            let w = GetSystemMetrics(SM_CXSCREEN);
+            let h = GetSystemMetrics(SM_CYSCREEN);
+            if w <= 0 || h <= 0 {
+                return None;
+            }
+
+            let hdc_screen = GetDC(None);
+            if hdc_screen.is_invalid() {
+                return None;
+            }
+
+            let hdc_mem = CreateCompatibleDC(hdc_screen);
+            let hbm = CreateCompatibleBitmap(hdc_screen, w, h);
+            let old_bm = SelectObject(hdc_mem, hbm);
+
+            let success = BitBlt(hdc_mem, 0, 0, w, h, hdc_screen, 0, 0, SRCCOPY).is_ok();
+            SelectObject(hdc_mem, old_bm);
+
+            if !success {
+                let _ = DeleteObject(hbm);
+                let _ = DeleteDC(hdc_mem);
+                ReleaseDC(None, hdc_screen);
+                return None;
+            }
+
+            let mut bi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w,
+                    biHeight: -h, // Top-down
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            let mut raw_pixels = vec![0u8; (w * h * 4) as usize];
+            let lines = GetDIBits(
+                hdc_mem,
+                hbm,
+                0,
+                h as u32,
+                Some(raw_pixels.as_mut_ptr() as *mut _),
+                &mut bi,
+                DIB_RGB_COLORS,
+            );
+
+            let _ = DeleteObject(hbm);
+            let _ = DeleteDC(hdc_mem);
+            ReleaseDC(None, hdc_screen);
+
+            if lines == 0 {
+                return None;
+            }
+
+            // Convert BGRA to RGBA
+            for chunk in raw_pixels.chunks_exact_mut(4) {
+                let b = chunk[0];
+                let r = chunk[2];
+                chunk[0] = r;
+                chunk[2] = b;
+                chunk[3] = 255;
+            }
+
+            image::RgbaImage::from_raw(w as u32, h as u32, raw_pixels)
         }
     }
 }

@@ -114,15 +114,7 @@ class SignalingClient(
     private val isDecoding = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile
     private var pendingFrameBytes: ByteArray? = null
-    private var bufferA: Bitmap? = null
-    private var bufferB: Bitmap? = null
-    private var useBufferA = true
     private var frameSeq = 0L
-
-    private val decodeOptions = BitmapFactory.Options().apply {
-        inMutable = true
-        inPreferredConfig = Bitmap.Config.ARGB_8888
-    }
 
     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
         pendingFrameBytes = bytes.toByteArray()
@@ -143,28 +135,20 @@ class SignalingClient(
                         val toDecode = pendingFrameBytes ?: break
                         pendingFrameBytes = null
 
-                        val targetBuffer = if (useBufferA) bufferA else bufferB
                         val bmp = try {
-                            decodeOptions.inBitmap = targetBuffer
-                            BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOptions)
-                        } catch (_: Exception) {
-                            decodeOptions.inBitmap = null
-                            BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOptions)
+                            BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size)
+                        } catch (e: Exception) {
+                            Log.e(tag, "Failed to decode JPEG frame", e)
+                            null
                         }
 
                         if (bmp != null) {
-                            if (useBufferA) {
-                                bufferA = bmp
-                            } else {
-                                bufferB = bmp
-                            }
-                            useBufferA = !useBufferA
                             frameSeq++
                             _currentFrame.value = StreamFrame(bmp, frameSeq)
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(tag, "Failed to decode incoming JPEG frame", e)
+                    Log.e(tag, "Failed in decode loop", e)
                 } finally {
                     isDecoding.set(false)
                 }
@@ -263,10 +247,6 @@ class SignalingClient(
     fun disconnect() {
         webSocket?.close(1000, "User disconnected")
         webSocket = null
-        bufferA?.recycle()
-        bufferB?.recycle()
-        bufferA = null
-        bufferB = null
         _currentFrame.value = null
         _state.value = SignalingState.Disconnected
     }
