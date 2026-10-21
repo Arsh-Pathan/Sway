@@ -46,6 +46,7 @@ import com.sway.app.model.InputEvent
 import com.sway.app.network.StreamFrame
 import com.sway.app.ui.components.ModifierDock
 import com.sway.app.ui.components.QuickActionsSheet
+import com.sway.app.ui.components.DeckSurface
 import com.sway.app.ui.components.ResolutionSheet
 import com.sway.app.ui.components.SettingsSheet
 import com.sway.app.ui.components.TrackpadSurface
@@ -57,7 +58,8 @@ import org.webrtc.SurfaceViewRenderer
 
 enum class ControlMode {
     TRACKPAD,
-    TOUCH_SCREEN
+    TOUCH_SCREEN,
+    DECK
 }
 
 enum class ViewFitMode {
@@ -213,14 +215,16 @@ private fun DesktopStreamCanvas(
                     drawImage(
                         image = imageBitmap,
                         dstOffset = androidx.compose.ui.unit.IntOffset(padX.toInt(), padY.toInt()),
-                        dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt())
+                        dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt()),
+                        filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium
                     )
                 }
             } else {
                 drawImage(
                     image = imageBitmap,
                     dstOffset = androidx.compose.ui.unit.IntOffset(padX.toInt(), padY.toInt()),
-                    dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt())
+                    dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt()),
+                    filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium
                 )
             }
         }
@@ -378,7 +382,23 @@ fun SessionScreen(
             .fillMaxSize()
             .background(BackgroundDark)
     ) {
-        if (isLandscape) {
+        if (controlMode == ControlMode.DECK) {
+            DeckSurface(
+                sensitivity = sensitivity,
+                scrollSpeed = scrollSpeed,
+                hapticsEnabled = hapticsEnabled,
+                onInputEvent = { webRtcManager.sendInput(it) },
+                onOpenKeyboard = {
+                    focusRequester.requestFocus()
+                    keyboardController?.show()
+                },
+                onSwitchToStream = {
+                    controlMode = ControlMode.TRACKPAD
+                },
+                onOpenActions = { showQuickActions = true },
+                onDisconnect = { handleDisconnect() }
+            )
+        } else if (isLandscape) {
             // ==================== LANDSCAPE MODE: IMMERSIVE HORIZONTAL ====================
             Box(modifier = Modifier.fillMaxSize()) {
                 // Video Surface with Zoom & Pan + Direct Touch
@@ -402,33 +422,44 @@ fun SessionScreen(
                                 var lastTapTime = 0L
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
+                                    val downPos = down.position
                                     val downTime = System.currentTimeMillis()
                                     var hasDragged = false
-                                    val pt = mapTouchToNormalized(
+                                    val touchSlop = 20f
+                                    val initialPt = mapTouchToNormalized(
                                         down.position.x, down.position.y,
                                         size.width.toFloat(), size.height.toFloat(),
                                         currentFrame?.width, currentFrame?.height,
                                         isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
                                         viewFitMode
                                     )
-                                    if (pt != null) {
-                                        webRtcManager.sendInput(InputEvent.TouchDirect(pt.first, pt.second, InputEvent.TouchDirect.ACTION_DOWN))
+                                    if (initialPt != null) {
+                                        webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_DOWN))
                                     }
 
                                     val pointerId = down.id
                                     while (true) {
                                         val event = awaitPointerEvent()
                                         val current = event.changes.firstOrNull { it.id == pointerId } ?: break
-                                        val curPt = mapTouchToNormalized(
-                                            current.position.x, current.position.y,
-                                            size.width.toFloat(), size.height.toFloat(),
-                                            currentFrame?.width, currentFrame?.height,
-                                            isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                            viewFitMode
-                                        )
+                                        val dist = (current.position - downPos).getDistance()
+
                                         if (!current.pressed) {
-                                            if (curPt != null) {
-                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                            if (!hasDragged) {
+                                                // Clean single-touch tap: send UP with initial down coordinates
+                                                if (initialPt != null) {
+                                                    webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                                }
+                                            } else {
+                                                val curPt = mapTouchToNormalized(
+                                                    current.position.x, current.position.y,
+                                                    size.width.toFloat(), size.height.toFloat(),
+                                                    currentFrame?.width, currentFrame?.height,
+                                                    isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                                    viewFitMode
+                                                )
+                                                if (curPt != null) {
+                                                    webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                                }
                                             }
                                             val tapDuration = System.currentTimeMillis() - downTime
                                             if (tapDuration < 280 && !hasDragged) {
@@ -441,9 +472,19 @@ fun SessionScreen(
                                             }
                                             break
                                         }
-                                        hasDragged = true
-                                        if (curPt != null) {
-                                            webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
+
+                                        if (dist > touchSlop) {
+                                            hasDragged = true
+                                            val curPt = mapTouchToNormalized(
+                                                current.position.x, current.position.y,
+                                                size.width.toFloat(), size.height.toFloat(),
+                                                currentFrame?.width, currentFrame?.height,
+                                                isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                                viewFitMode
+                                            )
+                                            if (curPt != null) {
+                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
+                                            }
                                         }
                                         current.consume()
                                     }
@@ -566,6 +607,24 @@ fun SessionScreen(
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp)
                                 )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color.White,
+                                selectedLabelColor = Color.Black,
+                                containerColor = SurfaceDark.copy(alpha = 0.85f),
+                                labelColor = TextSecondary
+                            )
+                        )
+
+                        // Deck Mode (Pure Real-Time Controller)
+                        FilterChip(
+                            selected = controlMode == ControlMode.DECK,
+                            onClick = { controlMode = ControlMode.DECK },
+                            label = {
+                                Text("Deck Mode", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.Gamepad, contentDescription = null, modifier = Modifier.size(16.dp))
                             },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = Color.White,
@@ -782,33 +841,44 @@ fun SessionScreen(
                                 var lastTapTime = 0L
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
+                                    val downPos = down.position
                                     val downTime = System.currentTimeMillis()
                                     var hasDragged = false
-                                    val pt = mapTouchToNormalized(
+                                    val touchSlop = 20f
+                                    val initialPt = mapTouchToNormalized(
                                         down.position.x, down.position.y,
                                         size.width.toFloat(), size.height.toFloat(),
                                         currentFrame?.width, currentFrame?.height,
                                         isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
                                         viewFitMode
                                     )
-                                    if (pt != null) {
-                                        webRtcManager.sendInput(InputEvent.TouchDirect(pt.first, pt.second, InputEvent.TouchDirect.ACTION_DOWN))
+                                    if (initialPt != null) {
+                                        webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_DOWN))
                                     }
 
                                     val pointerId = down.id
                                     while (true) {
                                         val event = awaitPointerEvent()
                                         val current = event.changes.firstOrNull { it.id == pointerId } ?: break
-                                        val curPt = mapTouchToNormalized(
-                                            current.position.x, current.position.y,
-                                            size.width.toFloat(), size.height.toFloat(),
-                                            currentFrame?.width, currentFrame?.height,
-                                            isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                            viewFitMode
-                                        )
+                                        val dist = (current.position - downPos).getDistance()
+
                                         if (!current.pressed) {
-                                            if (curPt != null) {
-                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                            if (!hasDragged) {
+                                                // Clean single-touch tap: send UP with initial down coordinates
+                                                if (initialPt != null) {
+                                                    webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                                }
+                                            } else {
+                                                val curPt = mapTouchToNormalized(
+                                                    current.position.x, current.position.y,
+                                                    size.width.toFloat(), size.height.toFloat(),
+                                                    currentFrame?.width, currentFrame?.height,
+                                                    isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                                    viewFitMode
+                                                )
+                                                if (curPt != null) {
+                                                    webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                                }
                                             }
                                             val tapDuration = System.currentTimeMillis() - downTime
                                             if (tapDuration < 280 && !hasDragged) {
@@ -821,9 +891,19 @@ fun SessionScreen(
                                             }
                                             break
                                         }
-                                        hasDragged = true
-                                        if (curPt != null) {
-                                            webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
+
+                                        if (dist > touchSlop) {
+                                            hasDragged = true
+                                            val curPt = mapTouchToNormalized(
+                                                current.position.x, current.position.y,
+                                                size.width.toFloat(), size.height.toFloat(),
+                                                currentFrame?.width, currentFrame?.height,
+                                                isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                                viewFitMode
+                                            )
+                                            if (curPt != null) {
+                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
+                                            }
                                         }
                                         current.consume()
                                     }
@@ -1025,6 +1105,24 @@ fun SessionScreen(
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp)
                             )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color.White,
+                            selectedLabelColor = Color.Black,
+                            containerColor = SurfaceDark,
+                            labelColor = TextSecondary
+                        )
+                    )
+
+                    // Deck Mode (Pure Real-Time Controller)
+                    FilterChip(
+                        selected = controlMode == ControlMode.DECK,
+                        onClick = { controlMode = ControlMode.DECK },
+                        label = {
+                            Text("Deck Mode", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        },
+                        leadingIcon = {
+                            Icon(Icons.Default.Gamepad, contentDescription = null, modifier = Modifier.size(16.dp))
                         },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = Color.White,
@@ -1236,33 +1334,44 @@ fun SessionScreen(
                                 var lastTapTime = 0L
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
+                                    val downPos = down.position
                                     val downTime = System.currentTimeMillis()
                                     var hasDragged = false
-                                    val pt = mapTouchToNormalized(
+                                    val touchSlop = 20f
+                                    val initialPt = mapTouchToNormalized(
                                         down.position.x, down.position.y,
                                         size.width.toFloat(), size.height.toFloat(),
                                         currentFrame?.width, currentFrame?.height,
                                         isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
                                         viewFitMode
                                     )
-                                    if (pt != null) {
-                                        webRtcManager.sendInput(InputEvent.TouchDirect(pt.first, pt.second, InputEvent.TouchDirect.ACTION_DOWN))
+                                    if (initialPt != null) {
+                                        webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_DOWN))
                                     }
 
                                     val pointerId = down.id
                                     while (true) {
                                         val event = awaitPointerEvent()
                                         val current = event.changes.firstOrNull { it.id == pointerId } ?: break
-                                        val curPt = mapTouchToNormalized(
-                                            current.position.x, current.position.y,
-                                            size.width.toFloat(), size.height.toFloat(),
-                                            currentFrame?.width, currentFrame?.height,
-                                            isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                            viewFitMode
-                                        )
+                                        val dist = (current.position - downPos).getDistance()
+
                                         if (!current.pressed) {
-                                            if (curPt != null) {
-                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                            if (!hasDragged) {
+                                                // Clean single-touch tap: send UP with initial down coordinates
+                                                if (initialPt != null) {
+                                                    webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                                }
+                                            } else {
+                                                val curPt = mapTouchToNormalized(
+                                                    current.position.x, current.position.y,
+                                                    size.width.toFloat(), size.height.toFloat(),
+                                                    currentFrame?.width, currentFrame?.height,
+                                                    isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                                    viewFitMode
+                                                )
+                                                if (curPt != null) {
+                                                    webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                                }
                                             }
                                             val tapDuration = System.currentTimeMillis() - downTime
                                             if (tapDuration < 280 && !hasDragged) {
@@ -1275,9 +1384,19 @@ fun SessionScreen(
                                             }
                                             break
                                         }
-                                        hasDragged = true
-                                        if (curPt != null) {
-                                            webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
+
+                                        if (dist > touchSlop) {
+                                            hasDragged = true
+                                            val curPt = mapTouchToNormalized(
+                                                current.position.x, current.position.y,
+                                                size.width.toFloat(), size.height.toFloat(),
+                                                currentFrame?.width, currentFrame?.height,
+                                                isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
+                                                viewFitMode
+                                            )
+                                            if (curPt != null) {
+                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
+                                            }
                                         }
                                         current.consume()
                                     }

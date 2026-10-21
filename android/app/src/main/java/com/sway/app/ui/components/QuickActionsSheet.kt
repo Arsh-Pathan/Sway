@@ -1,14 +1,14 @@
 package com.sway.app.ui.components
 
-import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -42,8 +42,9 @@ fun QuickActionsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(horizontal = 20.dp, vertical = 12.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -57,13 +58,14 @@ fun QuickActionsSheet(
                     Icon(
                         imageVector = Icons.Default.Bolt,
                         contentDescription = null,
-                        tint = AccentIndigoBright,
-                        modifier = Modifier.size(24.dp)
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
                     )
                     Text(
-                        text = "Quick Actions & Power",
-                        style = Typography.headlineMedium,
-                        color = TextPrimary
+                        text = "Remote Command & Tool Deck",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
                     )
                 }
                 IconButton(onClick = onDismiss) {
@@ -72,19 +74,18 @@ fun QuickActionsSheet(
             }
 
             Text(
-                text = "Instant desktop commands and synchronized clipboard utilities.",
-                style = Typography.bodyMedium,
+                text = "Instant desktop control commands and keyboard shortcuts.",
+                fontSize = 12.sp,
                 color = TextSecondary
             )
 
-            // Grid / list of actions
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // 1. Paste Phone Clipboard
+            // Section: System & Window Management
+            ActionSectionHeader("SYSTEM & WINDOWS")
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 QuickActionRow(
                     icon = Icons.Default.ContentPaste,
-                    title = "Paste Phone Clipboard to PC",
-                    subtitle = "Sends phone's copied text to host clipboard instantly",
-                    accentColor = AccentIndigo,
+                    title = "Paste Phone Clipboard",
+                    subtitle = "Sends phone copied text directly to Windows",
                     onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                         if (clipboard != null && clipboard.hasPrimaryClip()) {
@@ -93,87 +94,222 @@ fun QuickActionsSheet(
                                 val text = clip.getItemAt(0).coerceToText(context).toString()
                                 if (text.isNotEmpty()) {
                                     onSendInput(InputEvent.ClipboardSync(text))
-                                    Toast.makeText(context, "Copied ${text.length} chars to PC!", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    Toast.makeText(context, "Clipboard text is empty", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Copied to PC!", Toast.LENGTH_SHORT).show()
                                 }
                             }
-                        } else {
-                            Toast.makeText(context, "Phone clipboard is empty", Toast.LENGTH_SHORT).show()
                         }
                         onDismiss()
                     }
                 )
 
-                // 2. Show Desktop (Win + D)
                 QuickActionRow(
                     icon = Icons.Default.DesktopWindows,
                     title = "Show Desktop",
-                    subtitle = "Minimizes all windows (Win + D)",
-                    accentColor = Color(0xFF3B82F6),
+                    subtitle = "Minimizes all open windows (Win + D)",
                     onClick = {
                         onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.SHOW_DESKTOP))
-                        Toast.makeText(context, "Showing Desktop", Toast.LENGTH_SHORT).show()
                         onDismiss()
                     }
                 )
 
-                // 3. Task Manager (Ctrl + Shift + Esc)
+                QuickActionRow(
+                    icon = Icons.Default.Layers,
+                    title = "Task View",
+                    subtitle = "Shows timeline and all desktop spaces (Win + Tab)",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.WIN_TAB))
+                        onDismiss()
+                    }
+                )
+
+                QuickActionRow(
+                    icon = Icons.Default.SwitchRight,
+                    title = "Switch Application",
+                    subtitle = "Cycle between open applications (Alt + Tab)",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.ALT_TAB))
+                        onDismiss()
+                    }
+                )
+
+                QuickActionRow(
+                    icon = Icons.Default.Crop,
+                    title = "Snipping Tool Screenshot",
+                    subtitle = "Captures an area of the PC screen (Win + Shift + S)",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.SNIPPING_TOOL))
+                        onDismiss()
+                    }
+                )
+
+                QuickActionRow(
+                    icon = Icons.Default.Close,
+                    title = "Close Active Window",
+                    subtitle = "Closes current window cleanly (Alt + F4)",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.CLOSE_WINDOW))
+                        onDismiss()
+                    }
+                )
+
                 QuickActionRow(
                     icon = Icons.Default.Build,
-                    title = "Open Task Manager",
+                    title = "Task Manager",
                     subtitle = "Launches Windows Task Manager (Ctrl + Shift + Esc)",
-                    accentColor = Color(0xFFF59E0B),
                     onClick = {
                         onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.TASK_MANAGER))
-                        Toast.makeText(context, "Opening Task Manager", Toast.LENGTH_SHORT).show()
                         onDismiss()
                     }
                 )
 
-                // 4. Lock Workstation
                 QuickActionRow(
                     icon = Icons.Default.Lock,
                     title = "Lock PC",
-                    subtitle = "Securely locks Windows session (Win + L)",
-                    accentColor = Color(0xFF8B5CF6),
+                    subtitle = "Securely locks Windows workstation (Win + L)",
                     onClick = {
                         onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.LOCK))
-                        Toast.makeText(context, "Host PC locked", Toast.LENGTH_SHORT).show()
                         onDismiss()
                     }
                 )
 
-                // 5. Turn Off Monitor
                 QuickActionRow(
                     icon = Icons.Default.VisibilityOff,
-                    title = "Turn Off Monitor Display",
-                    subtitle = "Powers down PC screen without stopping session",
-                    accentColor = Color(0xFF10B981),
+                    title = "Turn Off Screen",
+                    subtitle = "Puts host display to sleep without ending session",
                     onClick = {
                         onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.TURN_OFF_SCREEN))
-                        Toast.makeText(context, "Monitor display powered off", Toast.LENGTH_SHORT).show()
                         onDismiss()
                     }
                 )
 
-                // 6. Sleep PC
                 QuickActionRow(
                     icon = Icons.Default.PowerSettingsNew,
-                    title = "Sleep Laptop / PC",
-                    subtitle = "Puts host computer into low-power sleep mode",
-                    accentColor = AccentRose,
+                    title = "Sleep PC",
+                    subtitle = "Puts host computer into sleep state",
                     onClick = {
                         onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.SLEEP))
-                        Toast.makeText(context, "Sending PC to sleep...", Toast.LENGTH_SHORT).show()
                         onDismiss()
                     }
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            // Section: Media & Sound
+            ActionSectionHeader("MEDIA & AUDIO")
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                QuickActionRow(
+                    icon = Icons.Default.PlayArrow,
+                    title = "Play / Pause",
+                    subtitle = "Toggles music or video playback",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.MEDIA_PLAY_PAUSE))
+                        onDismiss()
+                    }
+                )
+                QuickActionRow(
+                    icon = Icons.Default.VolumeUp,
+                    title = "Volume Up",
+                    subtitle = "Increases master output volume",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.VOLUME_UP))
+                    }
+                )
+                QuickActionRow(
+                    icon = Icons.Default.VolumeDown,
+                    title = "Volume Down",
+                    subtitle = "Decreases master output volume",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.VOLUME_DOWN))
+                    }
+                )
+                QuickActionRow(
+                    icon = Icons.Default.VolumeMute,
+                    title = "Mute / Unmute",
+                    subtitle = "Toggles system mute",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.VOLUME_MUTE))
+                    }
+                )
+            }
+
+            // Section: Web Browser
+            ActionSectionHeader("BROWSER TOOLS")
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                QuickActionRow(
+                    icon = Icons.Default.Add,
+                    title = "New Tab",
+                    subtitle = "Opens a new tab in browser (Ctrl + T)",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.BROWSER_NEW_TAB))
+                        onDismiss()
+                    }
+                )
+                QuickActionRow(
+                    icon = Icons.Default.Close,
+                    title = "Close Tab",
+                    subtitle = "Closes active browser tab (Ctrl + W)",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.BROWSER_CLOSE_TAB))
+                        onDismiss()
+                    }
+                )
+                QuickActionRow(
+                    icon = Icons.Default.Refresh,
+                    title = "Refresh Page",
+                    subtitle = "Reloads current webpage (F5)",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.BROWSER_REFRESH))
+                        onDismiss()
+                    }
+                )
+            }
+
+            // Section: Windows Tools
+            ActionSectionHeader("UTILITIES")
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                QuickActionRow(
+                    icon = Icons.Default.Folder,
+                    title = "File Explorer",
+                    subtitle = "Opens Windows Explorer (Win + E)",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.FILE_EXPLORER))
+                        onDismiss()
+                    }
+                )
+                QuickActionRow(
+                    icon = Icons.Default.Terminal,
+                    title = "Run Dialog",
+                    subtitle = "Opens Windows Run prompt (Win + R)",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.RUN_DIALOG))
+                        onDismiss()
+                    }
+                )
+                QuickActionRow(
+                    icon = Icons.Default.Search,
+                    title = "Windows Search",
+                    subtitle = "Opens system search bar (Win + S)",
+                    onClick = {
+                        onSendInput(InputEvent.SystemCommand(InputEvent.SystemCommand.WINDOWS_SEARCH))
+                        onDismiss()
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
+}
+
+@Composable
+private fun ActionSectionHeader(title: String) {
+    Text(
+        text = title,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        color = TextSecondary,
+        letterSpacing = 1.sp,
+        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+    )
 }
 
 @Composable
@@ -181,7 +317,6 @@ private fun QuickActionRow(
     icon: ImageVector,
     title: String,
     subtitle: String,
-    accentColor: Color,
     onClick: () -> Unit
 ) {
     Surface(
@@ -200,32 +335,32 @@ private fun QuickActionRow(
         ) {
             Box(
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .background(SurfaceDark)
-                    .border(1.dp, SurfaceCardBorder, RoundedCornerShape(10.dp)),
+                    .border(1.dp, SurfaceCardBorder, RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = TextPrimary,
-                    modifier = Modifier.size(20.dp)
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
                 )
             }
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    fontSize = 14.sp,
+                    fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary
+                    color = Color.White
                 )
                 Text(
                     text = subtitle,
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
                     color = TextSecondary,
-                    lineHeight = 16.sp
+                    lineHeight = 15.sp
                 )
             }
 
@@ -233,7 +368,7 @@ private fun QuickActionRow(
                 imageVector = Icons.Default.ChevronRight,
                 contentDescription = null,
                 tint = TextMuted,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(16.dp)
             )
         }
     }

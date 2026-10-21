@@ -177,6 +177,40 @@ sealed class InputEvent {
             const val TASK_MANAGER: Byte = 3
             const val SLEEP: Byte = 4
             const val TURN_OFF_SCREEN: Byte = 5
+            const val VOLUME_UP: Byte = 6
+            const val VOLUME_DOWN: Byte = 7
+            const val VOLUME_MUTE: Byte = 8
+            const val MEDIA_PLAY_PAUSE: Byte = 9
+            const val MEDIA_NEXT: Byte = 10
+            const val MEDIA_PREV: Byte = 11
+            const val ALT_TAB: Byte = 12
+            const val WIN_TAB: Byte = 13
+            const val CLOSE_WINDOW: Byte = 14
+            const val SNIPPING_TOOL: Byte = 15
+            const val FILE_EXPLORER: Byte = 16
+            const val RUN_DIALOG: Byte = 17
+            const val MAXIMIZE_WINDOW: Byte = 18
+            const val MINIMIZE_WINDOW: Byte = 19
+            const val SNAP_LEFT: Byte = 20
+            const val SNAP_RIGHT: Byte = 21
+            const val BROWSER_NEW_TAB: Byte = 22
+            const val BROWSER_CLOSE_TAB: Byte = 23
+            const val BROWSER_REOPEN_TAB: Byte = 24
+            const val BROWSER_REFRESH: Byte = 25
+            const val BROWSER_BACK: Byte = 26
+            const val BROWSER_FORWARD: Byte = 27
+            const val EDIT_SELECT_ALL: Byte = 28
+            const val EDIT_COPY: Byte = 29
+            const val EDIT_PASTE: Byte = 30
+            const val EDIT_CUT: Byte = 31
+            const val EDIT_UNDO: Byte = 32
+            const val EDIT_REDO: Byte = 33
+            const val WINDOWS_SEARCH: Byte = 34
+            const val ACTION_CENTER: Byte = 35
+            const val KEY_ESCAPE: Byte = 36
+            const val KEY_ENTER: Byte = 37
+            const val KEY_BACKSPACE: Byte = 38
+            const val KEY_TAB: Byte = 39
         }
     }
 }

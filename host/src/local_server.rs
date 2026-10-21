@@ -295,7 +295,7 @@ impl LocalServer {
 
                     let is_streaming = Arc::new(AtomicBool::new(true));
                     let active_monitor = Arc::new(AtomicUsize::new(0));
-                    let stream_quality = Arc::new(AtomicU8::new(45)); // Default to Fast 60 FPS on direct local connection
+                    let stream_quality = Arc::new(AtomicU8::new(70)); // Default to crisp balanced quality
                     let client_ack = Arc::new(AtomicBool::new(true));
                     let last_ack_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
@@ -377,9 +377,9 @@ impl LocalServer {
                                         }
                                         InputPacket::SetQuality { mode } => {
                                             let q = match mode {
-                                                0 => 40,
-                                                1 => 50,
-                                                _ => 70,
+                                                0 => 50,
+                                                1 => 70,
+                                                _ => 85,
                                             };
                                             stream_quality.store(q, Ordering::SeqCst);
                                         }

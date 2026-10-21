@@ -317,12 +317,7 @@ impl InputSimulator {
 
             match action {
                 0 => {
-                    self.send_mouse_input(
-                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
-                        abs_x,
-                        abs_y,
-                        0,
-                    );
+                    self.send_mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0, 0);
                 }
                 1 => {
                     self.send_mouse_input(
@@ -333,12 +328,7 @@ impl InputSimulator {
                     );
                 }
                 2 => {
-                    self.send_mouse_input(
-                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP,
-                        abs_x,
-                        abs_y,
-                        0,
-                    );
+                    self.send_mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0);
                 }
                 _ => {}
             }
@@ -516,6 +506,32 @@ impl InputSimulator {
     pub fn execute_system_command(action: u8) {
         #[cfg(windows)]
         {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{
+                KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
+            };
+            let sim = InputSimulator::new();
+
+            let tap = |vkey: u16| {
+                sim.send_key_input(vkey, KEYBD_EVENT_FLAGS(0), 0);
+                sim.send_key_input(vkey, KEYEVENTF_KEYUP, 0);
+            };
+
+            let combo_2 = |mod_vkey: u16, vkey: u16| {
+                sim.send_key_input(mod_vkey, KEYBD_EVENT_FLAGS(0), 0);
+                sim.send_key_input(vkey, KEYBD_EVENT_FLAGS(0), 0);
+                sim.send_key_input(vkey, KEYEVENTF_KEYUP, 0);
+                sim.send_key_input(mod_vkey, KEYEVENTF_KEYUP, 0);
+            };
+
+            let combo_3 = |mod1: u16, mod2: u16, vkey: u16| {
+                sim.send_key_input(mod1, KEYBD_EVENT_FLAGS(0), 0);
+                sim.send_key_input(mod2, KEYBD_EVENT_FLAGS(0), 0);
+                sim.send_key_input(vkey, KEYBD_EVENT_FLAGS(0), 0);
+                sim.send_key_input(vkey, KEYEVENTF_KEYUP, 0);
+                sim.send_key_input(mod2, KEYEVENTF_KEYUP, 0);
+                sim.send_key_input(mod1, KEYEVENTF_KEYUP, 0);
+            };
+
             match action {
                 1 => {
                     // Lock Workstation (Win+L)
@@ -529,24 +545,12 @@ impl InputSimulator {
                 }
                 2 => {
                     // Show Desktop (Win+D)
-                    use windows::Win32::UI::Input::KeyboardAndMouse::{KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_LWIN};
-                    let sim = InputSimulator::new();
-                    sim.send_key_input(VK_LWIN.0, KEYBD_EVENT_FLAGS(0), 0);
-                    sim.send_key_input(0x44, KEYBD_EVENT_FLAGS(0), 0); // 'D'
-                    sim.send_key_input(0x44, KEYEVENTF_KEYUP, 0);
-                    sim.send_key_input(VK_LWIN.0, KEYEVENTF_KEYUP, 0);
+                    combo_2(VK_LWIN.0, 0x44); // 'D'
                     info!("Executed remote Show Desktop (Win+D)");
                 }
                 3 => {
                     // Open Task Manager (Ctrl+Shift+Esc)
-                    use windows::Win32::UI::Input::KeyboardAndMouse::{KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_CONTROL, VK_SHIFT};
-                    let sim = InputSimulator::new();
-                    sim.send_key_input(VK_CONTROL.0, KEYBD_EVENT_FLAGS(0), 0);
-                    sim.send_key_input(VK_SHIFT.0, KEYBD_EVENT_FLAGS(0), 0);
-                    sim.send_key_input(0x1B, KEYBD_EVENT_FLAGS(0), 0); // VK_ESCAPE
-                    sim.send_key_input(0x1B, KEYEVENTF_KEYUP, 0);
-                    sim.send_key_input(VK_SHIFT.0, KEYEVENTF_KEYUP, 0);
-                    sim.send_key_input(VK_CONTROL.0, KEYEVENTF_KEYUP, 0);
+                    combo_3(VK_CONTROL.0, VK_SHIFT.0, 0x1B); // VK_ESCAPE
                     info!("Executed remote Task Manager shortcut");
                 }
                 4 => {
@@ -565,6 +569,142 @@ impl InputSimulator {
                         let _ = SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, WPARAM(0xF170), LPARAM(2)); // SC_MONITORPOWER, 2 = off
                     }
                     info!("Executed remote Turn Off Display");
+                }
+                6 => {
+                    // Volume Up (VK_VOLUME_UP = 0xAF)
+                    tap(0xAF);
+                }
+                7 => {
+                    // Volume Down (VK_VOLUME_DOWN = 0xAE)
+                    tap(0xAE);
+                }
+                8 => {
+                    // Volume Mute (VK_VOLUME_MUTE = 0xAD)
+                    tap(0xAD);
+                }
+                9 => {
+                    // Media Play / Pause (VK_MEDIA_PLAY_PAUSE = 0xB3)
+                    tap(0xB3);
+                }
+                10 => {
+                    // Media Next Track (VK_MEDIA_NEXT_TRACK = 0xB0)
+                    tap(0xB0);
+                }
+                11 => {
+                    // Media Prev Track (VK_MEDIA_PREV_TRACK = 0xB1)
+                    tap(0xB1);
+                }
+                12 => {
+                    // Alt + Tab
+                    combo_2(VK_MENU.0, 0x09); // VK_TAB
+                }
+                13 => {
+                    // Win + Tab
+                    combo_2(VK_LWIN.0, 0x09); // VK_TAB
+                }
+                14 => {
+                    // Alt + F4 (Close Window)
+                    combo_2(VK_MENU.0, 0x73); // VK_F4
+                }
+                15 => {
+                    // Win + Shift + S (Snipping Tool)
+                    combo_3(VK_LWIN.0, VK_SHIFT.0, 0x53); // 'S'
+                }
+                16 => {
+                    // Win + E (File Explorer)
+                    combo_2(VK_LWIN.0, 0x45); // 'E'
+                }
+                17 => {
+                    // Win + R (Run Dialog)
+                    combo_2(VK_LWIN.0, 0x52); // 'R'
+                }
+                18 => {
+                    // Win + Up (Maximize)
+                    combo_2(VK_LWIN.0, 0x26); // VK_UP
+                }
+                19 => {
+                    // Win + Down (Minimize)
+                    combo_2(VK_LWIN.0, 0x28); // VK_DOWN
+                }
+                20 => {
+                    // Win + Left (Snap Left)
+                    combo_2(VK_LWIN.0, 0x25); // VK_LEFT
+                }
+                21 => {
+                    // Win + Right (Snap Right)
+                    combo_2(VK_LWIN.0, 0x27); // VK_RIGHT
+                }
+                22 => {
+                    // Ctrl + T (New Tab)
+                    combo_2(VK_CONTROL.0, 0x54); // 'T'
+                }
+                23 => {
+                    // Ctrl + W (Close Tab)
+                    combo_2(VK_CONTROL.0, 0x57); // 'W'
+                }
+                24 => {
+                    // Ctrl + Shift + T (Reopen Tab)
+                    combo_3(VK_CONTROL.0, VK_SHIFT.0, 0x54); // 'T'
+                }
+                25 => {
+                    // F5 / Refresh
+                    tap(0x74); // VK_F5
+                }
+                26 => {
+                    // Alt + Left (Browser Back)
+                    combo_2(VK_MENU.0, 0x25); // VK_LEFT
+                }
+                27 => {
+                    // Alt + Right (Browser Forward)
+                    combo_2(VK_MENU.0, 0x27); // VK_RIGHT
+                }
+                28 => {
+                    // Ctrl + A (Select All)
+                    combo_2(VK_CONTROL.0, 0x41); // 'A'
+                }
+                29 => {
+                    // Ctrl + C (Copy)
+                    combo_2(VK_CONTROL.0, 0x43); // 'C'
+                }
+                30 => {
+                    // Ctrl + V (Paste)
+                    combo_2(VK_CONTROL.0, 0x56); // 'V'
+                }
+                31 => {
+                    // Ctrl + X (Cut)
+                    combo_2(VK_CONTROL.0, 0x58); // 'X'
+                }
+                32 => {
+                    // Ctrl + Z (Undo)
+                    combo_2(VK_CONTROL.0, 0x5A); // 'Z'
+                }
+                33 => {
+                    // Ctrl + Y (Redo)
+                    combo_2(VK_CONTROL.0, 0x59); // 'Y'
+                }
+                34 => {
+                    // Win + S (Windows Search)
+                    combo_2(VK_LWIN.0, 0x53); // 'S'
+                }
+                35 => {
+                    // Win + A (Action Center / Quick Settings)
+                    combo_2(VK_LWIN.0, 0x41); // 'A'
+                }
+                36 => {
+                    // Escape
+                    tap(0x1B);
+                }
+                37 => {
+                    // Enter
+                    tap(0x0D);
+                }
+                38 => {
+                    // Backspace
+                    tap(0x08);
+                }
+                39 => {
+                    // Tab
+                    tap(0x09);
                 }
                 _ => {}
             }

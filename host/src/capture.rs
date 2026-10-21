@@ -12,83 +12,150 @@ pub struct MonitorInfo {
     pub is_primary: bool,
 }
 
-const CURSOR_WIDTH: usize = 14;
-const CURSOR_HEIGHT: usize = 20;
-
-// 0 = Transparent, 1 = Black border, 2 = White body
-#[rustfmt::skip]
-const CURSOR_BITMAP: [u8; CURSOR_WIDTH * CURSOR_HEIGHT] = [
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    1, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0,
-    1, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0,
-    1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0,
-    1, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0,
-    1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0,
-    1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0,
-    1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 0, 0,
-    1, 2, 2, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0,
-    1, 2, 1, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0,
-    1, 1, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0, 0,
-    1, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-];
-
 #[cfg(windows)]
-fn get_cursor_pos() -> Option<(i32, i32)> {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
-    let mut pt = POINT::default();
-    if unsafe { GetCursorPos(&mut pt) }.is_ok() {
-        Some((pt.x, pt.y))
-    } else {
-        None
+fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u32, mon_h: u32) {
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL,
+    };
+
+    let mut ci = CURSORINFO {
+        cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+        ..Default::default()
+    };
+
+    unsafe {
+        if GetCursorInfo(&mut ci).is_err() {
+            return;
+        }
+        if (ci.flags.0 & CURSOR_SHOWING.0) == 0 || ci.hCursor.is_invalid() {
+            return;
+        }
+
+        let mut ii = windows::Win32::UI::WindowsAndMessaging::ICONINFO::default();
+        if GetIconInfo(ci.hCursor, &mut ii).is_err() {
+            return;
+        }
+
+        let hotspot_x = ii.xHotspot as i32;
+        let hotspot_y = ii.yHotspot as i32;
+
+        if !ii.hbmMask.is_invalid() {
+            let _ = DeleteObject(ii.hbmMask);
+        }
+        if !ii.hbmColor.is_invalid() {
+            let _ = DeleteObject(ii.hbmColor);
+        }
+
+        let cur_x = ci.ptScreenPos.x;
+        let cur_y = ci.ptScreenPos.y;
+
+        let local_x = cur_x - mon_x;
+        let local_y = cur_y - mon_y;
+        if local_x < -64 || local_x >= mon_w as i32 + 64 || local_y < -64 || local_y >= mon_h as i32 + 64 {
+            return;
+        }
+
+        let img_w = img.width() as f64;
+        let img_h = img.height() as f64;
+        let scale_x = img_w / (mon_w as f64).max(1.0);
+        let scale_y = img_h / (mon_h as f64).max(1.0);
+
+        let target_cur_x = ((local_x as f64) * scale_x).round() as i32;
+        let target_cur_y = ((local_y as f64) * scale_y).round() as i32;
+        let scaled_hotspot_x = ((hotspot_x as f64) * scale_x).round() as i32;
+        let scaled_hotspot_y = ((hotspot_y as f64) * scale_y).round() as i32;
+
+        let cur_w = 32i32;
+        let cur_h = 32i32;
+
+        let hdc_mem = CreateCompatibleDC(HDC::default());
+        if hdc_mem.is_invalid() {
+            return;
+        }
+
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: cur_w,
+                biHeight: -cur_h, // Top-down DIB
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        if let Ok(hbm) = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+            if !bits.is_null() {
+                let old_bm = SelectObject(hdc_mem, hbm);
+                std::ptr::write_bytes(bits as *mut u8, 0, (cur_w * cur_h * 4) as usize);
+
+                let drawn = DrawIconEx(
+                    hdc_mem,
+                    0,
+                    0,
+                    ci.hCursor,
+                    cur_w,
+                    cur_h,
+                    0,
+                    None,
+                    DI_NORMAL,
+                ).is_ok();
+
+                SelectObject(hdc_mem, old_bm);
+
+                if drawn {
+                    let pixel_slice = std::slice::from_raw_parts(bits as *const u8, (cur_w * cur_h * 4) as usize);
+                    let draw_origin_x = target_cur_x - scaled_hotspot_x;
+                    let draw_origin_y = target_cur_y - scaled_hotspot_y;
+
+                    for cy in 0..cur_h {
+                        for cx in 0..cur_w {
+                            let idx = ((cy * cur_w + cx) * 4) as usize;
+                            let b = pixel_slice[idx];
+                            let g = pixel_slice[idx + 1];
+                            let r = pixel_slice[idx + 2];
+                            let a = pixel_slice[idx + 3];
+
+                            if a == 0 && r == 0 && g == 0 && b == 0 {
+                                continue;
+                            }
+
+                            let px = draw_origin_x + cx;
+                            let py = draw_origin_y + cy;
+
+                            if px >= 0 && px < img.width() as i32 && py >= 0 && py < img.height() as i32 {
+                                let alpha = if a > 0 { a } else { 255 } as f32 / 255.0;
+                                let dest = img.get_pixel(px as u32, py as u32);
+                                let out_r = (r as f32 * alpha + dest[0] as f32 * (1.0 - alpha)) as u8;
+                                let out_g = (g as f32 * alpha + dest[1] as f32 * (1.0 - alpha)) as u8;
+                                let out_b = (b as f32 * alpha + dest[2] as f32 * (1.0 - alpha)) as u8;
+                                img.put_pixel(px as u32, py as u32, image::Rgba([out_r, out_g, out_b, 255]));
+                            }
+                        }
+                    }
+                }
+            }
+            let _ = DeleteObject(hbm);
+        }
+        let _ = DeleteDC(hdc_mem);
     }
 }
 
 #[cfg(not(windows))]
-fn get_cursor_pos() -> Option<(i32, i32)> {
-    None
-}
-
-fn draw_cursor(img: &mut image::RgbaImage, cur_x: i32, cur_y: i32) {
-    let img_w = img.width() as i32;
-    let img_h = img.height() as i32;
-
-    for y in 0..CURSOR_HEIGHT {
-        for x in 0..CURSOR_WIDTH {
-            let val = CURSOR_BITMAP[y * CURSOR_WIDTH + x];
-            if val == 0 {
-                continue;
-            }
-            let px = cur_x + x as i32;
-            let py = cur_y + y as i32;
-            if px >= 0 && px < img_w && py >= 0 && py < img_h {
-                let color = if val == 1 {
-                    image::Rgba([0, 0, 0, 255])
-                } else {
-                    image::Rgba([255, 255, 255, 255])
-                };
-                img.put_pixel(px as u32, py as u32, color);
-            }
-        }
-    }
-}
+fn draw_real_cursor(_img: &mut image::RgbaImage, _mon_x: i32, _mon_y: i32, _mon_w: u32, _mon_h: u32) {}
 
 pub struct ScreenCapture {
     pub active_monitor: usize,
     pub monitors: Vec<MonitorInfo>,
     cached_monitors: Vec<Monitor>,
     rgb_buffer: Vec<u8>,
-    last_cursor_x: i32,
-    last_cursor_y: i32,
-    last_checksum: u64,
     last_frame_time: std::time::Instant,
     last_monitor_refresh: std::time::Instant,
 }
@@ -136,10 +203,7 @@ impl ScreenCapture {
             active_monitor: active_index,
             monitors,
             cached_monitors,
-            rgb_buffer: Vec::with_capacity(854 * 480 * 3),
-            last_cursor_x: -1,
-            last_cursor_y: -1,
-            last_checksum: 0,
+            rgb_buffer: Vec::with_capacity(1920 * 1080 * 3),
             last_frame_time: std::time::Instant::now(),
             last_monitor_refresh: std::time::Instant::now(),
         }
@@ -240,8 +304,8 @@ impl ScreenCapture {
         let width = rgba_image.width();
         let height = rgba_image.height();
 
-        // Downscale to 854 max width for sub-1ms resize & ultra-lightweight 10-25KB frames
-        let max_dim = 854;
+        // Stream native resolution up to 1080p / 1920 with smooth bilinear filtering if downscale is required
+        let max_dim = 1920;
         let mut target_image = if width > max_dim || height > max_dim {
             let (target_w, target_h) = if width >= height {
                 (max_dim, (height * max_dim) / width)
@@ -252,32 +316,19 @@ impl ScreenCapture {
                 &rgba_image,
                 target_w,
                 target_h,
-                image::imageops::FilterType::Nearest,
+                image::imageops::FilterType::Triangle,
             )
         } else {
             rgba_image
         };
 
-        // Render hardware mouse cursor overlay directly on the frame
+        // Render real hardware mouse cursor overlay directly on the frame
         let mon_x = selected_monitor.x().unwrap_or(0);
         let mon_y = selected_monitor.y().unwrap_or(0);
         let mon_w = selected_monitor.width().unwrap_or(width).max(1);
         let mon_h = selected_monitor.height().unwrap_or(height).max(1);
 
-        let cur_pos = get_cursor_pos().unwrap_or((0, 0));
-        let cursor_changed = cur_pos.0 != self.last_cursor_x || cur_pos.1 != self.last_cursor_y;
-        self.last_cursor_x = cur_pos.0;
-        self.last_cursor_y = cur_pos.1;
-
-        if let Some((cx, cy)) = Some(cur_pos) {
-            let local_x = cx - mon_x;
-            let local_y = cy - mon_y;
-            if local_x >= 0 && local_x < mon_w as i32 && local_y >= 0 && local_y < mon_h as i32 {
-                let cur_x = ((local_x as f64 * target_image.width() as f64) / mon_w as f64).round() as i32;
-                let cur_y = ((local_y as f64 * target_image.height() as f64) / mon_h as f64).round() as i32;
-                draw_cursor(&mut target_image, cur_x, cur_y);
-            }
-        }
+        draw_real_cursor(&mut target_image, mon_x, mon_y, mon_w, mon_h);
 
         // Fast zero-allocation RGBA to RGB conversion into reusable pre-allocated buffer
         let raw_rgba = target_image.as_raw();

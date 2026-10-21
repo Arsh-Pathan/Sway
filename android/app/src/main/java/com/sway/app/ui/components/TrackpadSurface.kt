@@ -112,7 +112,7 @@ fun TrackpadSurface(
                             val dragY = change.position.y - change.previousPosition.y
                             totalDragX += Math.abs(dragX)
                             totalDragY += Math.abs(dragY)
-                            if (totalDragX > 8f || totalDragY > 8f) {
+                            if (totalDragX > 25f || totalDragY > 25f) {
                                 hasMoved = true
                             }
 
@@ -130,7 +130,7 @@ fun TrackpadSurface(
                             val dragX = ((p0.position.x - p0.previousPosition.x) + (p1.position.x - p1.previousPosition.x)) / 2f
                             totalDragX += Math.abs(dragX)
                             totalDragY += Math.abs(dragY)
-                            if (totalDragX > 8f || totalDragY > 8f) {
+                            if (totalDragX > 25f || totalDragY > 25f) {
                                 hasMoved = true
                             }
 

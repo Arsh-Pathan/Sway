@@ -137,7 +137,7 @@ impl InputPacket {
             }
             0x0F => {
                 let action = rdr.read_u8()?;
-                if action < 1 || action > 5 {
+                if action < 1 || action > 50 {
                     return Err(ProtocolError::InvalidParameter("invalid system command action"));
                 }
                 Ok(InputPacket::SystemCommand { action })
