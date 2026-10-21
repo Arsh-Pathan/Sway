@@ -388,7 +388,31 @@ fun SessionScreen(
                                 translationY = zoomOffsetY
                             )
                     ) {
-                        if (rtcState is RtcConnectionState.Connected) {
+                        if (webRtcManager.isDirectLocal || currentFrame != null) {
+                            if (currentFrame != null) {
+                                DesktopStreamCanvas(frame = currentFrame, sequence = currentSequence, fitMode = viewFitMode)
+                            } else {
+                                Surface(
+                                    modifier = Modifier
+                                        .align(Alignment.Center)
+                                        .padding(8.dp),
+                                    color = SurfaceDark.copy(alpha = 0.85f),
+                                    shape = MaterialTheme.shapes.medium
+                                ) {
+                                    val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                        "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
+                                    } else {
+                                        "Connecting to desktop..."
+                                    }
+                                    Text(
+                                        text = statusMsg,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        style = Typography.bodyMedium,
+                                        color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                                    )
+                                }
+                            }
+                        } else if (rtcState is RtcConnectionState.Connected) {
                             AndroidView(
                                 factory = { ctx ->
                                     SurfaceViewRenderer(ctx).apply {
@@ -398,8 +422,6 @@ fun SessionScreen(
                                 },
                                 modifier = Modifier.fillMaxSize()
                             )
-                        } else if (currentFrame != null) {
-                            DesktopStreamCanvas(frame = currentFrame, sequence = currentSequence, fitMode = viewFitMode)
                         } else {
                             Surface(
                                 modifier = Modifier
@@ -408,11 +430,16 @@ fun SessionScreen(
                                 color = SurfaceDark.copy(alpha = 0.85f),
                                 shape = MaterialTheme.shapes.medium
                             ) {
+                                val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                    "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
+                                } else {
+                                    "Connecting to desktop..."
+                                }
                                 Text(
-                                    text = "Connecting to desktop...",
+                                    text = statusMsg,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = Typography.bodyMedium,
-                                    color = AccentIndigoBright
+                                    color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
                                 )
                             }
                         }
@@ -532,9 +559,9 @@ fun SessionScreen(
                             onClick = { cyclePerformanceMode() },
                             label = {
                                 val label = when (currentQuality) {
-                                    InputEvent.SetQuality.TURBO -> "⚡ 60 FPS"
-                                    InputEvent.SetQuality.BALANCED -> "⚖️ 45 FPS"
-                                    else -> "🎨 HQ"
+                                    InputEvent.SetQuality.TURBO -> "60 FPS"
+                                    InputEvent.SetQuality.BALANCED -> "45 FPS"
+                                    else -> "HQ"
                                 }
                                 Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             },
@@ -742,9 +769,9 @@ fun SessionScreen(
                         onClick = { cyclePerformanceMode() },
                         label = {
                             val label = when (currentQuality) {
-                                InputEvent.SetQuality.TURBO -> "⚡ 60 FPS"
-                                InputEvent.SetQuality.BALANCED -> "⚖️ 45 FPS"
-                                else -> "🎨 HQ"
+                                InputEvent.SetQuality.TURBO -> "60 FPS"
+                                InputEvent.SetQuality.BALANCED -> "45 FPS"
+                                else -> "HQ"
                             }
                             Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         },
@@ -855,7 +882,7 @@ fun SessionScreen(
                         ) {
                             Icon(Icons.Default.Security, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
                             Text(
-                                text = "🔒 Laptop screen is pitch black (People at home cannot see)",
+                                text = "Laptop screen is pitch black (Stealth active)",
                                 color = Color(0xFF10B981),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -937,7 +964,31 @@ fun SessionScreen(
                                 translationY = zoomOffsetY
                             )
                     ) {
-                        if (rtcState is RtcConnectionState.Connected) {
+                        if (webRtcManager.isDirectLocal || currentFrame != null) {
+                            if (currentFrame != null) {
+                                DesktopStreamCanvas(frame = currentFrame, sequence = currentSequence, fitMode = viewFitMode)
+                            } else {
+                                Surface(
+                                    modifier = Modifier
+                                        .align(Alignment.Center)
+                                        .padding(8.dp),
+                                    color = SurfaceDark.copy(alpha = 0.85f),
+                                    shape = MaterialTheme.shapes.medium
+                                ) {
+                                    val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                        "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
+                                    } else {
+                                        "Connecting to desktop..."
+                                    }
+                                    Text(
+                                        text = statusMsg,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        style = Typography.bodyMedium,
+                                        color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                                    )
+                                }
+                            }
+                        } else if (rtcState is RtcConnectionState.Connected) {
                             AndroidView(
                                 factory = { ctx ->
                                     SurfaceViewRenderer(ctx).apply {
@@ -947,8 +998,6 @@ fun SessionScreen(
                                 },
                                 modifier = Modifier.fillMaxSize()
                             )
-                        } else if (currentFrame != null) {
-                            DesktopStreamCanvas(frame = currentFrame, sequence = currentSequence, fitMode = viewFitMode)
                         } else {
                             Surface(
                                 modifier = Modifier
@@ -957,11 +1006,16 @@ fun SessionScreen(
                                 color = SurfaceDark.copy(alpha = 0.85f),
                                 shape = MaterialTheme.shapes.medium
                             ) {
+                                val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                    "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
+                                } else {
+                                    "Connecting to desktop..."
+                                }
                                 Text(
-                                    text = "Connecting to desktop...",
+                                    text = statusMsg,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = Typography.bodyMedium,
-                                    color = AccentIndigoBright
+                                    color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
                                 )
                             }
                         }

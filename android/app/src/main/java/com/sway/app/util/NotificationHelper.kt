@@ -61,7 +61,7 @@ object NotificationHelper {
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID_ALERTS)
             .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("🖥️ Sway Host Ready")
+            .setContentTitle("Sway Host Ready")
             .setContentText("Found '${host.name}' on local Wi-Fi. Tap to connect!")
             .setStyle(
                 NotificationCompat.BigTextStyle()
@@ -93,7 +93,7 @@ object NotificationHelper {
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID_STATUS)
             .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("🟢 Sway Connected")
+            .setContentTitle("Sway Connected")
             .setContentText("Streaming desktop from $hostName (60 FPS)")
             .setOngoing(true)
             .setContentIntent(pendingIntent)

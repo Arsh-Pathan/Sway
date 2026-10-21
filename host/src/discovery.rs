@@ -27,12 +27,21 @@ impl DiscoveryService {
                             let computer_name = std::env::var("COMPUTERNAME")
                                 .unwrap_or_else(|_| "Windows Laptop".to_string());
 
+                            let host_ip = match std::net::UdpSocket::bind("0.0.0.0:0") {
+                                Ok(s) => match s.connect(peer_addr) {
+                                    Ok(_) => s.local_addr().ok().map(|a| a.ip().to_string()),
+                                    Err(_) => None,
+                                },
+                                Err(_) => None,
+                            };
+
                             let response = serde_json::json!({
                                 "type": "sway_beacon",
                                 "name": format!("Sway PC ({})", computer_name),
                                 "deviceId": device_id,
                                 "token": token,
                                 "port": local_port,
+                                "ip": host_ip,
                             });
 
                             let raw = response.to_string();

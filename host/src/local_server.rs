@@ -18,6 +18,8 @@ pub struct LocalServer;
 impl LocalServer {
     pub fn start(
         port: u16,
+        device_id: String,
+        token: String,
         simulator: Arc<InputSimulator>,
         privacy: Arc<PrivacyCurtain>,
     ) {
@@ -38,6 +40,8 @@ impl LocalServer {
                 let _ = stream.set_nodelay(true);
                 let sim = simulator.clone();
                 let priv_curtain = privacy.clone();
+                let expected_device_id = device_id.clone();
+                let expected_token = token.clone();
 
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -225,6 +229,69 @@ impl LocalServer {
                             }
                         }
                     });
+
+                    // Authenticate client handshake if join message is sent
+                    let auth_timeout = std::time::Duration::from_secs(4);
+                    let mut initial_packet = None;
+
+                    let authenticated = match tokio::time::timeout(auth_timeout, read.next()).await {
+                        Ok(Some(Ok(Message::Text(t)))) => {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&t) {
+                                let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                if msg_type == "join" {
+                                    let client_token = val.get("token").and_then(|v| v.as_str()).unwrap_or("");
+                                    let client_device = val.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
+                                    if client_token == expected_token && (client_device == expected_device_id || client_device.is_empty()) {
+                                        info!("Local client at {} authenticated successfully", peer_addr);
+                                        let paired_resp = serde_json::json!({
+                                            "type": "status",
+                                            "payload": "paired"
+                                        });
+                                        let _ = ctrl_tx.send(Message::Text(paired_resp.to_string())).await;
+                                        true
+                                    } else {
+                                        warn!("Local client at {} sent invalid token. Rejecting.", peer_addr);
+                                        let err_resp = serde_json::json!({
+                                            "type": "error",
+                                            "error": "Authentication failed: invalid token"
+                                        });
+                                        let _ = ctrl_tx.send(Message::Text(err_resp.to_string())).await;
+                                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                        writer_handle.abort();
+                                        return;
+                                    }
+                                } else if msg_type == "ping" {
+                                    let pong = serde_json::json!({"type": "pong"});
+                                    let _ = ctrl_tx.send(Message::Text(pong.to_string())).await;
+                                    true
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            }
+                        }
+                        Ok(Some(Ok(Message::Binary(bin)))) => {
+                            initial_packet = Some(bin);
+                            true
+                        }
+                        Ok(Some(Ok(Message::Ping(p)))) => {
+                            let _ = ctrl_tx.send(Message::Pong(p)).await;
+                            true
+                        }
+                        _ => true,
+                    };
+
+                    if !authenticated {
+                        writer_handle.abort();
+                        return;
+                    }
+
+                    if let Some(bin) = initial_packet {
+                        if let Ok(pkt) = InputPacket::parse(&bin) {
+                            sim.dispatch(pkt);
+                        }
+                    }
 
                     let is_streaming = Arc::new(AtomicBool::new(true));
                     let active_monitor = Arc::new(AtomicUsize::new(0));

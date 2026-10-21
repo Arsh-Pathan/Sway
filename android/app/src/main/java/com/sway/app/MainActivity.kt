@@ -99,6 +99,13 @@ class MainActivity : ComponentActivity() {
         currentHostName = deviceId
         cleanupSession()
 
+        val isDirectLocal = serverUrl.contains(":8089") ||
+                serverUrl.startsWith("192.168.") ||
+                serverUrl.startsWith("10.") ||
+                serverUrl.startsWith("172.") ||
+                serverUrl.startsWith("127.0.0.1") ||
+                serverUrl.startsWith("localhost")
+
         val client = SignalingClient(
             serverUrl = serverUrl,
             deviceId = deviceId,
@@ -110,18 +117,21 @@ class MainActivity : ComponentActivity() {
         val rtc = WebRtcManager(
             context = applicationContext,
             scope = lifecycleScope,
-            signalingClient = client
+            signalingClient = client,
+            isDirectLocal = isDirectLocal
         )
         this.webRtcManager = rtc
 
-        // Connect WebSocket and initialize WebRTC session with default Google STUN
+        // Connect WebSocket and initialize session
         client.connect()
 
-        val defaultIceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
-        )
-        rtc.startSession(defaultIceServers)
+        if (!isDirectLocal) {
+            val defaultIceServers = listOf(
+                PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+                PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
+            )
+            rtc.startSession(defaultIceServers)
+        }
 
         NotificationHelper.notifySessionConnected(this, deviceId)
     }

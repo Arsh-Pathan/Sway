@@ -118,7 +118,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     host.print_pairing_qr();
 
     // Start direct local Wi-Fi / LAN WebSocket & Web Control Center on port 8089
-    LocalServer::start(local_port, host.simulator.clone(), privacy.clone());
+    LocalServer::start(
+        local_port,
+        device_id.clone(),
+        token.clone(),
+        host.simulator.clone(),
+        privacy.clone(),
+    );
 
     // Start UDP auto-discovery service on port 8088
     DiscoveryService::start(device_id.clone(), token.clone(), local_port);

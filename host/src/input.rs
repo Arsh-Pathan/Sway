@@ -15,13 +15,36 @@ use crate::protocol::InputPacket;
 pub struct InputSimulator {
     active_modifiers: AtomicU8,
     active_monitor: AtomicUsize,
+    monitor_bounds: std::sync::RwLock<Vec<(i32, i32, i32, i32)>>,
 }
 
 impl InputSimulator {
     pub fn new() -> Self {
-        Self {
+        let sim = Self {
             active_modifiers: AtomicU8::new(0),
             active_monitor: AtomicUsize::new(0),
+            monitor_bounds: std::sync::RwLock::new(Vec::new()),
+        };
+        sim.refresh_monitors();
+        sim
+    }
+
+    pub fn refresh_monitors(&self) {
+        if let Ok(all) = xcap::Monitor::all() {
+            let bounds: Vec<(i32, i32, i32, i32)> = all
+                .into_iter()
+                .map(|m| {
+                    (
+                        m.x().unwrap_or(0),
+                        m.y().unwrap_or(0),
+                        m.width().unwrap_or(1920).max(1) as i32,
+                        m.height().unwrap_or(1080).max(1) as i32,
+                    )
+                })
+                .collect();
+            if let Ok(mut lock) = self.monitor_bounds.write() {
+                *lock = bounds;
+            }
         }
     }
 
@@ -38,6 +61,7 @@ impl InputSimulator {
             InputPacket::SwitchMonitor { monitor_index } => {
                 info!("Monitor switch requested to display: #{}", monitor_index);
                 self.active_monitor.store(monitor_index as usize, Ordering::SeqCst);
+                self.refresh_monitors();
             }
             InputPacket::SetQuality { mode } => {
                 info!("Stream quality change requested: mode #{}", mode);
@@ -48,6 +72,7 @@ impl InputSimulator {
             InputPacket::SetPrivacyCurtain { enabled: _ } => {}
             InputPacket::ChangeResolution { mode } => {
                 Self::set_display_resolution(mode);
+                self.refresh_monitors();
             }
             InputPacket::ChangeOrientation { vertical } => {
                 Self::set_display_orientation(vertical);
@@ -221,20 +246,12 @@ impl InputSimulator {
         {
             use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
-            let cur_idx = self.active_monitor.load(Ordering::SeqCst);
-            let (mon_x, mon_y, mon_w, mon_h) = if let Ok(all) = xcap::Monitor::all() {
-                if let Some(m) = all.get(cur_idx).or_else(|| all.first()) {
-                    (
-                        m.x().unwrap_or(0),
-                        m.y().unwrap_or(0),
-                        m.width().unwrap_or(1920).max(1) as i32,
-                        m.height().unwrap_or(1080).max(1) as i32,
-                    )
-                } else {
-                    (0, 0, 1920, 1080)
-                }
-            } else {
-                (0, 0, 1920, 1080)
+            let cur_idx = self.active_monitor.load(Ordering::Relaxed);
+            let (mon_x, mon_y, mon_w, mon_h) = {
+                let lock = self.monitor_bounds.read().ok();
+                lock.as_ref()
+                    .and_then(|b| b.get(cur_idx).or_else(|| b.first()).copied())
+                    .unwrap_or((0, 0, 1920, 1080))
             };
 
             let raw_x = mon_x + (norm_x as i32 * mon_w) / 65535;

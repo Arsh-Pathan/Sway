@@ -122,28 +122,28 @@ fun ResolutionSheet(
                 )
 
                 ResolutionRow(
-                    title = "📱 Mobile 720p (1280 × 720)",
+                    title = "Mobile 720p (1280 × 720)",
                     subtitle = "Large readable text & icons, optimized for phone touch",
                     isSelected = currentResMode == InputEvent.ChangeResolution.MOBILE_720P,
                     onClick = { onSelectRes(InputEvent.ChangeResolution.MOBILE_720P) }
                 )
 
                 ResolutionRow(
-                    title = "⚖️ HD+ Balanced (1600 × 900)",
+                    title = "HD+ Balanced (1600 × 900)",
                     subtitle = "Crisp clarity and comfortable touch targets",
                     isSelected = currentResMode == InputEvent.ChangeResolution.BALANCED_900P,
                     onClick = { onSelectRes(InputEvent.ChangeResolution.BALANCED_900P) }
                 )
 
                 ResolutionRow(
-                    title = "🖥️ Full HD (1920 × 1080)",
+                    title = "Full HD (1920 × 1080)",
                     subtitle = "Native high-definition desktop rendering",
                     isSelected = currentResMode == InputEvent.ChangeResolution.DESKTOP_1080P,
                     onClick = { onSelectRes(InputEvent.ChangeResolution.DESKTOP_1080P) }
                 )
 
                 ResolutionRow(
-                    title = "📲 Fit Vertical PC (1080 × 1920)",
+                    title = "Fit Vertical PC (1080 × 1920)",
                     subtitle = "Rotates Windows to match vertical phone orientation",
                     isSelected = isVerticalPc || currentResMode == InputEvent.ChangeResolution.VERTICAL_1080P,
                     onClick = {
@@ -153,7 +153,7 @@ fun ResolutionSheet(
                 )
 
                 ResolutionRow(
-                    title = "🔄 Reset Native Default",
+                    title = "Reset Native Default",
                     subtitle = "Restores standard Windows desktop resolution",
                     isSelected = currentResMode == InputEvent.ChangeResolution.DEFAULT,
                     onClick = { onSelectRes(InputEvent.ChangeResolution.DEFAULT) }

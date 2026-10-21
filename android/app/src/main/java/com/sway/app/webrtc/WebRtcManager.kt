@@ -24,7 +24,8 @@ sealed class RtcConnectionState {
 class WebRtcManager(
     private val context: Context,
     private val scope: CoroutineScope,
-    private val signalingClient: SignalingClient,
+    val signalingClient: SignalingClient,
+    val isDirectLocal: Boolean = false,
     val eglBase: EglBase = EglBase.create()
 ) {
     private val tag = "WebRtcManager"
@@ -44,8 +45,31 @@ class WebRtcManager(
     private var videoRenderer: SurfaceViewRenderer? = null
 
     init {
-        initPeerConnectionFactory()
-        observeSignaling()
+        if (!isDirectLocal) {
+            initPeerConnectionFactory()
+            observeSignaling()
+        } else {
+            // Direct local Wi-Fi mode uses direct WebSocket frame streaming and binary input.
+            scope.launch {
+                signalingClient.state.collect { st ->
+                    when (st) {
+                        is com.sway.app.network.SignalingState.Paired,
+                        is com.sway.app.network.SignalingState.Connected -> {
+                            _connectionState.value = RtcConnectionState.Connected
+                        }
+                        is com.sway.app.network.SignalingState.Connecting -> {
+                            _connectionState.value = RtcConnectionState.Connecting
+                        }
+                        is com.sway.app.network.SignalingState.Error -> {
+                            _connectionState.value = RtcConnectionState.Failed(st.message)
+                        }
+                        is com.sway.app.network.SignalingState.Disconnected -> {
+                            _connectionState.value = RtcConnectionState.Disconnected
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun initPeerConnectionFactory() {
@@ -71,6 +95,10 @@ class WebRtcManager(
     }
 
     fun startSession(iceServers: List<PeerConnection.IceServer>) {
+        if (isDirectLocal) {
+            // Direct local Wi-Fi mode streams frames and input directly over WebSocket.
+            return
+        }
         _connectionState.value = RtcConnectionState.Connecting
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
@@ -151,7 +179,7 @@ class WebRtcManager(
     fun sendInput(event: InputEvent) {
         val bytes = event.toByteArray()
         val dc = inputDataChannel
-        if (dc != null && dc.state() == DataChannel.State.OPEN) {
+        if (!isDirectLocal && dc != null && dc.state() == DataChannel.State.OPEN) {
             val buffer = DataChannel.Buffer(ByteBuffer.wrap(bytes), true)
             dc.send(buffer)
         } else {
@@ -224,11 +252,13 @@ class WebRtcManager(
 
     fun release() {
         try {
-            remoteVideoTrack?.removeSink(videoRenderer)
-            inputDataChannel?.close()
-            peerConnection?.close()
-            videoRenderer?.release()
-            peerConnectionFactory?.dispose()
+            if (!isDirectLocal) {
+                remoteVideoTrack?.removeSink(videoRenderer)
+                inputDataChannel?.close()
+                peerConnection?.close()
+                videoRenderer?.release()
+                peerConnectionFactory?.dispose()
+            }
             eglBase.release()
         } catch (e: Exception) {
             Log.e(tag, "Error releasing WebRTC resources", e)

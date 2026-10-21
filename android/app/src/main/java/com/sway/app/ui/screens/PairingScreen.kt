@@ -84,6 +84,17 @@ fun PairingScreen(
     var deviceId by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
 
+    // Auto-populate manual fields when a host is discovered on local Wi-Fi
+    LaunchedEffect(discoveredHost) {
+        discoveredHost?.let { host ->
+            if (deviceId.isBlank()) deviceId = host.deviceId
+            if (token.isBlank()) token = host.token
+            if (signalingUrl == "127.0.0.1:8089" || signalingUrl.isEmpty()) {
+                signalingUrl = "${host.ipAddress}:${host.port}"
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -135,7 +146,7 @@ fun PairingScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "✨ Auto-Discovered Laptop",
+                            "Discovered Laptop",
                             color = AccentWhite,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
@@ -279,7 +290,13 @@ fun PairingScreen(
                     FilterChip(
                         selected = signalingUrl.contains("8089"),
                         onClick = {
-                            signalingUrl = discoveredHost?.let { "${it.ipAddress}:${it.port}" } ?: "192.168.1.100:8089"
+                            discoveredHost?.let {
+                                signalingUrl = "${it.ipAddress}:${it.port}"
+                                deviceId = it.deviceId
+                                token = it.token
+                            } ?: run {
+                                signalingUrl = "192.168.1.100:8089"
+                            }
                         },
                         label = { Text("Direct Wi-Fi", fontSize = 12.sp) },
                         modifier = Modifier.weight(1f),

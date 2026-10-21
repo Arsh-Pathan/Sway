@@ -85,7 +85,7 @@ class NetworkDiscovery {
 
             if (text.contains("sway_beacon")) {
                 val host = json.decodeFromString<DiscoveredHostJson>(text)
-                val rawIp = recvPacket.address.hostAddress ?: "127.0.0.1"
+                val rawIp = (host.ip ?: recvPacket.address.hostAddress ?: "127.0.0.1").substringBefore("%")
                 val ip = if (rawIp == "0.0.0.0" || rawIp == "::" || rawIp == "0:0:0:0:0:0:0:1") "127.0.0.1" else rawIp
                 _discoveredHost.value = DiscoveredHost(
                     name = host.name,
@@ -108,5 +108,6 @@ private data class DiscoveredHostJson(
     val name: String,
     val deviceId: String,
     val token: String,
-    val port: Int
+    val port: Int,
+    val ip: String? = null
 )
