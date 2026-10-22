@@ -160,6 +160,7 @@ fun DeckSurface(
                 sensitivity = sensitivity,
                 scrollSpeed = scrollSpeed,
                 hapticsEnabled = hapticsEnabled,
+                isDeckMode = true,
                 onInputEvent = onInputEvent
             )
         }

@@ -27,6 +27,7 @@ fun TrackpadSurface(
     sensitivity: Float = 1.0f,
     scrollSpeed: Float = 1.0f,
     hapticsEnabled: Boolean = true,
+    isDeckMode: Boolean = false,
     onInputEvent: (InputEvent) -> Unit
 ) {
     val context = LocalContext.current
@@ -66,18 +67,22 @@ fun TrackpadSurface(
                 color = if (isDragging) TrackpadActiveBorder else TrackpadBorder,
                 shape = RoundedCornerShape(20.dp)
             )
-            .pointerInput(sensitivity, scrollSpeed, hapticsEnabled) {
+            .pointerInput(sensitivity, scrollSpeed, hapticsEnabled, isDeckMode) {
                 var lastTapUpTime = 0L
                 var isDragHolding = false
                 var accumX = 0f
                 var accumY = 0f
                 var accumScrollX = 0f
                 var accumScrollY = 0f
+                var prevFilteredX = 0f
+                var prevFilteredY = 0f
 
                 awaitEachGesture {
                     val firstDown = awaitFirstDown()
                     val startTime = System.currentTimeMillis()
                     val timeSinceLastTap = startTime - lastTapUpTime
+                    prevFilteredX = 0f
+                    prevFilteredY = 0f
 
                     // Double-tap and hold gesture: initiates drag-select / window drag
                     if (timeSinceLastTap < 350) {
@@ -131,6 +136,8 @@ fun TrackpadSurface(
                             accumY = 0f
                             accumScrollX = 0f
                             accumScrollY = 0f
+                            prevFilteredX = 0f
+                            prevFilteredY = 0f
                             break
                         }
 
@@ -154,9 +161,27 @@ fun TrackpadSurface(
                                 hasMoved = true
                             }
 
+                            // Anti-jitter low-pass exponential filter to eliminate digitizer stepping
+                            val alpha = if (isDeckMode) 0.68f else 0.74f
+                            val filteredDragX = if (hasMoved) alpha * dragX + (1f - alpha) * prevFilteredX else dragX
+                            val filteredDragY = if (hasMoved) alpha * dragY + (1f - alpha) * prevFilteredY else dragY
+                            prevFilteredX = filteredDragX
+                            prevFilteredY = filteredDragY
+
+                            // Precision Touchpad Ballistics: smooth subpixel gliding without teleport jumping
+                            val dist = Math.hypot(filteredDragX.toDouble(), filteredDragY.toDouble()).toFloat()
+                            val speedFactor = when {
+                                dist < 2.5f -> if (isDeckMode) 0.80f else 0.85f // Precision control for micro-targets
+                                dist < 12.0f -> 1.0f + (dist - 2.5f) * 0.025f    // Natural linear 1:1 motion
+                                else -> 1.24f + (dist - 12.0f).coerceAtMost(22f) * 0.038f // Fluid accelerated gliding
+                            }
+
+                            val effectiveX = filteredDragX * sensitivity * speedFactor
+                            val effectiveY = filteredDragY * sensitivity * speedFactor
+
                             // Subpixel fractional movement accumulation for ultra-smooth gliding
-                            accumX += dragX * sensitivity
-                            accumY += dragY * sensitivity
+                            accumX += effectiveX
+                            accumY += effectiveY
                             val sendX = accumX.toInt()
                             val sendY = accumY.toInt()
                             accumX -= sendX

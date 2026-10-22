@@ -181,20 +181,7 @@ impl InputSimulator {
         #[cfg(windows)]
         {
             Self::ensure_input_desktop();
-            use windows::Win32::Foundation::POINT;
-            use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
-            let mut pt = POINT::default();
-            if unsafe { GetCursorPos(&mut pt) }.is_ok() {
-                let new_x = pt.x + dx as i32;
-                let new_y = pt.y + dy as i32;
-                unsafe {
-                    let _ = SetCursorPos(new_x, new_y);
-                }
-                // Notify Windows mouse input subsystem so dragging, hover, and selection boxes activate reliably
-                self.send_mouse_input(MOUSEEVENTF_MOVE, 0, 0, 0);
-            } else {
-                self.send_mouse_input(MOUSEEVENTF_MOVE, dx as i32, dy as i32, 0);
-            }
+            self.send_mouse_input(MOUSEEVENTF_MOVE, dx as i32, dy as i32, 0);
         }
     }
 
