@@ -1,25 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 124 124" fill="none">
-  <defs>
-    <linearGradient id="background" x1="14" y1="8" x2="110" y2="116" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#242832"/>
-      <stop offset="1" stop-color="#08090C"/>
-    </linearGradient>
-    <linearGradient id="screen" x1="62" y1="27" x2="62" y2="74" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#171B25"/>
-      <stop offset="1" stop-color="#050609"/>
-    </linearGradient>
-    <linearGradient id="body" x1="62" y1="83" x2="62" y2="98" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#D9DEE8"/>
-    </linearGradient>
-    <linearGradient id="bezel" x1="62" y1="22" x2="62" y2="79" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#E7EAF0"/>
-    </linearGradient>
-  </defs>
-  <rect width="124" height="124" rx="28" fill="url(#background)"/>
-  <rect x="23" y="22" width="78" height="57" rx="6" fill="url(#bezel)"/>
-  <rect x="28" y="27" width="68" height="47" rx="2" fill="url(#screen)"/>
-  <path d="M18 83h88l8 11c1.2 1.7 0 4-2.2 4H12.2c-2.2 0-3.4-2.3-2.2-4l8-11Z" fill="url(#body)"/>
-  <path d="M52 91h20" stroke="#525866" stroke-width="2" stroke-linecap="round"/>
+  <rect width="124" height="124" rx="28" fill="#121316"/>
+  <rect x="23" y="22" width="78" height="57" rx="6" fill="#FFFFFF"/>
+  <rect x="28" y="27" width="68" height="47" rx="2" fill="#0A0B0E"/>
+  <path d="M18 83h88l8 11c1.2 1.7 0 4-2.2 4H12.2c-2.2 0-3.4-2.3-2.2-4l8-11Z" fill="#FFFFFF"/>
+  <path d="M52 91h20" stroke="#3E424B" stroke-width="2" stroke-linecap="round"/>
 </svg>

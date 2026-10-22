@@ -10,7 +10,7 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, W
 use windows::Win32::Graphics::Gdi::{
     CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
     LineTo, MoveToEx, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor,
-    DT_CENTER, DT_NOPREFIX, FW_NORMAL, PS_NULL, PS_SOLID, TRANSPARENT,
+    DT_CENTER, DT_NOPREFIX, FW_BOLD, FW_NORMAL, PS_NULL, PS_SOLID, TRANSPARENT,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -24,6 +24,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 // WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Windows 10 2004+)
 const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
+
+#[cfg(windows)]
+static CURTAIN_MONITORS: std::sync::RwLock<Vec<(i32, i32, i32, i32)>> = std::sync::RwLock::new(Vec::new());
 
 pub struct PrivacyCurtain {
     is_active: Arc<AtomicBool>,
@@ -77,6 +80,28 @@ impl PrivacyCurtain {
                         let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
                         let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
                         let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+                        // Enumerate all active physical monitors so we can duplicate the emblem & text on each display
+                        let mon_rects: Vec<(i32, i32, i32, i32)> = if let Ok(all) = xcap::Monitor::all() {
+                            if !all.is_empty() {
+                                all.into_iter()
+                                    .map(|m| {
+                                        let mx = m.x().unwrap_or(0);
+                                        let my = m.y().unwrap_or(0);
+                                        let mw = m.width().unwrap_or(1920) as i32;
+                                        let mh = m.height().unwrap_or(1080) as i32;
+                                        (mx - vx, my - vy, mx - vx + mw, my - vy + mh)
+                                    })
+                                    .collect()
+                            } else {
+                                vec![(0, 0, vw, vh)]
+                            }
+                        } else {
+                            vec![(0, 0, vw, vh)]
+                        };
+                        if let Ok(mut lock) = CURTAIN_MONITORS.write() {
+                            *lock = mon_rects;
+                        }
 
                         let hwnd = CreateWindowExW(
                             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -195,97 +220,136 @@ unsafe extern "system" fn curtain_wnd_proc(
                 let mut rect = RECT::default();
                 let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
 
-                // Pure pitch-black plain OLED background
+                // Pure pitch-black plain OLED background across entire virtual canvas
                 let bg_brush = CreateSolidBrush(COLORREF(0x00000000)); // True Black
                 FillRect(hdc, &rect, bg_brush);
                 let _ = DeleteObject(bg_brush);
 
                 SetBkMode(hdc, TRANSPARENT);
 
-                let cx = (rect.left + rect.right) / 2;
-                let cy = (rect.top + rect.bottom) / 2;
-
-                // Scale the vector emblem cleanly based on screen dimensions
-                let icon_dim = (((rect.bottom - rect.top) as f32) * 0.22).clamp(160.0, 240.0);
-                let s = icon_dim / 124.0;
-                let ox = cx - ((124.0 * s) / 2.0).round() as i32;
-                let oy = cy - ((124.0 * s) / 2.0).round() as i32;
-
-                let rx = |val: f32| ox + (val * s).round() as i32;
-                let ry = |val: f32| oy + (val * s).round() as i32;
+                let mon_list: Vec<(i32, i32, i32, i32)> = {
+                    let lock = CURTAIN_MONITORS.read().ok();
+                    let list: Vec<(i32, i32, i32, i32)> = lock.as_deref().cloned().unwrap_or_default();
+                    if list.is_empty() {
+                        vec![(rect.left, rect.top, rect.right, rect.bottom)]
+                    } else {
+                        list
+                    }
+                };
 
                 let null_pen = CreatePen(PS_NULL, 0, COLORREF(0));
                 let old_pen = SelectObject(hdc, null_pen);
 
-                // 1. Outer Squircle Container
-                let container_brush = CreateSolidBrush(COLORREF(0x001B1714)); // Deep charcoal RGB(20, 23, 27)
-                let border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00332D28)); // Subtle border RGB(40, 45, 51)
-                SelectObject(hdc, border_pen);
-                let old_brush = SelectObject(hdc, container_brush);
+                // GDI Brushes & Pens for the Flat Laptop Icon
+                let bezel_brush = CreateSolidBrush(COLORREF(0x00FFFFFF)); // Solid Pure White
+                let screen_brush = CreateSolidBrush(COLORREF(0x000E0B0A)); // Deep Dark Black Screen
+                let base_brush = CreateSolidBrush(COLORREF(0x00FFFFFF));  // Solid Pure White
+                let notch_pen = CreatePen(PS_SOLID, 3, COLORREF(0x004B423E)); // Solid Dark Slate
 
-                let r_squircle = (28.0 * s).round() as i32;
-                let _ = RoundRect(hdc, rx(0.0), ry(0.0), rx(124.0), ry(124.0), r_squircle * 2, r_squircle * 2);
-
-                let _ = DeleteObject(border_pen);
-                SelectObject(hdc, null_pen);
-
-                // 2. Laptop Bezel (Silver White)
-                let bezel_brush = CreateSolidBrush(COLORREF(0x00F0EAE7)); // RGB(231, 234, 240)
-                SelectObject(hdc, bezel_brush);
-                let r_bezel = (6.0 * s).round().max(2.0) as i32;
-                let _ = RoundRect(hdc, rx(23.0), ry(22.0), rx(101.0), ry(79.0), r_bezel * 2, r_bezel * 2);
-
-                // 3. Laptop Screen Glass (Deep Contrast OLED)
-                let screen_brush = CreateSolidBrush(COLORREF(0x000E0A08)); // Deep Dark RGB(8, 10, 14)
-                SelectObject(hdc, screen_brush);
-                let r_screen = (2.0 * s).round().max(1.0) as i32;
-                let _ = RoundRect(hdc, rx(28.0), ry(27.0), rx(96.0), ry(74.0), r_screen * 2, r_screen * 2);
-
-                // 4. Laptop Base (Silver White Trapezoid)
-                let base_brush = CreateSolidBrush(COLORREF(0x00E8DEDE)); // RGB(222, 222, 232)
-                SelectObject(hdc, base_brush);
-                let base_pts = [
-                    POINT { x: rx(18.0), y: ry(83.0) },
-                    POINT { x: rx(106.0), y: ry(83.0) },
-                    POINT { x: rx(114.0), y: ry(94.0) },
-                    POINT { x: rx(10.0), y: ry(94.0) },
-                ];
-                let _ = Polygon(hdc, &base_pts);
-
-                // 5. Trackpad / Base Opening Notch
-                let notch_pen = CreatePen(PS_SOLID, (2.0 * s).round().max(2.0) as i32, COLORREF(0x00665852)); // RGB(82, 88, 102)
-                SelectObject(hdc, notch_pen);
-                let _ = MoveToEx(hdc, rx(52.0), ry(90.0), None);
-                let _ = LineTo(hdc, rx(72.0), ry(90.0));
-
-                // 6. Ultra-subtle, minimal bottom hint
-                let hint_font = CreateFontW(
-                    14, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
+                let title_font = CreateFontW(
+                    26, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
                     w!("Segoe UI"),
                 );
-                let old_font = SelectObject(hdc, hint_font);
-                SetTextColor(hdc, COLORREF(0x004A4540)); // Low-contrast faint slate
+                let sub_font = CreateFontW(
+                    15, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
+                    w!("Segoe UI"),
+                );
+                let hint_font = CreateFontW(
+                    13, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
+                    w!("Segoe UI"),
+                );
 
-                let mut hint_rect = RECT {
-                    left: rect.left,
-                    top: rect.bottom - 48,
-                    right: rect.right,
-                    bottom: rect.bottom - 16,
-                };
-                let mut hint_text: Vec<u16> = "Press ESC on laptop to exit\0".encode_utf16().collect();
-                DrawTextW(hdc, &mut hint_text, &mut hint_rect, DT_CENTER | DT_NOPREFIX);
+                // Render the laptop icon and clean text centered on EACH monitor (duplicate appearance)
+                for &(ml, mt, mr, mb) in &mon_list {
+                    let mw = mr - ml;
+                    let mh = mb - mt;
+                    if mw <= 0 || mh <= 0 {
+                        continue;
+                    }
+
+                    let cx = (ml + mr) / 2;
+                    let cy = (mt + mb) / 2 - 25; // Centered, slightly raised for text below
+
+                    let s = (mh as f32 * 0.17).clamp(120.0, 190.0) / 100.0;
+                    let ox = cx - ((124.0 * s) / 2.0).round() as i32;
+                    let oy = cy - ((100.0 * s) / 2.0).round() as i32;
+
+                    let rx = |val: f32| ox + (val * s).round() as i32;
+                    let ry = |val: f32| oy + (val * s).round() as i32;
+
+                    // 1. Laptop Bezel (Flat Pure White)
+                    SelectObject(hdc, null_pen);
+                    SelectObject(hdc, bezel_brush);
+                    let r_bezel = (6.0 * s).round().max(2.0) as i32;
+                    let _ = RoundRect(hdc, rx(23.0), ry(22.0), rx(101.0), ry(79.0), r_bezel * 2, r_bezel * 2);
+
+                    // 2. Laptop Screen Glass (Deep Contrast Dark)
+                    SelectObject(hdc, screen_brush);
+                    let r_screen = (2.0 * s).round().max(1.0) as i32;
+                    let _ = RoundRect(hdc, rx(28.0), ry(27.0), rx(96.0), ry(74.0), r_screen * 2, r_screen * 2);
+
+                    // 3. Laptop Base (Flat Pure White Trapezoid)
+                    SelectObject(hdc, base_brush);
+                    let base_pts = [
+                        POINT { x: rx(18.0), y: ry(83.0) },
+                        POINT { x: rx(106.0), y: ry(83.0) },
+                        POINT { x: rx(114.0), y: ry(94.0) },
+                        POINT { x: rx(10.0), y: ry(94.0) },
+                    ];
+                    let _ = Polygon(hdc, &base_pts);
+
+                    // 4. Trackpad Notch
+                    SelectObject(hdc, notch_pen);
+                    let _ = MoveToEx(hdc, rx(52.0), ry(90.0), None);
+                    let _ = LineTo(hdc, rx(72.0), ry(90.0));
+
+                    // 5. Clean Modern Typography Beneath the Laptop Icon
+                    // Title: Sway Remote
+                    SelectObject(hdc, title_font);
+                    SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Solid Pure White
+                    let mut title_rect = RECT {
+                        left: ml + 20,
+                        top: ry(108.0),
+                        right: mr - 20,
+                        bottom: ry(108.0) + 32,
+                    };
+                    let mut title_text: Vec<u16> = "Sway Remote\0".encode_utf16().collect();
+                    DrawTextW(hdc, &mut title_text, &mut title_rect, DT_CENTER | DT_NOPREFIX);
+
+                    // Subtitle: Display active on mobile
+                    SelectObject(hdc, sub_font);
+                    SetTextColor(hdc, COLORREF(0x00A0A0A0)); // Light Gray
+                    let mut sub_rect = RECT {
+                        left: ml + 20,
+                        top: title_rect.bottom + 4,
+                        right: mr - 20,
+                        bottom: title_rect.bottom + 26,
+                    };
+                    let mut sub_text: Vec<u16> = "Display active on mobile\0".encode_utf16().collect();
+                    DrawTextW(hdc, &mut sub_text, &mut sub_rect, DT_CENTER | DT_NOPREFIX);
+
+                    // Hint: Press ESC on laptop to exit
+                    SelectObject(hdc, hint_font);
+                    SetTextColor(hdc, COLORREF(0x00555555)); // Subtle Dim Slate
+                    let mut hint_rect = RECT {
+                        left: ml + 20,
+                        top: sub_rect.bottom + 8,
+                        right: mr - 20,
+                        bottom: sub_rect.bottom + 26,
+                    };
+                    let mut hint_text: Vec<u16> = "Press ESC on laptop to exit\0".encode_utf16().collect();
+                    DrawTextW(hdc, &mut hint_text, &mut hint_rect, DT_CENTER | DT_NOPREFIX);
+                }
 
                 // Clean up GDI resources
-                SelectObject(hdc, old_font);
-                SelectObject(hdc, old_brush);
                 SelectObject(hdc, old_pen);
-
-                let _ = DeleteObject(container_brush);
                 let _ = DeleteObject(bezel_brush);
                 let _ = DeleteObject(screen_brush);
                 let _ = DeleteObject(base_brush);
                 let _ = DeleteObject(notch_pen);
                 let _ = DeleteObject(null_pen);
+                let _ = DeleteObject(title_font);
+                let _ = DeleteObject(sub_font);
                 let _ = DeleteObject(hint_font);
 
                 let _ = windows::Win32::Graphics::Gdi::EndPaint(hwnd, &ps);
