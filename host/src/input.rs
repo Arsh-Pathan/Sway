@@ -109,6 +109,8 @@ impl InputSimulator {
             InputPacket::SystemCommand { action } => {
                 Self::execute_system_command(action);
             }
+            InputPacket::SetStreaming { enabled: _ } => {}
+            InputPacket::SetAudioConfig { speaker_enabled: _, mic_enabled: _ } => {}
         }
     }
 
@@ -180,8 +182,9 @@ impl InputSimulator {
                 unsafe {
                     let _ = SetCursorPos(new_x, new_y);
                 }
+            } else {
+                self.send_mouse_input(MOUSEEVENTF_MOVE, dx as i32, dy as i32, 0);
             }
-            self.send_mouse_input(MOUSEEVENTF_MOVE, dx as i32, dy as i32, 0);
         }
     }
 
@@ -311,13 +314,12 @@ impl InputSimulator {
             let abs_x = ((target_x as f64 / scr_w as f64) * 65535.0).round() as i32;
             let abs_y = ((target_y as f64 / scr_h as f64) * 65535.0).round() as i32;
 
-            unsafe {
-                let _ = SetCursorPos(target_x, target_y);
-            }
-
             match action {
                 0 => {
-                    self.send_mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0, 0);
+                    unsafe {
+                        let _ = SetCursorPos(target_x, target_y);
+                    }
+                    self.send_mouse_input(MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN, abs_x, abs_y, 0);
                 }
                 1 => {
                     self.send_mouse_input(
@@ -328,7 +330,7 @@ impl InputSimulator {
                     );
                 }
                 2 => {
-                    self.send_mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0);
+                    self.send_mouse_input(MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP, abs_x, abs_y, 0);
                 }
                 _ => {}
             }

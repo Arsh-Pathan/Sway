@@ -67,9 +67,27 @@ fun TrackpadSurface(
                 shape = RoundedCornerShape(20.dp)
             )
             .pointerInput(sensitivity, scrollSpeed, hapticsEnabled) {
+                var lastTapUpTime = 0L
+                var isDragHolding = false
+                var accumX = 0f
+                var accumY = 0f
+                var accumScrollX = 0f
+                var accumScrollY = 0f
+
                 awaitEachGesture {
                     val firstDown = awaitFirstDown()
                     val startTime = System.currentTimeMillis()
+                    val timeSinceLastTap = startTime - lastTapUpTime
+
+                    // Double-tap and hold gesture: initiates drag-select / window drag
+                    if (timeSinceLastTap < 350) {
+                        isDragHolding = true
+                        triggerHaptic(2)
+                        onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                    } else {
+                        isDragHolding = false
+                    }
+
                     var maxPointers = 1
                     var hasMoved = false
                     var totalDragX = 0f
@@ -85,21 +103,34 @@ fun TrackpadSurface(
                         if (activePointers.isEmpty()) {
                             // Gesture ended (all fingers lifted)
                             val duration = System.currentTimeMillis() - startTime
-                            if (!hasMoved && duration < 400) {
+                            if (isDragHolding) {
+                                // Release the held drag
+                                onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                                isDragHolding = false
+                                lastTapUpTime = 0L
+                            } else if (!hasMoved && duration < 380) {
                                 if (maxPointers == 1) {
                                     // 1-finger tap -> Left Click
                                     triggerHaptic(1)
                                     onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
                                     onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                                    lastTapUpTime = System.currentTimeMillis()
                                 } else if (maxPointers >= 2) {
                                     // 2-finger tap -> Right Click!
                                     triggerHaptic(2)
                                     onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_RIGHT))
                                     onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_RIGHT))
+                                    lastTapUpTime = 0L
                                 }
+                            } else {
+                                lastTapUpTime = 0L
                             }
                             touchPoint = null
                             isDragging = false
+                            accumX = 0f
+                            accumY = 0f
+                            accumScrollX = 0f
+                            accumScrollY = 0f
                             break
                         }
 
@@ -112,13 +143,21 @@ fun TrackpadSurface(
                             val dragY = change.position.y - change.previousPosition.y
                             totalDragX += Math.abs(dragX)
                             totalDragY += Math.abs(dragY)
-                            if (totalDragX > 25f || totalDragY > 25f) {
+                            if (totalDragX > 16f || totalDragY > 16f) {
                                 hasMoved = true
                             }
 
-                            val dx = (dragX * sensitivity).toInt().coerceIn(-32767, 32767).toShort()
-                            val dy = (dragY * sensitivity).toInt().coerceIn(-32767, 32767).toShort()
-                            if (dx != 0.toShort() || dy != 0.toShort()) {
+                            // Subpixel fractional movement accumulation for ultra-smooth gliding
+                            accumX += dragX * sensitivity
+                            accumY += dragY * sensitivity
+                            val sendX = accumX.toInt()
+                            val sendY = accumY.toInt()
+                            accumX -= sendX
+                            accumY -= sendY
+
+                            if (sendX != 0 || sendY != 0) {
+                                val dx = sendX.coerceIn(-32767, 32767).toShort()
+                                val dy = sendY.coerceIn(-32767, 32767).toShort()
                                 onInputEvent(InputEvent.MouseMove(dx, dy))
                             }
                             change.consume()
@@ -130,15 +169,22 @@ fun TrackpadSurface(
                             val dragX = ((p0.position.x - p0.previousPosition.x) + (p1.position.x - p1.previousPosition.x)) / 2f
                             totalDragX += Math.abs(dragX)
                             totalDragY += Math.abs(dragY)
-                            if (totalDragX > 25f || totalDragY > 25f) {
+                            if (totalDragX > 16f || totalDragY > 16f) {
                                 hasMoved = true
                             }
 
-                            // Natural responsive wheel delta
-                            val scrollDeltaY = (-dragY * scrollSpeed * 25f).toInt().coerceIn(-32767, 32767).toShort()
-                            val scrollDeltaX = (dragX * scrollSpeed * 25f).toInt().coerceIn(-32767, 32767).toShort()
-                            if (scrollDeltaY != 0.toShort() || scrollDeltaX != 0.toShort()) {
-                                onInputEvent(InputEvent.MouseScroll(scrollDeltaY, scrollDeltaX))
+                            // Smooth wheel scroll accumulation
+                            accumScrollY += -dragY * scrollSpeed * 25f
+                            accumScrollX += dragX * scrollSpeed * 25f
+                            val sendScrollY = accumScrollY.toInt()
+                            val sendScrollX = accumScrollX.toInt()
+                            accumScrollY -= sendScrollY
+                            accumScrollX -= sendScrollX
+
+                            if (sendScrollY != 0 || sendScrollX != 0) {
+                                val sY = sendScrollY.coerceIn(-32767, 32767).toShort()
+                                val sX = sendScrollX.coerceIn(-32767, 32767).toShort()
+                                onInputEvent(InputEvent.MouseScroll(sY, sX))
                             }
                             for (p in activePointers) p.consume()
                         }

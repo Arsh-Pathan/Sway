@@ -24,6 +24,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import com.sway.app.model.InputEvent
 import com.sway.app.ui.theme.*
 
@@ -41,6 +44,10 @@ fun DeckSurface(
 ) {
     val context = LocalContext.current
     var selectedCategory by remember { mutableStateOf(0) }
+    var isDragLocked by remember { mutableStateOf(false) }
+    var isLeftPressed by remember { mutableStateOf(false) }
+    var isRightPressed by remember { mutableStateOf(false) }
+    var isMidPressed by remember { mutableStateOf(false) }
     val categories = listOf("SYSTEM", "MEDIA", "BROWSER", "EDIT", "LAUNCH")
 
     Column(
@@ -157,67 +164,71 @@ fun DeckSurface(
             )
         }
 
-        // Physical-Style Mouse Click Bar
+        // Physical-Style Mouse Click & Drag Bar
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Left Click
+            // Left Click (True Click-Hold)
+            MouseButton(
+                modifier = Modifier.weight(1.4f),
+                label = "LEFT CLICK",
+                isActive = isDragLocked,
+                onDown = {
+                    if (!isDragLocked) {
+                        onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                    }
+                },
+                onUp = {
+                    if (!isDragLocked) {
+                        onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                    }
+                }
+            )
+
+            // Drag Lock Toggle (Effortless 1-finger window drag & text selection)
             Surface(
                 onClick = {
-                    onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
-                    onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                    isDragLocked = !isDragLocked
+                    if (isDragLocked) {
+                        onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                    } else {
+                        onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                    }
                 },
-                color = SurfaceCard,
+                color = if (isDragLocked) Color.White else SurfaceCard,
                 shape = RoundedCornerShape(10.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
-                modifier = Modifier.weight(1.6f)
+                border = androidx.compose.foundation.BorderStroke(1.dp, if (isDragLocked) Color.White else SurfaceCardBorder),
+                modifier = Modifier.weight(1.2f)
             ) {
                 Box(
                     modifier = Modifier.padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("LEFT CLICK", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White, letterSpacing = 0.5.sp)
+                    Text(
+                        if (isDragLocked) "DRAG [ON]" else "DRAG LOCK",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isDragLocked) Color.Black else TextSecondary
+                    )
                 }
             }
 
             // Middle Click / Scroll Wheel Click
-            Surface(
-                onClick = {
-                    onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_MIDDLE))
-                    onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_MIDDLE))
-                },
-                color = SurfaceCard,
-                shape = RoundedCornerShape(10.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
-                modifier = Modifier.weight(1.0f)
-            ) {
-                Box(
-                    modifier = Modifier.padding(vertical = 12.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("MID", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextSecondary)
-                }
-            }
+            MouseButton(
+                modifier = Modifier.weight(0.9f),
+                label = "MID",
+                onDown = { onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_MIDDLE)) },
+                onUp = { onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_MIDDLE)) }
+            )
 
-            // Right Click
-            Surface(
-                onClick = {
-                    onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_RIGHT))
-                    onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_RIGHT))
-                },
-                color = SurfaceCard,
-                shape = RoundedCornerShape(10.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
-                modifier = Modifier.weight(1.4f)
-            ) {
-                Box(
-                    modifier = Modifier.padding(vertical = 12.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("RIGHT CLICK", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White, letterSpacing = 0.5.sp)
-                }
-            }
+            // Right Click (True Click-Hold)
+            MouseButton(
+                modifier = Modifier.weight(1.3f),
+                label = "RIGHT CLICK",
+                onDown = { onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_RIGHT)) },
+                onUp = { onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_RIGHT)) }
+            )
         }
 
         // Tool Deck Category Selector
@@ -452,5 +463,45 @@ private fun RowScope.DeckToolButton(
                 maxLines = 1
             )
         }
+    }
+}
+
+@Composable
+private fun MouseButton(
+    modifier: Modifier = Modifier,
+    label: String,
+    isActive: Boolean = false,
+    onDown: () -> Unit,
+    onUp: () -> Unit
+) {
+    var isPressed by remember { mutableStateOf(false) }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (isActive || isPressed) Color.White else SurfaceCard)
+            .border(1.dp, if (isActive || isPressed) Color.White else SurfaceCardBorder, RoundedCornerShape(10.dp))
+            .pointerInput(isActive) {
+                awaitEachGesture {
+                    awaitFirstDown()
+                    isPressed = true
+                    onDown()
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.changes.none { it.pressed }) break
+                    }
+                    isPressed = false
+                    onUp()
+                }
+            }
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (isActive || isPressed) Color.Black else Color.White,
+            letterSpacing = 0.5.sp
+        )
     }
 }

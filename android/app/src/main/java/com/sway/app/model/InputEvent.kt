@@ -213,4 +213,14 @@ sealed class InputEvent {
             const val KEY_TAB: Byte = 39
         }
     }
+
+    data class SetStreaming(val enabled: Boolean) : InputEvent() {
+        override val opCode: Byte = 0x10
+        override fun toByteArray(): ByteArray = byteArrayOf(opCode, if (enabled) 1 else 0)
+    }
+
+    data class SetAudioConfig(val speakerEnabled: Boolean, val micEnabled: Boolean) : InputEvent() {
+        override val opCode: Byte = 0x11
+        override fun toByteArray(): ByteArray = byteArrayOf(opCode, if (speakerEnabled) 1 else 0, if (micEnabled) 1 else 0)
+    }
 }

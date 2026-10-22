@@ -19,6 +19,8 @@ pub enum InputPacket {
     ChangeOrientation { vertical: bool },
     ClipboardSync { text: String },
     SystemCommand { action: u8 },
+    SetStreaming { enabled: bool },
+    SetAudioConfig { speaker_enabled: bool, mic_enabled: bool },
 }
 
 #[derive(Debug, Error)]
@@ -141,6 +143,15 @@ impl InputPacket {
                     return Err(ProtocolError::InvalidParameter("invalid system command action"));
                 }
                 Ok(InputPacket::SystemCommand { action })
+            }
+            0x10 => {
+                let enabled = rdr.read_u8()? != 0;
+                Ok(InputPacket::SetStreaming { enabled })
+            }
+            0x11 => {
+                let speaker_enabled = rdr.read_u8()? != 0;
+                let mic_enabled = rdr.read_u8()? != 0;
+                Ok(InputPacket::SetAudioConfig { speaker_enabled, mic_enabled })
             }
             _ => Err(ProtocolError::UnknownOpCode(opcode)),
         }

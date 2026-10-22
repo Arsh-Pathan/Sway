@@ -44,9 +44,11 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.viewinterop.AndroidView
 import com.sway.app.model.InputEvent
 import com.sway.app.network.StreamFrame
+import com.sway.app.ui.components.ControlCenterSheet
+import com.sway.app.ui.components.QuickPreset
+import com.sway.app.ui.components.DeckSurface
 import com.sway.app.ui.components.ModifierDock
 import com.sway.app.ui.components.QuickActionsSheet
-import com.sway.app.ui.components.DeckSurface
 import com.sway.app.ui.components.ResolutionSheet
 import com.sway.app.ui.components.SettingsSheet
 import com.sway.app.ui.components.TrackpadSurface
@@ -261,11 +263,22 @@ fun SessionScreen(
     var scrollSpeed by remember { mutableFloatStateOf(1.0f) }
     var hapticsEnabled by remember { mutableStateOf(true) }
     var currentQuality by remember { mutableStateOf<Byte>(InputEvent.SetQuality.TURBO) }
+    var showControlCenter by remember { mutableStateOf(false) }
+    var isSpeakerAudioEnabled by remember { mutableStateOf(false) }
+    var isMicAudioEnabled by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showQuickActions by remember { mutableStateOf(false) }
     var showResolutionSheet by remember { mutableStateOf(false) }
     var viewFitMode by remember { mutableStateOf(ViewFitMode.FIT) }
     var currentResMode by remember { mutableStateOf(InputEvent.ChangeResolution.DEFAULT) }
+
+    LaunchedEffect(controlMode) {
+        if (controlMode == ControlMode.DECK) {
+            webRtcManager.sendInput(InputEvent.SetStreaming(false))
+        } else {
+            webRtcManager.sendInput(InputEvent.SetStreaming(true))
+        }
+    }
 
     val liveFps by webRtcManager.fps.collectAsState()
     val liveRtt by webRtcManager.rttMs.collectAsState()
@@ -355,6 +368,45 @@ fun SessionScreen(
             isPanelHidden = false
             Toast.makeText(context, "Landscape PC: Trackpad Active", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    fun applyPreset(preset: QuickPreset) {
+        when (preset) {
+            QuickPreset.PRODUCTIVITY -> {
+                controlMode = ControlMode.TRACKPAD
+                currentQuality = InputEvent.SetQuality.BALANCED
+                webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
+                sensitivity = 1.0f
+                scrollSpeed = 1.0f
+                isSpeakerAudioEnabled = false
+                isMicAudioEnabled = false
+                webRtcManager.sendInput(InputEvent.SetAudioConfig(false, false))
+                viewFitMode = ViewFitMode.FIT
+                Toast.makeText(context, "Preset: Productivity Active", Toast.LENGTH_SHORT).show()
+            }
+            QuickPreset.CINEMA_MEDIA -> {
+                controlMode = ControlMode.TOUCH_SCREEN
+                currentQuality = InputEvent.SetQuality.NATIVE
+                webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
+                viewFitMode = ViewFitMode.FILL
+                isSpeakerAudioEnabled = true
+                webRtcManager.sendInput(InputEvent.SetAudioConfig(true, isMicAudioEnabled))
+                Toast.makeText(context, "Preset: Media Cinema Active (Audio ON)", Toast.LENGTH_SHORT).show()
+            }
+            QuickPreset.TURBO_GAMING -> {
+                controlMode = ControlMode.TRACKPAD
+                currentQuality = InputEvent.SetQuality.TURBO
+                webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
+                sensitivity = 1.6f
+                scrollSpeed = 1.4f
+                Toast.makeText(context, "Preset: Turbo Gaming Active (60 FPS)", Toast.LENGTH_SHORT).show()
+            }
+            QuickPreset.PURE_DECK -> {
+                controlMode = ControlMode.DECK
+                Toast.makeText(context, "Preset: Pure Control Deck (1ms Latency)", Toast.LENGTH_SHORT).show()
+            }
+        }
+        showControlCenter = false
     }
 
     fun handleDisconnect() {
@@ -572,229 +624,129 @@ fun SessionScreen(
                 }
 
                 // Floating Action Header
+                // Minimalist Floating Header
                 if (!isPanelHidden) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
                             .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(
-                            onClick = { handleDisconnect() },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
-                        ) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", tint = TextPrimary)
-                        }
-
-                        // Mode chip
-                        FilterChip(
-                            selected = controlMode == ControlMode.TOUCH_SCREEN,
-                            onClick = {
-                                controlMode = if (controlMode == ControlMode.TRACKPAD) ControlMode.TOUCH_SCREEN else ControlMode.TRACKPAD
-                            },
-                            label = {
-                                Text(
-                                    if (controlMode == ControlMode.TOUCH_SCREEN) "Touch Slate" else "Trackpad",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    if (controlMode == ControlMode.TOUCH_SCREEN) Icons.Default.TouchApp else Icons.Default.Mouse,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = Color.White,
-                                selectedLabelColor = Color.Black,
-                                containerColor = SurfaceDark.copy(alpha = 0.85f),
-                                labelColor = TextSecondary
-                            )
-                        )
-
-                        // Deck Mode (Pure Real-Time Controller)
-                        FilterChip(
-                            selected = controlMode == ControlMode.DECK,
-                            onClick = { controlMode = ControlMode.DECK },
-                            label = {
-                                Text("Deck Mode", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Default.Gamepad, contentDescription = null, modifier = Modifier.size(16.dp))
-                            },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = Color.White,
-                                selectedLabelColor = Color.Black,
-                                containerColor = SurfaceDark.copy(alpha = 0.85f),
-                                labelColor = TextSecondary
-                            )
-                        )
-
-                        // Vertical PC Mode toggle chip in Landscape
-                        FilterChip(
-                            selected = isVerticalPcMode,
-                            onClick = { toggleVerticalPcMode() },
-                            label = {
-                                Text(if (isVerticalPcMode) "Vertical PC ON" else "Vertical PC", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Default.StayCurrentPortrait, contentDescription = null, modifier = Modifier.size(16.dp))
-                            },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = Color.White,
-                                selectedLabelColor = Color.Black,
-                                containerColor = SurfaceDark.copy(alpha = 0.85f),
-                                labelColor = TextSecondary
-                            )
-                        )
-
-                        // Real-time Live Performance HUD (FPS & Latency)
+                        // Live HUD
                         Surface(
                             color = SurfaceDark.copy(alpha = 0.85f),
                             shape = RoundedCornerShape(12.dp),
                             border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
+                                        .size(7.dp)
+                                        .clip(RoundedCornerShape(4.dp))
                                         .background(Color.White)
                                 )
                                 Text(
-                                    text = "${liveFps} FPS",
+                                    if (controlMode == ControlMode.DECK) "DECK 1ms" else "$liveFps FPS · ${liveRtt}ms",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = TextPrimary
-                                )
-                                Text(text = "•", fontSize = 10.sp, color = TextMuted)
-                                Text(
-                                    text = "${liveRtt}ms",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
                                     color = Color.White
                                 )
                             }
                         }
 
-                        // One-tap Performance Mode Switcher (Turbo 60 FPS / Balanced 45 FPS / HQ 30 FPS)
-                        FilterChip(
-                            selected = currentQuality == InputEvent.SetQuality.TURBO,
-                            onClick = { cyclePerformanceMode() },
-                            label = {
-                                val label = when (currentQuality) {
-                                    InputEvent.SetQuality.TURBO -> "60 FPS"
-                                    InputEvent.SetQuality.BALANCED -> "45 FPS"
-                                    else -> "HQ"
-                                }
-                                Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        // Stream vs Deck Mode Toggle Pill
+                        Surface(
+                            onClick = {
+                                controlMode = if (controlMode == ControlMode.DECK) ControlMode.TRACKPAD else ControlMode.DECK
                             },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = Color.White,
-                                selectedLabelColor = Color.Black,
-                                containerColor = SurfaceDark.copy(alpha = 0.85f),
-                                labelColor = TextSecondary
-                            )
-                        )
-
-                        // Privacy curtain toggle
-                        IconButton(
-                            onClick = { togglePrivacyCurtain() },
-                            colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (privacyCurtainActive) Color.White else SurfaceDark.copy(alpha = 0.85f)
-                            )
+                            color = SurfaceDark.copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
                         ) {
-                            Icon(
-                                Icons.Default.Security,
-                                contentDescription = "Privacy Shield",
-                                tint = if (privacyCurtainActive) Color.Black else TextMuted
-                            )
-                        }
-
-                        // Quick Zoom button (Cycles 1.0x -> 1.5x -> 2.0x -> 3.0x -> 5.0x)
-                        IconButton(
-                            onClick = { cycleZoom() },
-                            colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (zoomScale > 1.0f) Color.White else SurfaceDark.copy(alpha = 0.85f)
-                            )
-                        ) {
-                            if (zoomScale > 1.0f) {
-                                Text(
-                                    text = String.format("%.1fx", zoomScale),
-                                    color = Color.Black,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    if (controlMode == ControlMode.DECK) Icons.Default.Tv else Icons.Default.Gamepad,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
                                 )
-                            } else {
-                                Icon(Icons.Default.ZoomIn, contentDescription = "Zoom", tint = TextMuted)
+                                Text(
+                                    if (controlMode == ControlMode.DECK) "Stream" else "Deck Mode (1ms)",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
                             }
                         }
 
-                        // Resolution & Display Scaling sheet
-                        IconButton(
-                            onClick = { showResolutionSheet = true },
-                            colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) Color.White else SurfaceDark.copy(alpha = 0.85f)
-                            )
-                        ) {
-                            Icon(
-                                Icons.Default.AspectRatio,
-                                contentDescription = "Resolution & Scaling",
-                                tint = if (currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT) Color.Black else TextMuted
-                            )
-                        }
+                        // Action Buttons: Keyboard, Control Center, Disconnect
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Surface(
+                                onClick = {
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
+                                },
+                                color = SurfaceDark.copy(alpha = 0.85f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                            ) {
+                                Box(modifier = Modifier.padding(6.dp)) {
+                                    Icon(Icons.Default.Keyboard, contentDescription = "Keyboard", tint = Color.White, modifier = Modifier.size(16.dp))
+                                }
+                            }
 
-                        // Native Keyboard button
-                        IconButton(
-                            onClick = {
-                                focusRequester.requestFocus()
-                                keyboardController?.show()
-                            },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
-                        ) {
-                            Icon(Icons.Default.Keyboard, contentDescription = "Keyboard", tint = TextPrimary)
-                        }
+                            Surface(
+                                onClick = { showControlCenter = true },
+                                color = SurfaceDark.copy(alpha = 0.85f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                            ) {
+                                Box(modifier = Modifier.padding(6.dp)) {
+                                    Icon(Icons.Default.Tune, contentDescription = "Control Center", tint = Color.White, modifier = Modifier.size(16.dp))
+                                }
+                            }
 
-                        // Rotate button
-                        IconButton(
-                            onClick = { toggleOrientation() },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
-                        ) {
-                            Icon(Icons.Default.ScreenRotation, contentDescription = "Rotate", tint = TextPrimary)
-                        }
-
-                        // Quick Actions & Power button
-                        IconButton(
-                            onClick = { showQuickActions = true },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
-                        ) {
-                            Icon(Icons.Default.Bolt, contentDescription = "Quick Actions", tint = AccentIndigoBright)
-                        }
-
-                        // Hide Panel / Immersive button
-                        IconButton(
-                            onClick = { isPanelHidden = true },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
-                        ) {
-                            Icon(Icons.Default.Fullscreen, contentDescription = "Hide Panels", tint = TextPrimary)
-                        }
-
-                        // Settings button
-                        IconButton(
-                            onClick = { showSettings = true },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark.copy(alpha = 0.85f))
-                        ) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TextPrimary)
+                            Surface(
+                                onClick = { handleDisconnect() },
+                                color = SurfaceDark.copy(alpha = 0.85f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                            ) {
+                                Box(modifier = Modifier.padding(6.dp)) {
+                                    Icon(Icons.Default.Close, contentDescription = "Disconnect", tint = TextMuted, modifier = Modifier.size(16.dp))
+                                }
+                            }
                         }
                     }
+
+                    // Sleek Bottom Slider Pill: Slide Up to Open Control Center & Presets
+                Surface(
+                    onClick = { showControlCenter = true },
+                    color = SurfaceDark.copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(20.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Text("Control Center & Presets", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                }
                 } else {
                     // Floating pill to unhide controls in Landscape
                     Surface(
@@ -1005,285 +957,115 @@ fun SessionScreen(
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                // Tier 1: Top Navigation Bar (Always fits 360-400dp screens perfectly)
+                // Minimalist Clean Top Header (Zero Clutter)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    // Live Performance HUD
+                    Surface(
+                        color = SurfaceDark,
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
                     ) {
-                        IconButton(
-                            onClick = { handleDisconnect() },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark)
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", tint = TextPrimary)
-                        }
-
-                        // Real-time Live Performance HUD (FPS & Latency)
-                        Surface(
-                            color = SurfaceDark,
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.White)
-                                )
-                                Text(
-                                    text = "${liveFps} FPS",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextPrimary
-                                )
-                                Text(text = "•", fontSize = 10.sp, color = TextMuted)
-                                Text(
-                                    text = "${liveRtt}ms",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color.White
-                                )
-                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White)
+                            )
+                            Text(
+                                text = if (controlMode == ControlMode.DECK) "DECK 1ms" else "${liveFps} FPS · ${liveRtt}ms",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
                         }
                     }
 
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    // Mode Toggle Pill (Stream vs Deck)
+                    Surface(
+                        onClick = {
+                            controlMode = if (controlMode == ControlMode.DECK) ControlMode.TRACKPAD else ControlMode.DECK
+                        },
+                        color = SurfaceDark,
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
                     ) {
-                        // Hide Panel / Fullscreen Button
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                if (controlMode == ControlMode.DECK) Icons.Default.Tv else Icons.Default.Gamepad,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                if (controlMode == ControlMode.DECK) "Stream" else "Deck Mode (1ms)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                    }
+
+                    // Quick Action Buttons
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // Native Keyboard
+                        IconButton(
+                            onClick = {
+                                focusRequester.requestFocus()
+                                keyboardController?.show()
+                            },
+                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark)
+                        ) {
+                            Icon(Icons.Default.Keyboard, contentDescription = "Keyboard", tint = TextPrimary)
+                        }
+
+                        // Bottom Slider Trigger: Control Center
+                        IconButton(
+                            onClick = { showControlCenter = true },
+                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark)
+                        ) {
+                            Icon(Icons.Default.Tune, contentDescription = "Control Center", tint = Color.White)
+                        }
+
+                        // Fullscreen toggle
                         IconButton(
                             onClick = { isPanelHidden = true },
                             colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark)
                         ) {
-                            Icon(Icons.Default.Fullscreen, contentDescription = "Hide Panels", tint = TextPrimary)
-                        }
-
-                        // Settings Button
-                        IconButton(
-                            onClick = { showSettings = true },
-                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark)
-                        ) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TextPrimary)
+                            Icon(Icons.Default.Fullscreen, contentDescription = "Fullscreen", tint = TextPrimary)
                         }
                     }
                 }
 
-                // Tier 2: Horizontally Scrollable Feature Dock (All features fully visible and accessible)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                // Sleek Slider Pull Handle to Open Control Center & Presets
+                Surface(
+                    onClick = { showControlCenter = true },
+                    color = SurfaceDark,
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    // 1. Control Mode Toggle
-                    FilterChip(
-                        selected = controlMode == ControlMode.TOUCH_SCREEN,
-                        onClick = {
-                            controlMode = if (controlMode == ControlMode.TRACKPAD) ControlMode.TOUCH_SCREEN else ControlMode.TRACKPAD
-                        },
-                        label = {
-                            Text(
-                                if (controlMode == ControlMode.TOUCH_SCREEN) "Touch Slate" else "Trackpad",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                if (controlMode == ControlMode.TOUCH_SCREEN) Icons.Default.TouchApp else Icons.Default.Mouse,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color.White,
-                            selectedLabelColor = Color.Black,
-                            containerColor = SurfaceDark,
-                            labelColor = TextSecondary
-                        )
-                    )
-
-                    // Deck Mode (Pure Real-Time Controller)
-                    FilterChip(
-                        selected = controlMode == ControlMode.DECK,
-                        onClick = { controlMode = ControlMode.DECK },
-                        label = {
-                            Text("Deck Mode", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Gamepad, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color.White,
-                            selectedLabelColor = Color.Black,
-                            containerColor = SurfaceDark,
-                            labelColor = TextSecondary
-                        )
-                    )
-
-                    // 2. Vertical PC Mode Toggle (Rotates Windows to 1080x1920 to fit phone vertically!)
-                    FilterChip(
-                        selected = isVerticalPcMode,
-                        onClick = { toggleVerticalPcMode() },
-                        label = {
-                            Text(if (isVerticalPcMode) "Vertical PC ON" else "Vertical PC", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.StayCurrentPortrait, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color.White,
-                            selectedLabelColor = Color.Black,
-                            containerColor = SurfaceDark,
-                            labelColor = TextSecondary
-                        )
-                    )
-
-                    // 3. Privacy Curtain Toggle (Stealth Mode)
-                    FilterChip(
-                        selected = privacyCurtainActive,
-                        onClick = { togglePrivacyCurtain() },
-                        label = {
-                            Text(if (privacyCurtainActive) "Privacy ON" else "Privacy Shield", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color.White,
-                            selectedLabelColor = Color.Black,
-                            containerColor = SurfaceDark,
-                            labelColor = TextSecondary
-                        )
-                    )
-
-                    // 4. Resolution & Scaling
-                    FilterChip(
-                        selected = currentResMode != InputEvent.ChangeResolution.DEFAULT || viewFitMode != ViewFitMode.FIT,
-                        onClick = { showResolutionSheet = true },
-                        label = {
-                            Text("Display Fit", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.AspectRatio, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color.White,
-                            selectedLabelColor = Color.Black,
-                            containerColor = SurfaceDark,
-                            labelColor = TextSecondary
-                        )
-                    )
-
-                    // 5. Quick Zoom (1.0x -> 1.5x -> 2.0x -> 3.0x -> 5.0x)
-                    FilterChip(
-                        selected = zoomScale > 1.0f,
-                        onClick = { cycleZoom() },
-                        label = {
-                            Text(if (zoomScale > 1.0f) String.format("%.1fx", zoomScale) else "Zoom", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.ZoomIn, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color.White,
-                            selectedLabelColor = Color.Black,
-                            containerColor = SurfaceDark,
-                            labelColor = TextSecondary
-                        )
-                    )
-
-                    // 6. Rotate to Landscape
-                    FilterChip(
-                        selected = false,
-                        onClick = { toggleOrientation() },
-                        label = {
-                            Text("Rotate", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.ScreenRotation, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color.White,
-                            selectedLabelColor = Color.Black,
-                            containerColor = SurfaceDark,
-                            labelColor = TextSecondary
-                        )
-                    )
-
-                    // 7. Performance Quality (60 FPS / 45 FPS / HQ)
-                    FilterChip(
-                        selected = currentQuality == InputEvent.SetQuality.TURBO,
-                        onClick = { cyclePerformanceMode() },
-                        label = {
-                            val label = when (currentQuality) {
-                                InputEvent.SetQuality.TURBO -> "60 FPS"
-                                InputEvent.SetQuality.BALANCED -> "45 FPS"
-                                else -> "HQ"
-                            }
-                            Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color.White,
-                            selectedLabelColor = Color.Black,
-                            containerColor = SurfaceDark,
-                            labelColor = TextSecondary
-                        )
-                    )
-
-                    // 8. Power & Quick Actions
-                    FilterChip(
-                        selected = false,
-                        onClick = { showQuickActions = true },
-                        label = {
-                            Text("Power & Keys", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color.White,
-                            selectedLabelColor = Color.Black,
-                            containerColor = SurfaceDark,
-                            labelColor = TextSecondary
-                        )
-                    )
-
-                    // 9. Native Keyboard
-                    FilterChip(
-                        selected = isKeyboardOpen,
-                        onClick = {
-                            isKeyboardOpen = !isKeyboardOpen
-                            focusRequester.requestFocus()
-                            if (isKeyboardOpen) keyboardController?.show() else keyboardController?.hide()
-                        },
-                        label = {
-                            Text("Keyboard", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Keyboard, contentDescription = null, modifier = Modifier.size(16.dp))
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color.White,
-                            selectedLabelColor = Color.Black,
-                            containerColor = SurfaceDark,
-                            labelColor = TextSecondary
-                        )
-                    )
+                    Row(
+                        modifier = Modifier.padding(vertical = 7.dp, horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Control Center (Presets · Audio · Tools)", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
                 }
 
                 // Privacy Status Banner if active
@@ -1566,7 +1348,47 @@ fun SessionScreen(
                 .focusRequester(focusRequester)
         )
 
-        // Settings Sheet
+        // Bottom Slider: Control Center & Presets Sheet
+        if (showControlCenter) {
+            ControlCenterSheet(
+                controlMode = controlMode,
+                isVerticalPc = isVerticalPcMode,
+                isPrivacyEnabled = privacyCurtainActive,
+                viewFitMode = viewFitMode,
+                currentQuality = currentQuality.toInt(),
+                sensitivity = sensitivity,
+                scrollSpeed = scrollSpeed,
+                isSpeakerAudioEnabled = isSpeakerAudioEnabled,
+                isMicAudioEnabled = isMicAudioEnabled,
+                onApplyPreset = { applyPreset(it) },
+                onToggleControlMode = { controlMode = it },
+                onToggleVerticalPc = { toggleVerticalPcMode() },
+                onTogglePrivacyCurtain = { enabled ->
+                    privacyCurtainActive = enabled
+                    webRtcManager.sendInput(InputEvent.SetPrivacyCurtain(enabled))
+                },
+                onChangeFitMode = { viewFitMode = it },
+                onChangeQuality = { q ->
+                    currentQuality = q.toByte()
+                    webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
+                },
+                onChangeSensitivity = { sensitivity = it },
+                onChangeScrollSpeed = { scrollSpeed = it },
+                onToggleSpeakerAudio = { enabled ->
+                    isSpeakerAudioEnabled = enabled
+                    webRtcManager.sendInput(InputEvent.SetAudioConfig(enabled, isMicAudioEnabled))
+                    Toast.makeText(context, if (enabled) "PC Audio Streaming ON" else "PC Audio Muted", Toast.LENGTH_SHORT).show()
+                },
+                onToggleMicAudio = { enabled ->
+                    isMicAudioEnabled = enabled
+                    webRtcManager.sendInput(InputEvent.SetAudioConfig(isSpeakerAudioEnabled, enabled))
+                    Toast.makeText(context, if (enabled) "Phone Mic to PC ON" else "Mic Muted", Toast.LENGTH_SHORT).show()
+                },
+                onSendInput = { webRtcManager.sendInput(it) },
+                onDismiss = { showControlCenter = false },
+                onDisconnect = { handleDisconnect() }
+            )
+        }
         if (showSettings) {
             SettingsSheet(
                 sensitivity = sensitivity,

@@ -293,6 +293,7 @@ impl LocalServer {
                         }
                     }
 
+                    let is_connected = Arc::new(AtomicBool::new(true));
                     let is_streaming = Arc::new(AtomicBool::new(true));
                     let active_monitor = Arc::new(AtomicUsize::new(0));
                     let stream_quality = Arc::new(AtomicU8::new(70)); // Default to crisp balanced quality
@@ -300,6 +301,7 @@ impl LocalServer {
                     let last_ack_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
                     // Direct capture thread at ultra-fluid up to 60 FPS with zero-bufferbloat flow control
+                    let conn_flag = is_connected.clone();
                     let stream_flag = is_streaming.clone();
                     let monitor_flag = active_monitor.clone();
                     let quality_flag = stream_quality.clone();
@@ -311,7 +313,13 @@ impl LocalServer {
                         let mut capture = ScreenCapture::new();
                         info!("Started direct local screen streaming loop (up to 60 FPS)");
 
-                        while stream_flag.load(Ordering::Relaxed) {
+                        while conn_flag.load(Ordering::Relaxed) {
+                            if !stream_flag.load(Ordering::Relaxed) {
+                                // Deck Mode (Zero Stream): Pause capture to free up 100% CPU & Wi-Fi bandwidth
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                                continue;
+                            }
+
                             let start = std::time::Instant::now();
                             capture.active_monitor = monitor_flag.load(Ordering::Relaxed);
                             let q = quality_flag.load(Ordering::Relaxed);
@@ -398,6 +406,16 @@ impl LocalServer {
                                                 let _ = ctrl_tx.send(Message::Text("{\"type\":\"text_focus\"}".to_string())).await;
                                             }
                                         }
+                                        InputPacket::SetStreaming { enabled } => {
+                                            info!("Client requested screen streaming: {}", enabled);
+                                            is_streaming.store(*enabled, Ordering::SeqCst);
+                                            if *enabled {
+                                                client_ack.store(true, Ordering::Relaxed);
+                                            }
+                                        }
+                                        InputPacket::SetAudioConfig { speaker_enabled, mic_enabled } => {
+                                            info!("Audio config updated: speaker={}, mic={}", speaker_enabled, mic_enabled);
+                                        }
                                         _ => {}
                                     }
                                     if !matches!(packet, InputPacket::TouchDirect { .. }) {
@@ -433,6 +451,7 @@ impl LocalServer {
                         }
                     }
 
+                    is_connected.store(false, Ordering::SeqCst);
                     is_streaming.store(false, Ordering::SeqCst);
                     priv_curtain.set_enabled(false);
                     InputSimulator::set_display_resolution(0);
