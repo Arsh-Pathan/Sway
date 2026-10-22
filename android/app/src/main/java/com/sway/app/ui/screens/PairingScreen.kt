@@ -1,6 +1,7 @@
 package com.sway.app.ui.screens
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -45,6 +46,7 @@ fun PairingScreen(
     onConnect: (signalingUrl: String, deviceId: String, token: String) -> Unit
 ) {
     val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("sway_prefs", Context.MODE_PRIVATE) }
     var selectedTab by remember { mutableIntStateOf(0) } // 0: QR Scan, 1: Manual
 
     var hasCameraPermission by remember {
@@ -69,19 +71,37 @@ fun PairingScreen(
         }
     }
 
-    // Manual Form State
-    var signalingUrl by remember { mutableStateOf("127.0.0.1:8089") }
-    var deviceId by remember { mutableStateOf("") }
-    var token by remember { mutableStateOf("") }
+    // Default to the current live laptop credentials if not saved yet
+    val defaultUrl = "192.168.11.229:8089"
+    val defaultDeviceId = "sway-laptop-b18602ec"
+    val defaultToken = "50f0232b-ea9"
+
+    // Manual Form & Saved State
+    var signalingUrl by remember {
+        mutableStateOf(prefs.getString("saved_signaling_url", null) ?: defaultUrl)
+    }
+    var deviceId by remember {
+        mutableStateOf(prefs.getString("saved_device_id", null) ?: defaultDeviceId)
+    }
+    var token by remember {
+        mutableStateOf(prefs.getString("saved_token", null) ?: defaultToken)
+    }
+
+    val connectAndSave = { url: String, devId: String, tok: String ->
+        prefs.edit()
+            .putString("saved_signaling_url", url)
+            .putString("saved_device_id", devId)
+            .putString("saved_token", tok)
+            .apply()
+        onConnect(url, devId, tok)
+    }
 
     // Auto-populate manual fields when a host is discovered on local Wi-Fi
     LaunchedEffect(discoveredHost) {
         discoveredHost?.let { host ->
-            if (deviceId.isBlank()) deviceId = host.deviceId
-            if (token.isBlank()) token = host.token
-            if (signalingUrl == "127.0.0.1:8089" || signalingUrl.isEmpty()) {
-                signalingUrl = "${host.ipAddress}:${host.port}"
-            }
+            deviceId = host.deviceId
+            token = host.token
+            signalingUrl = "${host.ipAddress}:${host.port}"
         }
     }
 
@@ -121,7 +141,7 @@ fun PairingScreen(
             }
         }
 
-        // Auto-Discovery Card if found on Wi-Fi or USB
+        // Auto-Discovery Card or Saved Connection Card
         discoveredHost?.let { host ->
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -155,7 +175,7 @@ fun PairingScreen(
                     }
                     Button(
                         onClick = {
-                            onConnect("${host.ipAddress}:${host.port}", host.deviceId, host.token)
+                            connectAndSave("${host.ipAddress}:${host.port}", host.deviceId, host.token)
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = androidx.compose.ui.graphics.Color.White,
@@ -164,6 +184,54 @@ fun PairingScreen(
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Text("Auto-Connect", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        } ?: run {
+            if (deviceId.isNotBlank() && token.isNotBlank()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = SurfaceCard,
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, SurfaceCardBorder)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "SAVED CONNECTION",
+                                color = TextMuted,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                            Text(
+                                deviceId,
+                                color = TextPrimary,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.sp
+                            )
+                            Text(
+                                signalingUrl,
+                                color = TextMuted,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                connectAndSave(signalingUrl, deviceId, token)
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = androidx.compose.ui.graphics.Color.White,
+                                contentColor = androidx.compose.ui.graphics.Color.Black
+                            ),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Connect", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -207,12 +275,12 @@ fun PairingScreen(
                             val scannedUrl = obj.optString("server", signalingUrl)
                             val scannedId = obj.getString("deviceId")
                             val scannedToken = obj.getString("token")
-                            onConnect(scannedUrl, scannedId, scannedToken)
+                            connectAndSave(scannedUrl, scannedId, scannedToken)
                         } catch (e: Exception) {
                             // Raw format: deviceId:token
                             if (scannedJson.contains(":")) {
                                 val parts = scannedJson.split(":")
-                                onConnect(signalingUrl, parts[0], parts[1])
+                                connectAndSave(signalingUrl, parts[0], parts[1])
                             }
                         }
                     }
@@ -359,7 +427,7 @@ fun PairingScreen(
                 Button(
                     onClick = {
                         if (deviceId.isNotBlank() && token.isNotBlank()) {
-                            onConnect(signalingUrl, deviceId.trim(), token.trim())
+                            connectAndSave(signalingUrl, deviceId.trim(), token.trim())
                         }
                     },
                     modifier = Modifier
