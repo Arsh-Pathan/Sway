@@ -5,12 +5,12 @@ use tracing::info;
 #[cfg(windows)]
 use windows::core::w;
 #[cfg(windows)]
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
-    SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_NOPREFIX,
-    DT_WORDBREAK, FW_BOLD, FW_NORMAL, TRANSPARENT,
+    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
+    LineTo, MoveToEx, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor,
+    DT_CENTER, DT_NOPREFIX, FW_NORMAL, PS_NULL, PS_SOLID, TRANSPARENT,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -18,7 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, PostMessageW, PostQuitMessage, RegisterClassExW, SetWindowDisplayAffinity,
     ShowWindow, TranslateMessage, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, WINDOW_DISPLAY_AFFINITY, WM_CLOSE,
-    WM_DESTROY, WM_KEYDOWN, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_NCHITTEST, WM_PAINT, WNDCLASSEXW, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
@@ -176,6 +176,10 @@ unsafe extern "system" fn curtain_wnd_proc(
             // Return HTTRANSPARENT (-1) so mouse clicks and touches pass directly through to desktop windows!
             LRESULT(-1)
         }
+        WM_ERASEBKGND => {
+            // Suppress default background erasing to prevent any screen flicker
+            LRESULT(1)
+        }
         WM_KEYDOWN => {
             // If user presses Escape on host laptop keyboard, immediately dismiss curtain
             if wparam.0 == 0x1B { // VK_ESCAPE
@@ -191,67 +195,98 @@ unsafe extern "system" fn curtain_wnd_proc(
                 let mut rect = RECT::default();
                 let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
 
-                // Deep sleek OLED pitch-black background
-                let bg_brush = CreateSolidBrush(COLORREF(0x000F0A0A)); // RGB(10, 10, 15)
+                // Pure pitch-black plain OLED background
+                let bg_brush = CreateSolidBrush(COLORREF(0x00000000)); // True Black
                 FillRect(hdc, &rect, bg_brush);
                 let _ = DeleteObject(bg_brush);
 
                 SetBkMode(hdc, TRANSPARENT);
 
-                // Title: Sway Remote Active
-                let title_font = CreateFontW(
-                    38, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
+                let cx = (rect.left + rect.right) / 2;
+                let cy = (rect.top + rect.bottom) / 2;
+
+                // Scale the vector emblem cleanly based on screen dimensions
+                let icon_dim = (((rect.bottom - rect.top) as f32) * 0.22).clamp(160.0, 240.0);
+                let s = icon_dim / 124.0;
+                let ox = cx - ((124.0 * s) / 2.0).round() as i32;
+                let oy = cy - ((124.0 * s) / 2.0).round() as i32;
+
+                let rx = |val: f32| ox + (val * s).round() as i32;
+                let ry = |val: f32| oy + (val * s).round() as i32;
+
+                let null_pen = CreatePen(PS_NULL, 0, COLORREF(0));
+                let old_pen = SelectObject(hdc, null_pen);
+
+                // 1. Outer Squircle Container
+                let container_brush = CreateSolidBrush(COLORREF(0x001B1714)); // Deep charcoal RGB(20, 23, 27)
+                let border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00332D28)); // Subtle border RGB(40, 45, 51)
+                SelectObject(hdc, border_pen);
+                let old_brush = SelectObject(hdc, container_brush);
+
+                let r_squircle = (28.0 * s).round() as i32;
+                let _ = RoundRect(hdc, rx(0.0), ry(0.0), rx(124.0), ry(124.0), r_squircle * 2, r_squircle * 2);
+
+                let _ = DeleteObject(border_pen);
+                SelectObject(hdc, null_pen);
+
+                // 2. Laptop Bezel (Silver White)
+                let bezel_brush = CreateSolidBrush(COLORREF(0x00F0EAE7)); // RGB(231, 234, 240)
+                SelectObject(hdc, bezel_brush);
+                let r_bezel = (6.0 * s).round().max(2.0) as i32;
+                let _ = RoundRect(hdc, rx(23.0), ry(22.0), rx(101.0), ry(79.0), r_bezel * 2, r_bezel * 2);
+
+                // 3. Laptop Screen Glass (Deep Contrast OLED)
+                let screen_brush = CreateSolidBrush(COLORREF(0x000E0A08)); // Deep Dark RGB(8, 10, 14)
+                SelectObject(hdc, screen_brush);
+                let r_screen = (2.0 * s).round().max(1.0) as i32;
+                let _ = RoundRect(hdc, rx(28.0), ry(27.0), rx(96.0), ry(74.0), r_screen * 2, r_screen * 2);
+
+                // 4. Laptop Base (Silver White Trapezoid)
+                let base_brush = CreateSolidBrush(COLORREF(0x00E8DEDE)); // RGB(222, 222, 232)
+                SelectObject(hdc, base_brush);
+                let base_pts = [
+                    POINT { x: rx(18.0), y: ry(83.0) },
+                    POINT { x: rx(106.0), y: ry(83.0) },
+                    POINT { x: rx(114.0), y: ry(94.0) },
+                    POINT { x: rx(10.0), y: ry(94.0) },
+                ];
+                let _ = Polygon(hdc, &base_pts);
+
+                // 5. Trackpad / Base Opening Notch
+                let notch_pen = CreatePen(PS_SOLID, (2.0 * s).round().max(2.0) as i32, COLORREF(0x00665852)); // RGB(82, 88, 102)
+                SelectObject(hdc, notch_pen);
+                let _ = MoveToEx(hdc, rx(52.0), ry(90.0), None);
+                let _ = LineTo(hdc, rx(72.0), ry(90.0));
+
+                // 6. Ultra-subtle, minimal bottom hint
+                let hint_font = CreateFontW(
+                    14, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
                     w!("Segoe UI"),
                 );
-                let old_font = SelectObject(hdc, title_font);
-                SetTextColor(hdc, COLORREF(0x00FFAA63)); // Vibrant indigo/cyan accent
+                let old_font = SelectObject(hdc, hint_font);
+                SetTextColor(hdc, COLORREF(0x004A4540)); // Low-contrast faint slate
 
-                let mut title_rect = RECT {
-                    left: rect.left,
-                    top: rect.bottom / 2 - 120,
-                    right: rect.right,
-                    bottom: rect.bottom / 2 - 40,
-                };
-                let mut title_text: Vec<u16> = "SWAY REMOTE CONTROL ACTIVE\0".encode_utf16().collect();
-                DrawTextW(hdc, &mut title_text, &mut title_rect, DT_CENTER | DT_NOPREFIX);
-
-                // Subtitle
-                let sub_font = CreateFontW(
-                    22, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
-                    w!("Segoe UI"),
-                );
-                SelectObject(hdc, sub_font);
-                SetTextColor(hdc, COLORREF(0x00E0E0E0)); // Light Gray
-
-                let mut sub_rect = RECT {
-                    left: rect.left + 50,
-                    top: rect.bottom / 2 - 30,
-                    right: rect.right - 50,
-                    bottom: rect.bottom / 2 + 30,
-                };
-                let mut sub_text: Vec<u16> =
-                    "This display is currently being controlled remotely by your mobile device.\0"
-                        .encode_utf16()
-                        .collect();
-                DrawTextW(hdc, &mut sub_text, &mut sub_rect, DT_CENTER | DT_WORDBREAK | DT_NOPREFIX);
-
-                // Hint
-                SetTextColor(hdc, COLORREF(0x00888888)); // Dim Gray
                 let mut hint_rect = RECT {
                     left: rect.left,
-                    top: rect.bottom / 2 + 50,
+                    top: rect.bottom - 48,
                     right: rect.right,
-                    bottom: rect.bottom / 2 + 100,
+                    bottom: rect.bottom - 16,
                 };
-                let mut hint_text: Vec<u16> =
-                    "Desktop streaming is active  *  Press ESC on laptop or disconnect mobile to restore\0"
-                        .encode_utf16()
-                        .collect();
+                let mut hint_text: Vec<u16> = "Press ESC on laptop to exit\0".encode_utf16().collect();
                 DrawTextW(hdc, &mut hint_text, &mut hint_rect, DT_CENTER | DT_NOPREFIX);
 
+                // Clean up GDI resources
                 SelectObject(hdc, old_font);
-                let _ = DeleteObject(title_font);
-                let _ = DeleteObject(sub_font);
+                SelectObject(hdc, old_brush);
+                SelectObject(hdc, old_pen);
+
+                let _ = DeleteObject(container_brush);
+                let _ = DeleteObject(bezel_brush);
+                let _ = DeleteObject(screen_brush);
+                let _ = DeleteObject(base_brush);
+                let _ = DeleteObject(notch_pen);
+                let _ = DeleteObject(null_pen);
+                let _ = DeleteObject(hint_font);
 
                 let _ = windows::Win32::Graphics::Gdi::EndPaint(hwnd, &ps);
             }
