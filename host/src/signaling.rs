@@ -265,12 +265,6 @@ impl HostSignaling {
                             InputPacket::SetPrivacyCurtain { enabled } => {
                                 self.privacy.set_enabled(*enabled);
                             }
-                            InputPacket::ChangeResolution { mode } => {
-                                InputSimulator::set_display_resolution(*mode);
-                            }
-                            InputPacket::ChangeOrientation { vertical } => {
-                                InputSimulator::set_display_orientation(*vertical);
-                            }
                             _ => {}
                         }
                         simulator.dispatch(packet);

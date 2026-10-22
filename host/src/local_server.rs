@@ -394,12 +394,6 @@ impl LocalServer {
                                         InputPacket::SetPrivacyCurtain { enabled } => {
                                             priv_curtain.set_enabled(*enabled);
                                         }
-                                        InputPacket::ChangeResolution { mode } => {
-                                            InputSimulator::set_display_resolution(*mode);
-                                        }
-                                        InputPacket::ChangeOrientation { vertical } => {
-                                            sim.change_display_orientation(*vertical);
-                                        }
                                         InputPacket::TouchDirect { norm_x, norm_y, action } => {
                                             let is_text = sim.touch_direct(*norm_x, *norm_y, *action);
                                             if is_text && (*action == 0 || *action == 2) {

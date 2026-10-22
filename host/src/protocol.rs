@@ -58,14 +58,14 @@ impl InputPacket {
             }
             0x02 => {
                 let button = rdr.read_u8()?;
-                if button > 2 {
+                if button < 1 || button > 3 {
                     return Err(ProtocolError::InvalidParameter("invalid mouse button"));
                 }
                 Ok(InputPacket::MouseDown { button })
             }
             0x03 => {
                 let button = rdr.read_u8()?;
-                if button > 2 {
+                if button < 1 || button > 3 {
                     return Err(ProtocolError::InvalidParameter("invalid mouse button"));
                 }
                 Ok(InputPacket::MouseUp { button })
@@ -236,14 +236,22 @@ mod tests {
 
     #[test]
     fn test_protocol_security_bounds() {
-        // Invalid mouse button (>2)
-        assert!(InputPacket::parse(&[0x02, 0x05]).is_err());
+        // Invalid mouse button (0 or >3)
+        assert!(InputPacket::parse(&[0x02, 0x00]).is_err());
+        assert!(InputPacket::parse(&[0x02, 0x04]).is_err());
+        assert!(InputPacket::parse(&[0x03, 0x00]).is_err());
+        assert!(InputPacket::parse(&[0x03, 0x04]).is_err());
+
+        // Middle button (3) is valid!
+        assert!(InputPacket::parse(&[0x02, 0x03]).is_ok());
+        assert!(InputPacket::parse(&[0x03, 0x03]).is_ok());
 
         // Invalid touch action (>2)
         assert!(InputPacket::parse(&[0x0A, 0x00, 0x00, 0x00, 0x00, 0x09]).is_err());
 
-        // Invalid system command (<1 or >5)
+        // Invalid system command (<1 or >50)
         assert!(InputPacket::parse(&[0x0F, 0x00]).is_err());
-        assert!(InputPacket::parse(&[0x0F, 0x06]).is_err());
+        assert!(InputPacket::parse(&[0x0F, 51]).is_err());
+        assert!(InputPacket::parse(&[0x0F, 39]).is_ok());
     }
 }

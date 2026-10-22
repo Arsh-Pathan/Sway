@@ -97,35 +97,30 @@ private fun mapTouchToNormalized(
     }
 
     if (fitMode == ViewFitMode.ROTATE_90) {
-        val rotAspect = fh / fw
-        val boxAspect = boxWidth / boxHeight.coerceAtLeast(1f)
-        val fitW: Float
-        val fitH: Float
-        val padX: Float
-        val padY: Float
-
-        if (boxAspect > rotAspect) {
-            fitH = boxHeight
-            fitW = fitH * rotAspect
-            padX = (boxWidth - fitW) / 2f
-            padY = 0f
+        val streamAspect = fw / fh
+        val rotFitW: Float
+        val rotFitH: Float
+        if (boxHeight / boxWidth.coerceAtLeast(1f) > streamAspect) {
+            rotFitH = boxWidth
+            rotFitW = rotFitH * streamAspect
         } else {
-            fitW = boxWidth
-            fitH = fitW / rotAspect
-            padX = 0f
-            padY = (boxHeight - fitH) / 2f
+            rotFitW = boxHeight
+            rotFitH = rotFitW / streamAspect
         }
 
-        val contentX = (unzoomedX - padX).coerceIn(0f, fitW)
-        val contentY = (unzoomedY - padY).coerceIn(0f, fitH)
+        val cx = boxWidth / 2f
+        val cy = boxHeight / 2f
+        val preRotX = cx + (unzoomedY - cy)
+        val preRotY = cy - (unzoomedX - cx)
 
-        // Clockwise 90-degree coordinate inversion:
-        // Rendered X relates to (1 - original Y), Rendered Y relates to original X
-        val normRotX = contentX / fitW.coerceAtLeast(1f)
-        val normRotY = contentY / fitH.coerceAtLeast(1f)
+        val padX = (boxWidth - rotFitW) / 2f
+        val padY = (boxHeight - rotFitH) / 2f
 
-        val origNormX = (normRotY * 65535f).toInt().coerceIn(0, 65535)
-        val origNormY = ((1f - normRotX) * 65535f).toInt().coerceIn(0, 65535)
+        val contentX = (preRotX - padX).coerceIn(0f, rotFitW)
+        val contentY = (preRotY - padY).coerceIn(0f, rotFitH)
+
+        val origNormX = ((contentX / rotFitW.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
+        val origNormY = ((contentY / rotFitH.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
         return Pair(origNormX, origNormY)
     }
 
@@ -186,18 +181,19 @@ private fun DesktopStreamCanvas(
                 padX = 0f
                 padY = 0f
             } else if (fitMode == ViewFitMode.ROTATE_90) {
-                val rotAspect = imgH / imgW
-                if (canvasAspect > rotAspect) {
-                    fitH = canvasHeight
-                    fitW = fitH * rotAspect
-                    padX = (canvasWidth - fitW) / 2f
-                    padY = 0f
+                val rotFitW: Float
+                val rotFitH: Float
+                if (canvasHeight / canvasWidth.coerceAtLeast(1f) > streamAspect) {
+                    rotFitH = canvasWidth
+                    rotFitW = rotFitH * streamAspect
                 } else {
-                    fitW = canvasWidth
-                    fitH = fitW / rotAspect
-                    padX = 0f
-                    padY = (canvasHeight - fitH) / 2f
+                    rotFitW = canvasHeight
+                    rotFitH = rotFitW / streamAspect
                 }
+                fitW = rotFitW
+                fitH = rotFitH
+                padX = (canvasWidth - fitW) / 2f
+                padY = (canvasHeight - fitH) / 2f
             } else {
                 if (canvasAspect > streamAspect) {
                     fitH = canvasHeight
@@ -229,6 +225,165 @@ private fun DesktopStreamCanvas(
                     filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun DesktopStreamView(
+    frame: android.graphics.Bitmap?,
+    sequence: Long,
+    fitMode: ViewFitMode,
+    controlMode: ControlMode,
+    zoomScale: Float,
+    zoomOffsetX: Float,
+    zoomOffsetY: Float,
+    isVerticalPc: Boolean,
+    onZoomChange: (Float, Float, Float) -> Unit,
+    onInputEvent: (InputEvent) -> Unit,
+    onRequestKeyboard: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPc, frame, fitMode) {
+                var lastTapTime = 0L
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val downPos = down.position
+                    val downTime = System.currentTimeMillis()
+                    var hasDragged = false
+                    val touchSlop = 16f
+                    val pointerId = down.id
+
+                    val initialPt = mapTouchToNormalized(
+                        down.position.x, down.position.y,
+                        size.width.toFloat(), size.height.toFloat(),
+                        frame?.width, frame?.height,
+                        isVerticalPc, zoomScale, zoomOffsetX, zoomOffsetY,
+                        fitMode
+                    )
+
+                    if (controlMode == ControlMode.TOUCH_SCREEN && zoomScale <= 1.05f) {
+                        if (initialPt != null) {
+                            onInputEvent(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_DOWN))
+                        }
+                    }
+
+                    var prevPointers = listOf(down)
+                    var currentScale = zoomScale
+                    var currentOffsetX = zoomOffsetX
+                    var currentOffsetY = zoomOffsetY
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val pressedPointers = event.changes.filter { it.pressed }
+
+                        if (pressedPointers.isEmpty()) {
+                            // All fingers lifted
+                            if (controlMode == ControlMode.TOUCH_SCREEN && zoomScale <= 1.05f) {
+                                if (!hasDragged) {
+                                    if (initialPt != null) {
+                                        onInputEvent(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                    }
+                                } else {
+                                    val lastChange = event.changes.firstOrNull { it.id == pointerId } ?: event.changes.firstOrNull()
+                                    if (lastChange != null) {
+                                        val curPt = mapTouchToNormalized(
+                                            lastChange.position.x, lastChange.position.y,
+                                            size.width.toFloat(), size.height.toFloat(),
+                                            frame?.width, frame?.height,
+                                            isVerticalPc, zoomScale, zoomOffsetX, zoomOffsetY,
+                                            fitMode
+                                        )
+                                        if (curPt != null) {
+                                            onInputEvent(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
+                                        }
+                                    }
+                                }
+                                val tapDuration = System.currentTimeMillis() - downTime
+                                if (tapDuration < 280 && !hasDragged) {
+                                    if (System.currentTimeMillis() - lastTapTime < 350) {
+                                        onRequestKeyboard()
+                                    }
+                                    lastTapTime = System.currentTimeMillis()
+                                }
+                            }
+                            break
+                        }
+
+                        if (pressedPointers.size >= 2) {
+                            // Multi-touch pinch-to-zoom and two-finger pan
+                            val p0 = pressedPointers[0]
+                            val p1 = pressedPointers[1]
+                            val prev0 = prevPointers.firstOrNull { it.id == p0.id } ?: p0
+                            val prev1 = prevPointers.firstOrNull { it.id == p1.id } ?: p1
+
+                            val currentDist = (p0.position - p1.position).getDistance().coerceAtLeast(1f)
+                            val prevDist = (prev0.position - prev1.position).getDistance().coerceAtLeast(1f)
+                            val zoomFactor = currentDist / prevDist
+
+                            val currentCenter = (p0.position + p1.position) / 2f
+                            val prevCenter = (prev0.position + prev1.position) / 2f
+                            val pan = currentCenter - prevCenter
+
+                            currentScale = (currentScale * zoomFactor).coerceIn(1.0f, 5.0f)
+                            if (currentScale > 1.05f) {
+                                currentOffsetX += pan.x
+                                currentOffsetY += pan.y
+                            } else {
+                                currentOffsetX = 0f
+                                currentOffsetY = 0f
+                            }
+                            onZoomChange(currentScale, currentOffsetX, currentOffsetY)
+                            for (p in pressedPointers) p.consume()
+                        } else if (pressedPointers.size == 1) {
+                            val current = pressedPointers[0]
+                            val dist = (current.position - downPos).getDistance()
+
+                            if (zoomScale > 1.05f) {
+                                // Viewport panning when zoomed in
+                                val prev = prevPointers.firstOrNull { it.id == current.id } ?: current
+                                val pan = current.position - prev.position
+                                currentOffsetX += pan.x
+                                currentOffsetY += pan.y
+                                onZoomChange(currentScale, currentOffsetX, currentOffsetY)
+                                current.consume()
+                            } else if (controlMode == ControlMode.TOUCH_SCREEN) {
+                                // 1:1 direct touch input
+                                if (dist > touchSlop) {
+                                    hasDragged = true
+                                    val curPt = mapTouchToNormalized(
+                                        current.position.x, current.position.y,
+                                        size.width.toFloat(), size.height.toFloat(),
+                                        frame?.width, frame?.height,
+                                        isVerticalPc, zoomScale, zoomOffsetX, zoomOffsetY,
+                                        fitMode
+                                    )
+                                    if (curPt != null) {
+                                        onInputEvent(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
+                                    }
+                                }
+                                current.consume()
+                            }
+                        }
+                        prevPointers = pressedPointers
+                    }
+                }
+            }
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(
+                    scaleX = zoomScale,
+                    scaleY = zoomScale,
+                    translationX = zoomOffsetX,
+                    translationY = zoomOffsetY
+                )
+        ) {
+            DesktopStreamCanvas(frame = frame, sequence = sequence, fitMode = fitMode)
         }
     }
 }
@@ -453,162 +608,78 @@ fun SessionScreen(
         } else if (isLandscape) {
             // ==================== LANDSCAPE MODE: IMMERSIVE HORIZONTAL ====================
             Box(modifier = Modifier.fillMaxSize()) {
-                // Video Surface with Zoom & Pan + Direct Touch
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(Unit) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                zoomScale = (zoomScale * zoom).coerceIn(1.0f, 5.0f)
-                                if (zoomScale > 1.0f) {
-                                    zoomOffsetX += pan.x
-                                    zoomOffsetY += pan.y
-                                } else {
-                                    zoomOffsetX = 0f
-                                    zoomOffsetY = 0f
-                                }
+                if (webRtcManager.isDirectLocal || currentFrame != null) {
+                    if (currentFrame != null) {
+                        DesktopStreamView(
+                            frame = currentFrame,
+                            sequence = currentSequence,
+                            fitMode = viewFitMode,
+                            controlMode = controlMode,
+                            zoomScale = zoomScale,
+                            zoomOffsetX = zoomOffsetX,
+                            zoomOffsetY = zoomOffsetY,
+                            isVerticalPc = isVerticalPcMode,
+                            onZoomChange = { z, ox, oy ->
+                                zoomScale = z
+                                zoomOffsetX = ox
+                                zoomOffsetY = oy
+                            },
+                            onInputEvent = { webRtcManager.sendInput(it) },
+                            onRequestKeyboard = {
+                                focusRequester.requestFocus()
+                                keyboardController?.show()
                             }
-                        }
-                        .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame, viewFitMode) {
-                            if (controlMode == ControlMode.TOUCH_SCREEN) {
-                                var lastTapTime = 0L
-                                awaitEachGesture {
-                                    val down = awaitFirstDown()
-                                    val downPos = down.position
-                                    val downTime = System.currentTimeMillis()
-                                    var hasDragged = false
-                                    val touchSlop = 20f
-                                    val initialPt = mapTouchToNormalized(
-                                        down.position.x, down.position.y,
-                                        size.width.toFloat(), size.height.toFloat(),
-                                        currentFrame?.width, currentFrame?.height,
-                                        isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                        viewFitMode
-                                    )
-                                    if (initialPt != null) {
-                                        webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_DOWN))
-                                    }
-
-                                    val pointerId = down.id
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        val current = event.changes.firstOrNull { it.id == pointerId } ?: break
-                                        val dist = (current.position - downPos).getDistance()
-
-                                        if (!current.pressed) {
-                                            if (!hasDragged) {
-                                                // Clean single-touch tap: send UP with initial down coordinates
-                                                if (initialPt != null) {
-                                                    webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_UP))
-                                                }
-                                            } else {
-                                                val curPt = mapTouchToNormalized(
-                                                    current.position.x, current.position.y,
-                                                    size.width.toFloat(), size.height.toFloat(),
-                                                    currentFrame?.width, currentFrame?.height,
-                                                    isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                                    viewFitMode
-                                                )
-                                                if (curPt != null) {
-                                                    webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
-                                                }
-                                            }
-                                            val tapDuration = System.currentTimeMillis() - downTime
-                                            if (tapDuration < 280 && !hasDragged) {
-                                                if (System.currentTimeMillis() - lastTapTime < 350) {
-                                                    // Double tap detected: auto-open software keyboard
-                                                    focusRequester.requestFocus()
-                                                    keyboardController?.show()
-                                                }
-                                                lastTapTime = System.currentTimeMillis()
-                                            }
-                                            break
-                                        }
-
-                                        if (dist > touchSlop) {
-                                            hasDragged = true
-                                            val curPt = mapTouchToNormalized(
-                                                current.position.x, current.position.y,
-                                                size.width.toFloat(), size.height.toFloat(),
-                                                currentFrame?.width, currentFrame?.height,
-                                                isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                                viewFitMode
-                                            )
-                                            if (curPt != null) {
-                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
-                                            }
-                                        }
-                                        current.consume()
-                                    }
-                                }
-                            }
-                        }
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer(
-                                scaleX = zoomScale,
-                                scaleY = zoomScale,
-                                translationX = zoomOffsetX,
-                                translationY = zoomOffsetY
-                            )
-                    ) {
-                        if (webRtcManager.isDirectLocal || currentFrame != null) {
-                            if (currentFrame != null) {
-                                DesktopStreamCanvas(frame = currentFrame, sequence = currentSequence, fitMode = viewFitMode)
+                        )
+                    } else {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(8.dp),
+                            color = SurfaceDark.copy(alpha = 0.85f),
+                            shape = MaterialTheme.shapes.medium
+                        ) {
+                            val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
                             } else {
-                                Surface(
-                                    modifier = Modifier
-                                        .align(Alignment.Center)
-                                        .padding(8.dp),
-                                    color = SurfaceDark.copy(alpha = 0.85f),
-                                    shape = MaterialTheme.shapes.medium
-                                ) {
-                                    val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                        "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
-                                    } else {
-                                        "Connecting to desktop..."
-                                    }
-                                    Text(
-                                        text = statusMsg,
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                        style = Typography.bodyMedium,
-                                        color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
-                                    )
-                                }
+                                "Connecting to desktop..."
                             }
-                        } else if (rtcState is RtcConnectionState.Connected) {
-                            AndroidView(
-                                factory = { ctx ->
-                                    SurfaceViewRenderer(ctx).apply {
-                                        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-                                        webRtcManager.attachRenderer(this)
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize()
+                            Text(
+                                text = statusMsg,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                style = Typography.bodyMedium,
+                                color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
                             )
-                        } else {
-                            Surface(
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(8.dp),
-                                color = SurfaceDark.copy(alpha = 0.85f),
-                                shape = MaterialTheme.shapes.medium
-                            ) {
-                                val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                    "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
-                                } else {
-                                    "Connecting to desktop..."
-                                }
-                                Text(
-                                    text = statusMsg,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    style = Typography.bodyMedium,
-                                    color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
-                                )
-                            }
                         }
+                    }
+                } else if (rtcState is RtcConnectionState.Connected) {
+                    AndroidView(
+                        factory = { ctx ->
+                            SurfaceViewRenderer(ctx).apply {
+                                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                                webRtcManager.attachRenderer(this)
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(8.dp),
+                        color = SurfaceDark.copy(alpha = 0.85f),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                            "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
+                        } else {
+                            "Connecting to desktop..."
+                        }
+                        Text(
+                            text = statusMsg,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = Typography.bodyMedium,
+                            color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                        )
                     }
                 }
 
@@ -773,139 +844,28 @@ fun SessionScreen(
             // ==================== PORTRAIT MODE: HYBRID CONTROLLER ====================
             if (isPanelHidden) {
                 // Immersive full-screen video in portrait
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(Unit) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                zoomScale = (zoomScale * zoom).coerceIn(1.0f, 5.0f)
-                                if (zoomScale > 1.0f) {
-                                    zoomOffsetX += pan.x
-                                    zoomOffsetY += pan.y
-                                } else {
-                                    zoomOffsetX = 0f
-                                    zoomOffsetY = 0f
-                                }
-                            }
-                        }
-                        .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame, viewFitMode) {
-                            if (controlMode == ControlMode.TOUCH_SCREEN) {
-                                var lastTapTime = 0L
-                                awaitEachGesture {
-                                    val down = awaitFirstDown()
-                                    val downPos = down.position
-                                    val downTime = System.currentTimeMillis()
-                                    var hasDragged = false
-                                    val touchSlop = 20f
-                                    val initialPt = mapTouchToNormalized(
-                                        down.position.x, down.position.y,
-                                        size.width.toFloat(), size.height.toFloat(),
-                                        currentFrame?.width, currentFrame?.height,
-                                        isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                        viewFitMode
-                                    )
-                                    if (initialPt != null) {
-                                        webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_DOWN))
-                                    }
-
-                                    val pointerId = down.id
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        val current = event.changes.firstOrNull { it.id == pointerId } ?: break
-                                        val dist = (current.position - downPos).getDistance()
-
-                                        if (!current.pressed) {
-                                            if (!hasDragged) {
-                                                // Clean single-touch tap: send UP with initial down coordinates
-                                                if (initialPt != null) {
-                                                    webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_UP))
-                                                }
-                                            } else {
-                                                val curPt = mapTouchToNormalized(
-                                                    current.position.x, current.position.y,
-                                                    size.width.toFloat(), size.height.toFloat(),
-                                                    currentFrame?.width, currentFrame?.height,
-                                                    isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                                    viewFitMode
-                                                )
-                                                if (curPt != null) {
-                                                    webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
-                                                }
-                                            }
-                                            val tapDuration = System.currentTimeMillis() - downTime
-                                            if (tapDuration < 280 && !hasDragged) {
-                                                if (System.currentTimeMillis() - lastTapTime < 350) {
-                                                    // Double tap detected: auto-open software keyboard
-                                                    focusRequester.requestFocus()
-                                                    keyboardController?.show()
-                                                }
-                                                lastTapTime = System.currentTimeMillis()
-                                            }
-                                            break
-                                        }
-
-                                        if (dist > touchSlop) {
-                                            hasDragged = true
-                                            val curPt = mapTouchToNormalized(
-                                                current.position.x, current.position.y,
-                                                size.width.toFloat(), size.height.toFloat(),
-                                                currentFrame?.width, currentFrame?.height,
-                                                isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                                viewFitMode
-                                            )
-                                            if (curPt != null) {
-                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
-                                            }
-                                        }
-                                        current.consume()
-                                    }
-                                }
-                            }
-                        }
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer(
-                                scaleX = zoomScale,
-                                scaleY = zoomScale,
-                                translationX = zoomOffsetX,
-                                translationY = zoomOffsetY
-                            )
-                    ) {
-                        if (webRtcManager.isDirectLocal || currentFrame != null) {
-                            if (currentFrame != null) {
-                                DesktopStreamCanvas(frame = currentFrame, sequence = currentSequence, fitMode = viewFitMode)
-                            } else {
-                                Surface(
-                                    modifier = Modifier
-                                        .align(Alignment.Center)
-                                        .padding(8.dp),
-                                    color = SurfaceDark.copy(alpha = 0.85f),
-                                    shape = MaterialTheme.shapes.medium
-                                ) {
-                                    val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                        "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
-                                    } else {
-                                        "Connecting to desktop..."
-                                    }
-                                    Text(
-                                        text = statusMsg,
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                        style = Typography.bodyMedium,
-                                        color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
-                                    )
-                                }
-                            }
-                        } else if (rtcState is RtcConnectionState.Connected) {
-                            AndroidView(
-                                factory = { ctx ->
-                                    SurfaceViewRenderer(ctx).apply {
-                                        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-                                        webRtcManager.attachRenderer(this)
-                                    }
+                Box(modifier = Modifier.fillMaxSize()) {
+                    if (webRtcManager.isDirectLocal || currentFrame != null) {
+                        if (currentFrame != null) {
+                            DesktopStreamView(
+                                frame = currentFrame,
+                                sequence = currentSequence,
+                                fitMode = viewFitMode,
+                                controlMode = controlMode,
+                                zoomScale = zoomScale,
+                                zoomOffsetX = zoomOffsetX,
+                                zoomOffsetY = zoomOffsetY,
+                                isVerticalPc = isVerticalPcMode,
+                                onZoomChange = { z, ox, oy ->
+                                    zoomScale = z
+                                    zoomOffsetX = ox
+                                    zoomOffsetY = oy
                                 },
-                                modifier = Modifier.fillMaxSize()
+                                onInputEvent = { webRtcManager.sendInput(it) },
+                                onRequestKeyboard = {
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
+                                }
                             )
                         } else {
                             Surface(
@@ -927,6 +887,36 @@ fun SessionScreen(
                                     color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
                                 )
                             }
+                        }
+                    } else if (rtcState is RtcConnectionState.Connected) {
+                        AndroidView(
+                            factory = { ctx ->
+                                SurfaceViewRenderer(ctx).apply {
+                                    setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                                    webRtcManager.attachRenderer(this)
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(8.dp),
+                            color = SurfaceDark.copy(alpha = 0.85f),
+                            shape = MaterialTheme.shapes.medium
+                        ) {
+                            val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
+                            } else {
+                                "Connecting to desktop..."
+                            }
+                            Text(
+                                text = statusMsg,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                style = Typography.bodyMedium,
+                                color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                            )
                         }
                     }
 
@@ -1099,136 +1089,28 @@ fun SessionScreen(
                         .weight(1f)
                         .clip(MaterialTheme.shapes.large)
                         .background(SurfaceDark)
-                        .pointerInput(Unit) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                zoomScale = (zoomScale * zoom).coerceIn(1.0f, 5.0f)
-                                if (zoomScale > 1.0f) {
-                                    zoomOffsetX += pan.x
-                                    zoomOffsetY += pan.y
-                                } else {
-                                    zoomOffsetX = 0f
-                                    zoomOffsetY = 0f
-                                }
-                            }
-                        }
-                        .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPcMode, currentFrame, viewFitMode) {
-                            if (controlMode == ControlMode.TOUCH_SCREEN) {
-                                var lastTapTime = 0L
-                                awaitEachGesture {
-                                    val down = awaitFirstDown()
-                                    val downPos = down.position
-                                    val downTime = System.currentTimeMillis()
-                                    var hasDragged = false
-                                    val touchSlop = 20f
-                                    val initialPt = mapTouchToNormalized(
-                                        down.position.x, down.position.y,
-                                        size.width.toFloat(), size.height.toFloat(),
-                                        currentFrame?.width, currentFrame?.height,
-                                        isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                        viewFitMode
-                                    )
-                                    if (initialPt != null) {
-                                        webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_DOWN))
-                                    }
-
-                                    val pointerId = down.id
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        val current = event.changes.firstOrNull { it.id == pointerId } ?: break
-                                        val dist = (current.position - downPos).getDistance()
-
-                                        if (!current.pressed) {
-                                            if (!hasDragged) {
-                                                // Clean single-touch tap: send UP with initial down coordinates
-                                                if (initialPt != null) {
-                                                    webRtcManager.sendInput(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_UP))
-                                                }
-                                            } else {
-                                                val curPt = mapTouchToNormalized(
-                                                    current.position.x, current.position.y,
-                                                    size.width.toFloat(), size.height.toFloat(),
-                                                    currentFrame?.width, currentFrame?.height,
-                                                    isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                                    viewFitMode
-                                                )
-                                                if (curPt != null) {
-                                                    webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
-                                                }
-                                            }
-                                            val tapDuration = System.currentTimeMillis() - downTime
-                                            if (tapDuration < 280 && !hasDragged) {
-                                                if (System.currentTimeMillis() - lastTapTime < 350) {
-                                                    // Double tap detected: auto-open software keyboard
-                                                    focusRequester.requestFocus()
-                                                    keyboardController?.show()
-                                                }
-                                                lastTapTime = System.currentTimeMillis()
-                                            }
-                                            break
-                                        }
-
-                                        if (dist > touchSlop) {
-                                            hasDragged = true
-                                            val curPt = mapTouchToNormalized(
-                                                current.position.x, current.position.y,
-                                                size.width.toFloat(), size.height.toFloat(),
-                                                currentFrame?.width, currentFrame?.height,
-                                                isVerticalPcMode, zoomScale, zoomOffsetX, zoomOffsetY,
-                                                viewFitMode
-                                            )
-                                            if (curPt != null) {
-                                                webRtcManager.sendInput(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
-                                            }
-                                        }
-                                        current.consume()
-                                    }
-                                }
-                            }
-                        }
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer(
-                                scaleX = zoomScale,
-                                scaleY = zoomScale,
-                                translationX = zoomOffsetX,
-                                translationY = zoomOffsetY
-                            )
-                    ) {
-                        if (webRtcManager.isDirectLocal || currentFrame != null) {
-                            if (currentFrame != null) {
-                                DesktopStreamCanvas(frame = currentFrame, sequence = currentSequence, fitMode = viewFitMode)
-                            } else {
-                                Surface(
-                                    modifier = Modifier
-                                        .align(Alignment.Center)
-                                        .padding(8.dp),
-                                    color = SurfaceDark.copy(alpha = 0.85f),
-                                    shape = MaterialTheme.shapes.medium
-                                ) {
-                                    val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                        "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
-                                    } else {
-                                        "Connecting to desktop..."
-                                    }
-                                    Text(
-                                        text = statusMsg,
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                        style = Typography.bodyMedium,
-                                        color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
-                                    )
-                                }
-                            }
-                        } else if (rtcState is RtcConnectionState.Connected) {
-                            AndroidView(
-                                factory = { ctx ->
-                                    SurfaceViewRenderer(ctx).apply {
-                                        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-                                        webRtcManager.attachRenderer(this)
-                                    }
+                    if (webRtcManager.isDirectLocal || currentFrame != null) {
+                        if (currentFrame != null) {
+                            DesktopStreamView(
+                                frame = currentFrame,
+                                sequence = currentSequence,
+                                fitMode = viewFitMode,
+                                controlMode = controlMode,
+                                zoomScale = zoomScale,
+                                zoomOffsetX = zoomOffsetX,
+                                zoomOffsetY = zoomOffsetY,
+                                isVerticalPc = isVerticalPcMode,
+                                onZoomChange = { z, ox, oy ->
+                                    zoomScale = z
+                                    zoomOffsetX = ox
+                                    zoomOffsetY = oy
                                 },
-                                modifier = Modifier.fillMaxSize()
+                                onInputEvent = { webRtcManager.sendInput(it) },
+                                onRequestKeyboard = {
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
+                                }
                             )
                         } else {
                             Surface(
@@ -1250,6 +1132,36 @@ fun SessionScreen(
                                     color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
                                 )
                             }
+                        }
+                    } else if (rtcState is RtcConnectionState.Connected) {
+                        AndroidView(
+                            factory = { ctx ->
+                                SurfaceViewRenderer(ctx).apply {
+                                    setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                                    webRtcManager.attachRenderer(this)
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(8.dp),
+                            color = SurfaceDark.copy(alpha = 0.85f),
+                            shape = MaterialTheme.shapes.medium
+                        ) {
+                            val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
+                            } else {
+                                "Connecting to desktop..."
+                            }
+                            Text(
+                                text = statusMsg,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                style = Typography.bodyMedium,
+                                color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                            )
                         }
                     }
 

@@ -47,6 +47,7 @@ class SignalingClient(
         .build()
 
     private var webSocket: WebSocket? = null
+    private var pingJob: Job? = null
 
     private val _state = MutableStateFlow<SignalingState>(SignalingState.Disconnected)
     val state = _state.asStateFlow()
@@ -104,7 +105,8 @@ class SignalingClient(
         sendEnvelope(joinEnvelope)
 
         // Start real-time RTT latency ping loop every 1.5 seconds
-        scope.launch {
+        pingJob?.cancel()
+        pingJob = scope.launch {
             while (isActive) {
                 delay(1500)
                 lastPingTimestamp = System.currentTimeMillis()
@@ -142,8 +144,11 @@ class SignalingClient(
                         val toDecode = pendingFrameBytes ?: break
                         pendingFrameBytes = null
 
+                        val decodeOpts = BitmapFactory.Options().apply {
+                            inPreferredConfig = Bitmap.Config.RGB_565
+                        }
                         val bmp = try {
-                            BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size)
+                            BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)
                         } catch (e: Exception) {
                             Log.e(tag, "Failed to decode JPEG frame", e)
                             null
@@ -226,11 +231,15 @@ class SignalingClient(
 
     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
         Log.e(tag, "WebSocket failure: ${t.message}", t)
+        pingJob?.cancel()
+        pingJob = null
         _state.value = SignalingState.Error(t.message ?: "Connection failed")
     }
 
     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
         Log.i(tag, "WebSocket closed: $reason ($code)")
+        pingJob?.cancel()
+        pingJob = null
         _state.value = SignalingState.Disconnected
     }
 
@@ -257,6 +266,8 @@ class SignalingClient(
     }
 
     fun disconnect() {
+        pingJob?.cancel()
+        pingJob = null
         webSocket?.close(1000, "User disconnected")
         webSocket = null
         _currentFrame.value = null

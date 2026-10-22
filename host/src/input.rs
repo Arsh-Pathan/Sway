@@ -6,7 +6,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
     KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS,
     VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
 };
 
@@ -140,7 +140,7 @@ impl InputSimulator {
     }
 
     #[cfg(windows)]
-    fn send_key_input(&self, vkey: u16, flags: KEYBD_EVENT_FLAGS, scan: u16) {
+    pub fn send_raw_key(vkey: u16, flags: KEYBD_EVENT_FLAGS, scan: u16) {
         Self::ensure_input_desktop();
         unsafe {
             let input = INPUT {
@@ -162,6 +162,14 @@ impl InputSimulator {
             }
         }
     }
+
+    #[cfg(windows)]
+    fn send_key_input(&self, vkey: u16, flags: KEYBD_EVENT_FLAGS, scan: u16) {
+        Self::send_raw_key(vkey, flags, scan);
+    }
+
+    #[cfg(not(windows))]
+    pub fn send_raw_key(_vkey: u16, _flags: u32, _scan: u16) {}
 
     #[cfg(not(windows))]
     fn send_mouse_input(&self, _flags: u32, _dx: i32, _dy: i32, _mouse_data: u32) {}
@@ -293,7 +301,8 @@ impl InputSimulator {
             Self::ensure_input_desktop();
             use windows::Win32::UI::WindowsAndMessaging::{
                 GetCursorInfo, GetSystemMetrics, LoadCursorW, SetCursorPos,
-                CURSORINFO, CURSOR_SHOWING, IDC_IBEAM, SM_CXSCREEN, SM_CYSCREEN,
+                CURSORINFO, CURSOR_SHOWING, IDC_IBEAM, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+                SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
             };
 
             let cur_idx = self.active_monitor.load(Ordering::Relaxed);
@@ -309,28 +318,32 @@ impl InputSimulator {
             let target_x = raw_x.clamp(mon_x, mon_x + mon_w - 1);
             let target_y = raw_y.clamp(mon_y, mon_y + mon_h - 1);
 
-            let scr_w = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1);
-            let scr_h = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(1);
-            let abs_x = ((target_x as f64 / scr_w as f64) * 65535.0).round() as i32;
-            let abs_y = ((target_y as f64 / scr_h as f64) * 65535.0).round() as i32;
+            let virt_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+            let virt_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+            let virt_w = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) }.max(1);
+            let virt_h = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) }.max(1);
+
+            let abs_x = (((target_x - virt_x) as f64 / virt_w as f64) * 65535.0).round() as i32;
+            let abs_y = (((target_y - virt_y) as f64 / virt_h as f64) * 65535.0).round() as i32;
+            let abs_flags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
 
             match action {
                 0 => {
                     unsafe {
                         let _ = SetCursorPos(target_x, target_y);
                     }
-                    self.send_mouse_input(MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN, abs_x, abs_y, 0);
+                    self.send_mouse_input(abs_flags | MOUSEEVENTF_LEFTDOWN, abs_x, abs_y, 0);
                 }
                 1 => {
                     self.send_mouse_input(
-                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+                        abs_flags | MOUSEEVENTF_MOVE,
                         abs_x,
                         abs_y,
                         0,
                     );
                 }
                 2 => {
-                    self.send_mouse_input(MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP, abs_x, abs_y, 0);
+                    self.send_mouse_input(abs_flags | MOUSEEVENTF_LEFTUP, abs_x, abs_y, 0);
                 }
                 _ => {}
             }
@@ -511,27 +524,26 @@ impl InputSimulator {
             use windows::Win32::UI::Input::KeyboardAndMouse::{
                 KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
             };
-            let sim = InputSimulator::new();
 
             let tap = |vkey: u16| {
-                sim.send_key_input(vkey, KEYBD_EVENT_FLAGS(0), 0);
-                sim.send_key_input(vkey, KEYEVENTF_KEYUP, 0);
+                Self::send_raw_key(vkey, KEYBD_EVENT_FLAGS(0), 0);
+                Self::send_raw_key(vkey, KEYEVENTF_KEYUP, 0);
             };
 
             let combo_2 = |mod_vkey: u16, vkey: u16| {
-                sim.send_key_input(mod_vkey, KEYBD_EVENT_FLAGS(0), 0);
-                sim.send_key_input(vkey, KEYBD_EVENT_FLAGS(0), 0);
-                sim.send_key_input(vkey, KEYEVENTF_KEYUP, 0);
-                sim.send_key_input(mod_vkey, KEYEVENTF_KEYUP, 0);
+                Self::send_raw_key(mod_vkey, KEYBD_EVENT_FLAGS(0), 0);
+                Self::send_raw_key(vkey, KEYBD_EVENT_FLAGS(0), 0);
+                Self::send_raw_key(vkey, KEYEVENTF_KEYUP, 0);
+                Self::send_raw_key(mod_vkey, KEYEVENTF_KEYUP, 0);
             };
 
             let combo_3 = |mod1: u16, mod2: u16, vkey: u16| {
-                sim.send_key_input(mod1, KEYBD_EVENT_FLAGS(0), 0);
-                sim.send_key_input(mod2, KEYBD_EVENT_FLAGS(0), 0);
-                sim.send_key_input(vkey, KEYBD_EVENT_FLAGS(0), 0);
-                sim.send_key_input(vkey, KEYEVENTF_KEYUP, 0);
-                sim.send_key_input(mod2, KEYEVENTF_KEYUP, 0);
-                sim.send_key_input(mod1, KEYEVENTF_KEYUP, 0);
+                Self::send_raw_key(mod1, KEYBD_EVENT_FLAGS(0), 0);
+                Self::send_raw_key(mod2, KEYBD_EVENT_FLAGS(0), 0);
+                Self::send_raw_key(vkey, KEYBD_EVENT_FLAGS(0), 0);
+                Self::send_raw_key(vkey, KEYEVENTF_KEYUP, 0);
+                Self::send_raw_key(mod2, KEYEVENTF_KEYUP, 0);
+                Self::send_raw_key(mod1, KEYEVENTF_KEYUP, 0);
             };
 
             match action {

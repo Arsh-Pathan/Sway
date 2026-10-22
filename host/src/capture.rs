@@ -19,7 +19,8 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL,
+        DrawIconEx, GetCursorInfo, GetIconInfo, GetSystemMetrics, CURSORINFO, CURSOR_SHOWING, DI_NORMAL,
+        SM_CXCURSOR, SM_CYCURSOR,
     };
 
     let mut ci = CURSORINFO {
@@ -69,8 +70,8 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
         let scaled_hotspot_x = ((hotspot_x as f64) * scale_x).round() as i32;
         let scaled_hotspot_y = ((hotspot_y as f64) * scale_y).round() as i32;
 
-        let cur_w = 32i32;
-        let cur_h = 32i32;
+        let cur_w = GetSystemMetrics(SM_CXCURSOR).max(32);
+        let cur_h = GetSystemMetrics(SM_CYCURSOR).max(32);
 
         let hdc_mem = CreateCompatibleDC(HDC::default());
         if hdc_mem.is_invalid() {
@@ -300,9 +301,19 @@ impl ScreenCapture {
             }
         };
 
-        let selected_monitor = &self.cached_monitors[monitor_idx];
         let width = rgba_image.width();
         let height = rgba_image.height();
+
+        let (mon_x, mon_y, mon_w, mon_h) = if let Some(m) = self.cached_monitors.get(monitor_idx) {
+            (
+                m.x().unwrap_or(0),
+                m.y().unwrap_or(0),
+                m.width().unwrap_or(width).max(1),
+                m.height().unwrap_or(height).max(1),
+            )
+        } else {
+            (0, 0, width.max(1), height.max(1))
+        };
 
         // Stream native resolution up to 1080p / 1920 with smooth bilinear filtering if downscale is required
         let max_dim = 1920;
@@ -323,11 +334,6 @@ impl ScreenCapture {
         };
 
         // Render real hardware mouse cursor overlay directly on the frame
-        let mon_x = selected_monitor.x().unwrap_or(0);
-        let mon_y = selected_monitor.y().unwrap_or(0);
-        let mon_w = selected_monitor.width().unwrap_or(width).max(1);
-        let mon_h = selected_monitor.height().unwrap_or(height).max(1);
-
         draw_real_cursor(&mut target_image, mon_x, mon_y, mon_w, mon_h);
 
         // Fast zero-allocation RGBA to RGB conversion into reusable pre-allocated buffer
