@@ -1378,7 +1378,7 @@ fun SessionScreen(
                 onToggleMicAudio = { enabled ->
                     isMicAudioEnabled = enabled
                     webRtcManager.sendInput(InputEvent.SetAudioConfig(isSpeakerAudioEnabled, enabled))
-                    Toast.makeText(context, if (enabled) "Phone Mic to PC ON" else "Mic Muted", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, if (enabled) "Phone Mic to PC ON (Aux Driver Req)" else "Mic Muted", Toast.LENGTH_SHORT).show()
                 },
                 onSendInput = { webRtcManager.sendInput(it) },
                 onDismiss = { showControlCenter = false },

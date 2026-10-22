@@ -211,6 +211,26 @@ sealed class InputEvent {
             const val KEY_ENTER: Byte = 37
             const val KEY_BACKSPACE: Byte = 38
             const val KEY_TAB: Byte = 39
+
+            // Developer Tools
+            const val LAUNCH_TERMINAL: Byte = 40
+            const val LAUNCH_VS_CODE: Byte = 41
+            const val LAUNCH_ANTIGRAVITY: Byte = 42
+            const val OPEN_GITHUB: Byte = 43
+            const val OPEN_BROWSER: Byte = 44
+            const val DEV_COMMAND_PALETTE: Byte = 45
+            const val DEV_TOOLS_F12: Byte = 46
+            const val DEV_TERMINAL_TOGGLE: Byte = 47
+            const val DEV_GIT_STATUS: Byte = 48
+            const val DEV_FORMAT_DOC: Byte = 49
+            const val DEV_FIND_IN_FILES: Byte = 50
+
+            // Party & Fun Modes
+            const val PARTY_DANCE_MODE: Byte = 51
+            const val PARTY_HACKER_MATRIX: Byte = 52
+            const val PARTY_GHOST_PRANK: Byte = 53
+            const val PARTY_CHIPTUNE_JINGLE: Byte = 54
+            const val PARTY_STOP: Byte = 55
         }
     }
 

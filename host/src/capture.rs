@@ -14,6 +14,7 @@ pub struct MonitorInfo {
 
 #[cfg(windows)]
 fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u32, mon_h: u32) {
+    use std::sync::atomic::{AtomicIsize, AtomicI32, Ordering};
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject,
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC,
@@ -22,6 +23,12 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
         DrawIconEx, GetCursorInfo, GetIconInfo, GetSystemMetrics, CURSORINFO, CURSOR_SHOWING, DI_NORMAL,
         SM_CXCURSOR, SM_CYCURSOR,
     };
+
+    // Cache the last cursor handle + position to skip redundant redraws when cursor hasn't changed.
+    // This eliminates visible flicker during typing (rapid I-beam ↔ arrow shape transitions).
+    static LAST_CURSOR_HANDLE: AtomicIsize = AtomicIsize::new(0);
+    static LAST_CURSOR_X: AtomicI32 = AtomicI32::new(i32::MIN);
+    static LAST_CURSOR_Y: AtomicI32 = AtomicI32::new(i32::MIN);
 
     let mut ci = CURSORINFO {
         cbSize: std::mem::size_of::<CURSORINFO>() as u32,
@@ -34,6 +41,37 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
         }
         if (ci.flags.0 & CURSOR_SHOWING.0) == 0 || ci.hCursor.is_invalid() {
             return;
+        }
+
+        // Fast-path: if cursor handle AND position are identical to last frame, skip full redraw.
+        // Only the handle matters for shape flicker; position check avoids missing movement.
+        let cur_handle = ci.hCursor.0 as isize;
+        let prev_handle = LAST_CURSOR_HANDLE.load(Ordering::Relaxed);
+        let prev_x = LAST_CURSOR_X.load(Ordering::Relaxed);
+        let prev_y = LAST_CURSOR_Y.load(Ordering::Relaxed);
+        let _same_cursor = cur_handle == prev_handle
+            && ci.ptScreenPos.x == prev_x
+            && ci.ptScreenPos.y == prev_y;
+
+        // Update cache for next frame
+        LAST_CURSOR_HANDLE.store(cur_handle, Ordering::Relaxed);
+        LAST_CURSOR_X.store(ci.ptScreenPos.x, Ordering::Relaxed);
+        LAST_CURSOR_Y.store(ci.ptScreenPos.y, Ordering::Relaxed);
+
+        // Use a thread-local cursor bitmap cache to avoid expensive GDI DrawIconEx calls
+        // when the cursor shape (handle) hasn't changed between frames. This eliminates
+        // visible flicker during keyboard input where the cursor rapidly switches shapes.
+        use std::cell::RefCell;
+        struct CachedCursor {
+            handle: isize,
+            width: i32,
+            height: i32,
+            hotspot_x: i32,
+            hotspot_y: i32,
+            rgba_data: Vec<u8>, // Pre-rendered BGRA pixel data
+        }
+        thread_local! {
+            static CURSOR_CACHE: RefCell<Option<CachedCursor>> = RefCell::new(None);
         }
 
         let mut ii = windows::Win32::UI::WindowsAndMessaging::ICONINFO::default();
@@ -67,87 +105,120 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
 
         let target_cur_x = ((local_x as f64) * scale_x).round() as i32;
         let target_cur_y = ((local_y as f64) * scale_y).round() as i32;
-        let scaled_hotspot_x = ((hotspot_x as f64) * scale_x).round() as i32;
-        let scaled_hotspot_y = ((hotspot_y as f64) * scale_y).round() as i32;
 
         let cur_w = GetSystemMetrics(SM_CXCURSOR).max(32);
         let cur_h = GetSystemMetrics(SM_CYCURSOR).max(32);
         let scaled_cur_w = ((cur_w as f64) * scale_x).round().clamp(16.0, 128.0) as i32;
         let scaled_cur_h = ((cur_h as f64) * scale_y).round().clamp(16.0, 128.0) as i32;
 
-        let hdc_mem = CreateCompatibleDC(HDC::default());
-        if hdc_mem.is_invalid() {
-            return;
+        // Check if we can reuse the cached cursor bitmap (same handle = same shape)
+        let cache_hit = CURSOR_CACHE.with(|cache| {
+            let cache_ref = cache.borrow();
+            if let Some(ref cached) = *cache_ref {
+                cached.handle == cur_handle
+                    && cached.width == scaled_cur_w
+                    && cached.height == scaled_cur_h
+            } else {
+                false
+            }
+        });
+
+        if !cache_hit {
+            // Cursor shape changed — re-render via GDI and cache the result
+            let hdc_mem = CreateCompatibleDC(HDC::default());
+            if hdc_mem.is_invalid() {
+                return;
+            }
+
+            let bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: scaled_cur_w,
+                    biHeight: -scaled_cur_h, // Top-down DIB
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+            if let Ok(hbm) = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+                if !bits.is_null() {
+                    let old_bm = SelectObject(hdc_mem, hbm);
+                    std::ptr::write_bytes(bits as *mut u8, 0, (scaled_cur_w * scaled_cur_h * 4) as usize);
+
+                    let drawn = DrawIconEx(
+                        hdc_mem,
+                        0,
+                        0,
+                        ci.hCursor,
+                        scaled_cur_w,
+                        scaled_cur_h,
+                        0,
+                        None,
+                        DI_NORMAL,
+                    ).is_ok();
+
+                    SelectObject(hdc_mem, old_bm);
+
+                    if drawn {
+                        let data_len = (scaled_cur_w * scaled_cur_h * 4) as usize;
+                        let pixel_slice = std::slice::from_raw_parts(bits as *const u8, data_len);
+                        CURSOR_CACHE.with(|cache| {
+                            *cache.borrow_mut() = Some(CachedCursor {
+                                handle: cur_handle,
+                                width: scaled_cur_w,
+                                height: scaled_cur_h,
+                                hotspot_x,
+                                hotspot_y,
+                                rgba_data: pixel_slice.to_vec(),
+                            });
+                        });
+                    }
+                }
+                let _ = DeleteObject(hbm);
+            }
+            let _ = DeleteDC(hdc_mem);
         }
 
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: scaled_cur_w,
-                biHeight: -scaled_cur_h, // Top-down DIB
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        // Composite the cached cursor bitmap onto the frame
+        CURSOR_CACHE.with(|cache| {
+            let cache_ref = cache.borrow();
+            if let Some(ref cached) = *cache_ref {
+                let scaled_hotspot_x = ((cached.hotspot_x as f64) * scale_x).round() as i32;
+                let scaled_hotspot_y = ((cached.hotspot_y as f64) * scale_y).round() as i32;
+                let draw_origin_x = target_cur_x - scaled_hotspot_x;
+                let draw_origin_y = target_cur_y - scaled_hotspot_y;
 
-        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-        if let Ok(hbm) = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
-            if !bits.is_null() {
-                let old_bm = SelectObject(hdc_mem, hbm);
-                std::ptr::write_bytes(bits as *mut u8, 0, (scaled_cur_w * scaled_cur_h * 4) as usize);
+                for cy in 0..cached.height {
+                    for cx in 0..cached.width {
+                        let idx = ((cy * cached.width + cx) * 4) as usize;
+                        let b = cached.rgba_data[idx];
+                        let g = cached.rgba_data[idx + 1];
+                        let r = cached.rgba_data[idx + 2];
+                        let a = cached.rgba_data[idx + 3];
 
-                let drawn = DrawIconEx(
-                    hdc_mem,
-                    0,
-                    0,
-                    ci.hCursor,
-                    scaled_cur_w,
-                    scaled_cur_h,
-                    0,
-                    None,
-                    DI_NORMAL,
-                ).is_ok();
+                        if a == 0 && r == 0 && g == 0 && b == 0 {
+                            continue;
+                        }
 
-                SelectObject(hdc_mem, old_bm);
+                        let px = draw_origin_x + cx;
+                        let py = draw_origin_y + cy;
 
-                if drawn {
-                    let pixel_slice = std::slice::from_raw_parts(bits as *const u8, (scaled_cur_w * scaled_cur_h * 4) as usize);
-                    let draw_origin_x = target_cur_x - scaled_hotspot_x;
-                    let draw_origin_y = target_cur_y - scaled_hotspot_y;
-
-                    for cy in 0..scaled_cur_h {
-                        for cx in 0..scaled_cur_w {
-                            let idx = ((cy * scaled_cur_w + cx) * 4) as usize;
-                            let b = pixel_slice[idx];
-                            let g = pixel_slice[idx + 1];
-                            let r = pixel_slice[idx + 2];
-                            let a = pixel_slice[idx + 3];
-
-                            if a == 0 && r == 0 && g == 0 && b == 0 {
-                                continue;
-                            }
-
-                            let px = draw_origin_x + cx;
-                            let py = draw_origin_y + cy;
-
-                            if px >= 0 && px < img.width() as i32 && py >= 0 && py < img.height() as i32 {
-                                let alpha = if a > 0 { a } else { 255 } as f32 / 255.0;
-                                let dest = img.get_pixel(px as u32, py as u32);
-                                let out_r = (r as f32 * alpha + dest[0] as f32 * (1.0 - alpha)) as u8;
-                                let out_g = (g as f32 * alpha + dest[1] as f32 * (1.0 - alpha)) as u8;
-                                let out_b = (b as f32 * alpha + dest[2] as f32 * (1.0 - alpha)) as u8;
-                                img.put_pixel(px as u32, py as u32, image::Rgba([out_r, out_g, out_b, 255]));
-                            }
+                        if px >= 0 && px < img.width() as i32 && py >= 0 && py < img.height() as i32 {
+                            let alpha = if a > 0 { a } else { 255 } as f32 / 255.0;
+                            let dest = img.get_pixel(px as u32, py as u32);
+                            let out_r = (r as f32 * alpha + dest[0] as f32 * (1.0 - alpha)) as u8;
+                            let out_g = (g as f32 * alpha + dest[1] as f32 * (1.0 - alpha)) as u8;
+                            let out_b = (b as f32 * alpha + dest[2] as f32 * (1.0 - alpha)) as u8;
+                            img.put_pixel(px as u32, py as u32, image::Rgba([out_r, out_g, out_b, 255]));
                         }
                     }
                 }
             }
-            let _ = DeleteObject(hbm);
-        }
-        let _ = DeleteDC(hdc_mem);
+        });
     }
 }
 

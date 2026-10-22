@@ -119,6 +119,7 @@ impl HostSignaling {
 
         let (mut write, mut read) = ws_stream.split();
         let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(32);
+        let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(16);
         let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(1);
 
         // Background WebSocket writer task prioritizing control messages and dropping stale frames
@@ -129,6 +130,12 @@ impl HostSignaling {
                     Some(ctrl) = ctrl_rx.recv() => {
                         if let Err(e) = write.send(ctrl).await {
                             error!("WebSocket write error: {}", e);
+                            break;
+                        }
+                    }
+                    Some(audio) = audio_rx.recv() => {
+                        if let Err(e) = write.send(Message::Binary(audio)).await {
+                            error!("WebSocket audio write error: {}", e);
                             break;
                         }
                     }
@@ -161,6 +168,8 @@ impl HostSignaling {
         let is_streaming = Arc::new(AtomicBool::new(false));
         let active_monitor = Arc::new(AtomicUsize::new(0));
         let stream_quality = Arc::new(AtomicU8::new(50));
+        let is_audio_streaming = Arc::new(AtomicBool::new(false));
+        let audio_handle: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(std::sync::Mutex::new(None));
 
         let start_streaming = {
             let is_streaming = is_streaming.clone();
@@ -265,6 +274,25 @@ impl HostSignaling {
                             InputPacket::SetPrivacyCurtain { enabled } => {
                                 self.privacy.set_enabled(*enabled);
                             }
+                            InputPacket::SetAudioConfig { speaker_enabled, mic_enabled } => {
+                                info!("Remote audio config updated: speaker={}, mic={}", speaker_enabled, mic_enabled);
+                                if *speaker_enabled {
+                                    if !is_audio_streaming.load(Ordering::Relaxed) {
+                                        is_audio_streaming.store(true, Ordering::SeqCst);
+                                        let atx = audio_tx.clone();
+                                        let flag = is_audio_streaming.clone();
+                                        let jh = crate::audio::AudioCapture::start_loopback(flag, atx);
+                                        if let Ok(mut g) = audio_handle.lock() {
+                                            *g = Some(jh);
+                                        }
+                                    }
+                                } else {
+                                    is_audio_streaming.store(false, Ordering::SeqCst);
+                                    if let Ok(mut g) = audio_handle.lock() {
+                                        let _ = g.take();
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                         simulator.dispatch(packet);
@@ -296,6 +324,10 @@ impl HostSignaling {
         }
 
         is_streaming.store(false, Ordering::SeqCst);
+        is_audio_streaming.store(false, Ordering::SeqCst);
+        if let Ok(mut g) = audio_handle.lock() {
+            let _ = g.take();
+        }
         self.privacy.set_enabled(false);
         InputSimulator::set_display_resolution(0);
         InputSimulator::set_display_orientation(false);

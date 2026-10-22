@@ -196,7 +196,7 @@ fun ControlCenterSheet(
                 ToggleTile(
                     modifier = Modifier.weight(1f),
                     title = "Phone Mic to PC",
-                    subtitle = if (isMicAudioEnabled) "Transmitting" else "Muted",
+                    subtitle = if (isMicAudioEnabled) "Active (Cable Req)" else "Muted (Virtual Aux)",
                     icon = if (isMicAudioEnabled) Icons.Default.Mic else Icons.Default.MicOff,
                     isActive = isMicAudioEnabled,
                     onToggle = { onToggleMicAudio(!isMicAudioEnabled) }

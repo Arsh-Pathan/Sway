@@ -520,8 +520,11 @@ impl InputSimulator {
     pub fn execute_system_command(action: u8) {
         #[cfg(windows)]
         {
+            use std::sync::atomic::AtomicBool;
+            static PARTY_RUNNING: AtomicBool = AtomicBool::new(false);
+
             use windows::Win32::UI::Input::KeyboardAndMouse::{
-                KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
+                KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
             };
 
             let tap = |vkey: u16| {
@@ -718,6 +721,169 @@ impl InputSimulator {
                 39 => {
                     // Tab
                     tap(0x09);
+                }
+
+                // ==================== DEVELOPER TOOLS ====================
+                40 => {
+                    // Launch Terminal (wt.exe or powershell.exe)
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/c", "start", "wt", "||", "start", "powershell"])
+                        .spawn();
+                    info!("Executed remote launch Terminal");
+                }
+                41 => {
+                    // Launch VS Code
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/c", "start", "code"])
+                        .spawn();
+                    info!("Executed remote launch VS Code");
+                }
+                42 => {
+                    // Launch Antigravity IDE / CLI
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/c", "start", "powershell", "-NoExit", "-Command", "agy"])
+                        .spawn();
+                    info!("Executed remote launch Antigravity");
+                }
+                43 => {
+                    // Open GitHub in browser
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/c", "start", "https://github.com"])
+                        .spawn();
+                    info!("Executed remote open GitHub");
+                }
+                44 => {
+                    // Open Chrome / Default Browser
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/c", "start", "https://google.com"])
+                        .spawn();
+                    info!("Executed remote launch Browser");
+                }
+                45 => {
+                    // VS Code Command Palette: Ctrl + Shift + P
+                    combo_3(VK_CONTROL.0, VK_SHIFT.0, 0x50); // 'P'
+                }
+                46 => {
+                    // Browser / Developer Tools: F12
+                    tap(0x7B); // VK_F12
+                }
+                47 => {
+                    // VS Code Terminal Toggle: Ctrl + ` (VK_OEM_3 = 0xC0)
+                    combo_2(VK_CONTROL.0, 0xC0);
+                }
+                48 => {
+                    // Quick Git Status in Terminal
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/c", "start", "powershell", "-NoExit", "-Command", "git status"])
+                        .spawn();
+                    info!("Executed remote Git Status");
+                }
+                49 => {
+                    // Format Code Document: Shift + Alt + F
+                    combo_3(VK_SHIFT.0, VK_MENU.0, 0x46); // 'F'
+                }
+                50 => {
+                    // Find in Files: Ctrl + Shift + F
+                    combo_3(VK_CONTROL.0, VK_SHIFT.0, 0x46); // 'F'
+                }
+
+                // ==================== LAPTOP PARTY & DANCE MODES ====================
+                51 => {
+                    // Laptop Dance Mode: Autonomous cursor choreography + rhythmic window pulses + 8-bit chiptune
+                    PARTY_RUNNING.store(true, Ordering::SeqCst);
+                    std::thread::spawn(|| {
+                        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SetCursorPos, SM_CXSCREEN, SM_CYSCREEN};
+                        extern "system" {
+                            fn Beep(dwFreq: u32, dwDuration: u32) -> i32;
+                        }
+
+                        // Background retro chiptune thread
+                        std::thread::spawn(|| {
+                            let melody = [
+                                (523, 150), (659, 150), (784, 150), (1046, 250),
+                                (880, 150), (1046, 300), (784, 150), (659, 200),
+                                (523, 150), (587, 150), (659, 150), (523, 300),
+                            ];
+                            for (freq, dur) in melody.iter().cycle().take(24) {
+                                if !PARTY_RUNNING.load(Ordering::Relaxed) { break; }
+                                unsafe { let _ = Beep(*freq, *dur); }
+                                std::thread::sleep(std::time::Duration::from_millis(30));
+                            }
+                        });
+
+                        let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+                        let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+                        let center_x = screen_w / 2;
+                        let center_y = screen_h / 2;
+                        let radius_x = (screen_w / 4) as f64;
+                        let radius_y = (screen_h / 4) as f64;
+
+                        // Dance animation loop for ~10 seconds
+                        for step in 0..400 {
+                            if !PARTY_RUNNING.load(Ordering::Relaxed) { break; }
+
+                            let t = step as f64 * 0.08;
+                            // Lemniscate / Figure-8 dance trajectory
+                            let x = (center_x as f64 + radius_x * t.sin()).round() as i32;
+                            let y = (center_y as f64 + radius_y * (t * 2.0).sin() * 0.6).round() as i32;
+                            unsafe {
+                                let _ = SetCursorPos(x, y);
+                            }
+
+                            // Rhythmic window beat pulse every ~80 steps
+                            if step % 80 == 40 {
+                                Self::send_raw_key(VK_LWIN.0, KEYBD_EVENT_FLAGS(0), 0);
+                                Self::send_raw_key(0x44, KEYBD_EVENT_FLAGS(0), 0);
+                                Self::send_raw_key(0x44, KEYEVENTF_KEYUP, 0);
+                                Self::send_raw_key(VK_LWIN.0, KEYEVENTF_KEYUP, 0);
+                            }
+
+                            std::thread::sleep(std::time::Duration::from_millis(25));
+                        }
+                        PARTY_RUNNING.store(false, Ordering::SeqCst);
+                    });
+                    info!("Executed remote Laptop Dance Mode");
+                }
+                52 => {
+                    // Hacker Matrix Cyberpunk Mode
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/c", "start", "cmd", "/k", "color 0a && title [SWAY AUTONOMOUS CYBERPUNK TERMINAL] && echo. && echo  ======================================================= && echo    SWAY AI HACKER MODE ACTIVATED -- RUNNING DIAGNOSTICS && echo  ======================================================= && echo. && tree C:\\Users\\ArshPathan\\Projects /F 2>nul || dir /s"])
+                        .spawn();
+                    info!("Executed remote Hacker Matrix Mode");
+                }
+                53 => {
+                    // Ghost Prank Mode: Opens Notepad and types a friendly autonomous message
+                    std::thread::spawn(|| {
+                        let _ = std::process::Command::new("notepad.exe").spawn();
+                        std::thread::sleep(std::time::Duration::from_millis(700));
+                        let msg = "Hello Arsh! Sway autonomous AI controller is live on your laptop... Everything is running silky smooth! \u{1F389}\u{1F47B}";
+                        for ch in msg.encode_utf16() {
+                            Self::send_raw_key(0, KEYEVENTF_UNICODE, ch);
+                            Self::send_raw_key(0, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, ch);
+                            std::thread::sleep(std::time::Duration::from_millis(30));
+                        }
+                    });
+                    info!("Executed remote Ghost Prank Mode");
+                }
+                54 => {
+                    // Retro 8-bit Chiptune Victory Jingle
+                    std::thread::spawn(|| {
+                        extern "system" {
+                            fn Beep(dwFreq: u32, dwDuration: u32) -> i32;
+                        }
+                        let notes = [(523, 120), (659, 120), (784, 120), (1046, 280), (784, 120), (1046, 400)];
+                        for (freq, dur) in notes {
+                            unsafe { let _ = Beep(freq, dur); }
+                            std::thread::sleep(std::time::Duration::from_millis(25));
+                        }
+                    });
+                    info!("Executed remote 8-bit Chiptune Jingle");
+                }
+                55 => {
+                    // Emergency Stop Party / Dance Mode
+                    PARTY_RUNNING.store(false, Ordering::SeqCst);
+                    combo_2(VK_LWIN.0, 0x44); // Restore clean desktop
+                    info!("Stopped remote Party / Dance Mode");
                 }
                 _ => {}
             }

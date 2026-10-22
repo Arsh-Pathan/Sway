@@ -47,7 +47,12 @@ class AudioPlayer {
                 if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
                     track.play()
                 }
-                track.write(packet, pcmDataOffset, pcmDataLen, AudioTrack.WRITE_NON_BLOCKING)
+                // Wrap in ByteBuffer - required by Android AudioTrack to support ENCODING_PCM_FLOAT without ERROR_INVALID_OPERATION
+                val byteBuf = ByteBuffer.wrap(packet, pcmDataOffset, pcmDataLen).order(ByteOrder.LITTLE_ENDIAN)
+                val written = track.write(byteBuf, pcmDataLen, AudioTrack.WRITE_NON_BLOCKING)
+                if (written < 0) {
+                    Log.w(tag, "AudioTrack write returned status $written")
+                }
             }
         } catch (e: Exception) {
             Log.e(tag, "Error writing PCM audio data to AudioTrack", e)

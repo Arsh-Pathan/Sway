@@ -48,7 +48,7 @@ fun DeckSurface(
     var isLeftPressed by remember { mutableStateOf(false) }
     var isRightPressed by remember { mutableStateOf(false) }
     var isMidPressed by remember { mutableStateOf(false) }
-    val categories = listOf("SYSTEM", "MEDIA", "BROWSER", "EDIT", "LAUNCH")
+    val categories = listOf("DEV TOOLS", "PARTY", "SYSTEM", "MEDIA", "BROWSER", "EDIT", "LAUNCH")
 
     Column(
         modifier = modifier
@@ -275,7 +275,78 @@ fun DeckSurface(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 when (selectedCategory) {
-                    0 -> { // SYSTEM
+                    0 -> { // DEV TOOLS
+                        DeckRow {
+                            DeckToolButton("Terminal", Icons.Default.Terminal) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.LAUNCH_TERMINAL))
+                            }
+                            DeckToolButton("VS Code", Icons.Default.Code) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.LAUNCH_VS_CODE))
+                            }
+                            DeckToolButton("Antigravity", Icons.Default.FlashOn) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.LAUNCH_ANTIGRAVITY))
+                            }
+                        }
+                        DeckRow {
+                            DeckToolButton("GitHub", Icons.Default.Share) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.OPEN_GITHUB))
+                            }
+                            DeckToolButton("Chrome", Icons.Default.Language) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.OPEN_BROWSER))
+                            }
+                            DeckToolButton("Git Status", Icons.Default.Build) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.DEV_GIT_STATUS))
+                            }
+                        }
+                        DeckRow {
+                            DeckToolButton("Cmd Palette", Icons.Default.Search) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.DEV_COMMAND_PALETTE))
+                            }
+                            DeckToolButton("F12 DevTools", Icons.Default.Build) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.DEV_TOOLS_F12))
+                            }
+                            DeckToolButton("Term Toggle", Icons.Default.Terminal) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.DEV_TERMINAL_TOGGLE))
+                            }
+                        }
+                        DeckRow {
+                            DeckToolButton("Format Doc", Icons.Default.Check) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.DEV_FORMAT_DOC))
+                            }
+                            DeckToolButton("Find Files", Icons.Default.Search) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.DEV_FIND_IN_FILES))
+                            }
+                        }
+                    }
+                    1 -> { // PARTY & FUN
+                        DeckRow {
+                            DeckToolButton("Dance Mode", Icons.Default.PlayArrow) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.PARTY_DANCE_MODE))
+                                Toast.makeText(context, "Laptop Dance Mode Activated! \uD83D\uDC83\uD83D\uDD7A", Toast.LENGTH_SHORT).show()
+                            }
+                            DeckToolButton("Matrix Mode", Icons.Default.Terminal) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.PARTY_HACKER_MATRIX))
+                                Toast.makeText(context, "Hacker Matrix Cyberpunk Launched! \uD83D\uDFE2\uD83D\uDCBB", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        DeckRow {
+                            DeckToolButton("Ghost Prank", Icons.Default.Face) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.PARTY_GHOST_PRANK))
+                                Toast.makeText(context, "Ghost Typing Prank Started! \uD83D\uDC7B", Toast.LENGTH_SHORT).show()
+                            }
+                            DeckToolButton("8-Bit Jingle", Icons.Default.VolumeUp) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.PARTY_CHIPTUNE_JINGLE))
+                                Toast.makeText(context, "Playing 8-bit Victory Jingle! \uD83C\uDFB6", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        DeckRow {
+                            DeckToolButton("STOP PARTY", Icons.Default.Stop) {
+                                onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.PARTY_STOP))
+                                Toast.makeText(context, "Party Stopped - Desktop Restored", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                    2 -> { // SYSTEM
                         DeckRow {
                             DeckToolButton("Desktop", Icons.Default.DesktopWindows) {
                                 onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.SHOW_DESKTOP))
@@ -310,7 +381,7 @@ fun DeckSurface(
                             }
                         }
                     }
-                    1 -> { // MEDIA
+                    3 -> { // MEDIA
                         DeckRow {
                             DeckToolButton("Play / Pause", Icons.Default.PlayArrow) {
                                 onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.MEDIA_PLAY_PAUSE))
@@ -334,7 +405,7 @@ fun DeckSurface(
                             }
                         }
                     }
-                    2 -> { // BROWSER
+                    4 -> { // BROWSER
                         DeckRow {
                             DeckToolButton("New Tab", Icons.Default.Add) {
                                 onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.BROWSER_NEW_TAB))
@@ -358,7 +429,7 @@ fun DeckSurface(
                             }
                         }
                     }
-                    3 -> { // EDIT
+                    5 -> { // EDIT
                         DeckRow {
                             DeckToolButton("Paste Clip", Icons.Default.ContentPaste) {
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -392,7 +463,7 @@ fun DeckSurface(
                             }
                         }
                     }
-                    4 -> { // LAUNCH
+                    6 -> { // LAUNCH
                         DeckRow {
                             DeckToolButton("Explorer", Icons.Default.Folder) {
                                 onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.FILE_EXPLORER))
