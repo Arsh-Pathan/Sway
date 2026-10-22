@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -556,6 +557,31 @@ fun SessionScreen(
                 controlMode = ControlMode.DECK
                 Toast.makeText(context, "Preset: Pure Control Deck (1ms Latency)", Toast.LENGTH_SHORT).show()
             }
+            QuickPreset.CODE_REVIEW -> {
+                controlMode = ControlMode.TOUCH_SCREEN
+                currentQuality = InputEvent.SetQuality.NATIVE
+                webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
+                viewFitMode = ViewFitMode.FIT
+                Toast.makeText(context, "Preset: Code & Reading (True Color HD)", Toast.LENGTH_SHORT).show()
+            }
+            QuickPreset.POWER_SAVER -> {
+                controlMode = ControlMode.TRACKPAD
+                currentQuality = InputEvent.SetQuality.DATA_SAVER
+                webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
+                isSpeakerAudioEnabled = false
+                isMicAudioEnabled = false
+                webRtcManager.sendInput(InputEvent.SetAudioConfig(false, false))
+                Toast.makeText(context, "Preset: Battery Saver (Low Bandwidth)", Toast.LENGTH_SHORT).show()
+            }
+            QuickPreset.STEALTH_MEETING -> {
+                controlMode = ControlMode.TRACKPAD
+                privacyCurtainActive = true
+                webRtcManager.sendInput(InputEvent.SetPrivacyCurtain(true))
+                isSpeakerAudioEnabled = false
+                isMicAudioEnabled = false
+                webRtcManager.sendInput(InputEvent.SetAudioConfig(false, false))
+                Toast.makeText(context, "Preset: Stealth Meeting (PC Screen Black)", Toast.LENGTH_SHORT).show()
+            }
         }
         showControlCenter = false
     }
@@ -1035,23 +1061,21 @@ fun SessionScreen(
                     }
                 }
 
-                // Sleek Slider Pull Handle to Open Control Center & Presets
-                Surface(
-                    onClick = { showControlCenter = true },
-                    color = SurfaceDark,
-                    shape = RoundedCornerShape(12.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
-                    modifier = Modifier.fillMaxWidth()
+                // Sleek Minimal Slider Pull Handle to Open Control Center & Presets from Bottom
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp)
+                        .clickable { showControlCenter = true },
+                    contentAlignment = Alignment.Center
                 ) {
-                    Row(
-                        modifier = Modifier.padding(vertical = 7.dp, horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Control Center (Presets · Audio · Tools)", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    }
+                    Box(
+                        modifier = Modifier
+                            .width(54.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color.White.copy(alpha = 0.45f))
+                    )
                 }
 
                 // Privacy Status Indicator if active (Zero Card Background)

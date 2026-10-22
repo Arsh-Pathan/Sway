@@ -1,3 +1,4 @@
+mod audio;
 mod capture;
 mod discovery;
 mod input;

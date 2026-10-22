@@ -121,12 +121,26 @@ class SignalingClient(
     private var frameSeq = 0L
 
     private val ackByteString = okio.ByteString.of(0xAA.toByte())
+    val audioPlayer = com.sway.app.audio.AudioPlayer()
 
     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+        val raw = bytes.toByteArray()
+
+        // SWAU Audio Packet: intercept and route directly to low-latency PCM player
+        if (raw.size >= 4 &&
+            raw[0] == 'S'.code.toByte() &&
+            raw[1] == 'W'.code.toByte() &&
+            raw[2] == 'A'.code.toByte() &&
+            raw[3] == 'U'.code.toByte()
+        ) {
+            audioPlayer.playPcmChunk(raw)
+            return
+        }
+
         // Send instantaneous 1-byte frame ack to host to pace capture loop and eliminate bufferbloat
         webSocket.send(ackByteString)
 
-        pendingFrameBytes = bytes.toByteArray()
+        pendingFrameBytes = raw
 
         // Update real-time FPS counter
         frameCounter++
@@ -145,7 +159,7 @@ class SignalingClient(
                         pendingFrameBytes = null
 
                         val decodeOpts = BitmapFactory.Options().apply {
-                            inPreferredConfig = Bitmap.Config.RGB_565
+                            inPreferredConfig = Bitmap.Config.ARGB_8888
                         }
                         val bmp = try {
                             BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)
@@ -266,6 +280,7 @@ class SignalingClient(
     }
 
     fun disconnect() {
+        audioPlayer.release()
         pingJob?.cancel()
         pingJob = null
         webSocket?.close(1000, "User disconnected")

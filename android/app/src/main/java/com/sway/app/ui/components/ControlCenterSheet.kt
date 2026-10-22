@@ -33,7 +33,10 @@ enum class QuickPreset {
     PRODUCTIVITY,
     CINEMA_MEDIA,
     TURBO_GAMING,
-    PURE_DECK
+    PURE_DECK,
+    CODE_REVIEW,
+    POWER_SAVER,
+    STEALTH_MEETING
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -149,6 +152,27 @@ fun ControlCenterSheet(
                     icon = Icons.Default.TouchApp,
                     isSelected = controlMode == ControlMode.DECK,
                     onClick = { onApplyPreset(QuickPreset.PURE_DECK) }
+                )
+                PresetCard(
+                    title = "Code & Reading",
+                    subtitle = "Crisp Text · Touch",
+                    icon = Icons.Default.MenuBook,
+                    isSelected = currentQuality == 2 && controlMode == ControlMode.TOUCH_SCREEN,
+                    onClick = { onApplyPreset(QuickPreset.CODE_REVIEW) }
+                )
+                PresetCard(
+                    title = "Battery Saver",
+                    subtitle = "720p · Data Saver",
+                    icon = Icons.Default.BatteryChargingFull,
+                    isSelected = currentQuality == 0 && !isSpeakerAudioEnabled && controlMode != ControlMode.DECK,
+                    onClick = { onApplyPreset(QuickPreset.POWER_SAVER) }
+                )
+                PresetCard(
+                    title = "Stealth Meeting",
+                    subtitle = "Curtain ON · Black Screen",
+                    icon = Icons.Default.VisibilityOff,
+                    isSelected = isPrivacyEnabled,
+                    onClick = { onApplyPreset(QuickPreset.STEALTH_MEETING) }
                 )
             }
 

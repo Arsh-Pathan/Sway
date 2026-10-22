@@ -208,6 +208,7 @@ impl LocalServer {
                     let (mut write, mut read) = ws_stream.split();
                     let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(1);
                     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(32);
+                    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(16);
 
                     let writer_handle = tokio::spawn(async move {
                         loop {
@@ -216,6 +217,12 @@ impl LocalServer {
                                 Some(ctrl) = ctrl_rx.recv() => {
                                     if let Err(e) = write.send(ctrl).await {
                                         error!("Local WS write error: {}", e);
+                                        break;
+                                    }
+                                }
+                                Some(audio) = audio_rx.recv() => {
+                                    if let Err(e) = write.send(Message::Binary(audio)).await {
+                                        error!("Local WS audio write error: {}", e);
                                         break;
                                     }
                                 }
@@ -296,9 +303,11 @@ impl LocalServer {
                     let is_connected = Arc::new(AtomicBool::new(true));
                     let is_streaming = Arc::new(AtomicBool::new(true));
                     let active_monitor = Arc::new(AtomicUsize::new(0));
-                    let stream_quality = Arc::new(AtomicU8::new(70)); // Default to crisp balanced quality
+                    let stream_quality = Arc::new(AtomicU8::new(80)); // Default to crisp balanced HD quality
                     let client_ack = Arc::new(AtomicBool::new(true));
                     let last_ack_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+                    let is_audio_streaming = Arc::new(AtomicBool::new(false));
+                    let audio_handle: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(std::sync::Mutex::new(None));
 
                     // Direct capture thread at ultra-fluid up to 60 FPS with zero-bufferbloat flow control
                     let conn_flag = is_connected.clone();
@@ -385,9 +394,9 @@ impl LocalServer {
                                         }
                                         InputPacket::SetQuality { mode } => {
                                             let q = match mode {
-                                                0 => 50,
-                                                1 => 70,
-                                                _ => 85,
+                                                0 => 50, // Mobile data saving
+                                                1 => 80, // Balanced crisp HD
+                                                _ => 92, // High Fidelity / Ultra crisp
                                             };
                                             stream_quality.store(q, Ordering::SeqCst);
                                         }
@@ -409,6 +418,22 @@ impl LocalServer {
                                         }
                                         InputPacket::SetAudioConfig { speaker_enabled, mic_enabled } => {
                                             info!("Audio config updated: speaker={}, mic={}", speaker_enabled, mic_enabled);
+                                            if *speaker_enabled {
+                                                if !is_audio_streaming.load(Ordering::Relaxed) {
+                                                    is_audio_streaming.store(true, Ordering::SeqCst);
+                                                    let atx = audio_tx.clone();
+                                                    let flag = is_audio_streaming.clone();
+                                                    let jh = crate::audio::AudioCapture::start_loopback(flag, atx);
+                                                    if let Ok(mut g) = audio_handle.lock() {
+                                                        *g = Some(jh);
+                                                    }
+                                                }
+                                            } else {
+                                                is_audio_streaming.store(false, Ordering::SeqCst);
+                                                if let Ok(mut g) = audio_handle.lock() {
+                                                    let _ = g.take();
+                                                }
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -447,6 +472,10 @@ impl LocalServer {
 
                     is_connected.store(false, Ordering::SeqCst);
                     is_streaming.store(false, Ordering::SeqCst);
+                    is_audio_streaming.store(false, Ordering::SeqCst);
+                    if let Ok(mut g) = audio_handle.lock() {
+                        let _ = g.take();
+                    }
                     priv_curtain.set_enabled(false);
                     InputSimulator::set_display_resolution(0);
                     InputSimulator::set_display_orientation(false);

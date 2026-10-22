@@ -29,5 +29,7 @@ features = [
     "Win32_Graphics_Gdi",
     "Win32_System_Power",
     "Win32_System_SystemInformation",
-    "Win32_System_LibraryLoader"
+    "Win32_System_LibraryLoader",
+    "Win32_Media_Audio",
+    "Win32_System_Com"
 ]

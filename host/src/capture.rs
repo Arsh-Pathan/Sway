@@ -72,6 +72,8 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
 
         let cur_w = GetSystemMetrics(SM_CXCURSOR).max(32);
         let cur_h = GetSystemMetrics(SM_CYCURSOR).max(32);
+        let scaled_cur_w = ((cur_w as f64) * scale_x).round().clamp(16.0, 128.0) as i32;
+        let scaled_cur_h = ((cur_h as f64) * scale_y).round().clamp(16.0, 128.0) as i32;
 
         let hdc_mem = CreateCompatibleDC(HDC::default());
         if hdc_mem.is_invalid() {
@@ -81,8 +83,8 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: cur_w,
-                biHeight: -cur_h, // Top-down DIB
+                biWidth: scaled_cur_w,
+                biHeight: -scaled_cur_h, // Top-down DIB
                 biPlanes: 1,
                 biBitCount: 32,
                 biCompression: BI_RGB.0,
@@ -95,15 +97,15 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
         if let Ok(hbm) = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
             if !bits.is_null() {
                 let old_bm = SelectObject(hdc_mem, hbm);
-                std::ptr::write_bytes(bits as *mut u8, 0, (cur_w * cur_h * 4) as usize);
+                std::ptr::write_bytes(bits as *mut u8, 0, (scaled_cur_w * scaled_cur_h * 4) as usize);
 
                 let drawn = DrawIconEx(
                     hdc_mem,
                     0,
                     0,
                     ci.hCursor,
-                    cur_w,
-                    cur_h,
+                    scaled_cur_w,
+                    scaled_cur_h,
                     0,
                     None,
                     DI_NORMAL,
@@ -112,13 +114,13 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
                 SelectObject(hdc_mem, old_bm);
 
                 if drawn {
-                    let pixel_slice = std::slice::from_raw_parts(bits as *const u8, (cur_w * cur_h * 4) as usize);
+                    let pixel_slice = std::slice::from_raw_parts(bits as *const u8, (scaled_cur_w * scaled_cur_h * 4) as usize);
                     let draw_origin_x = target_cur_x - scaled_hotspot_x;
                     let draw_origin_y = target_cur_y - scaled_hotspot_y;
 
-                    for cy in 0..cur_h {
-                        for cx in 0..cur_w {
-                            let idx = ((cy * cur_w + cx) * 4) as usize;
+                    for cy in 0..scaled_cur_h {
+                        for cx in 0..scaled_cur_w {
+                            let idx = ((cy * scaled_cur_w + cx) * 4) as usize;
                             let b = pixel_slice[idx];
                             let g = pixel_slice[idx + 1];
                             let r = pixel_slice[idx + 2];

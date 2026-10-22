@@ -190,6 +190,8 @@ impl InputSimulator {
                 unsafe {
                     let _ = SetCursorPos(new_x, new_y);
                 }
+                // Notify Windows mouse input subsystem so dragging, hover, and selection boxes activate reliably
+                self.send_mouse_input(MOUSEEVENTF_MOVE, 0, 0, 0);
             } else {
                 self.send_mouse_input(MOUSEEVENTF_MOVE, dx as i32, dy as i32, 0);
             }
@@ -307,6 +309,10 @@ impl InputSimulator {
 
             let cur_idx = self.active_monitor.load(Ordering::Relaxed);
             let (mon_x, mon_y, mon_w, mon_h) = {
+                let bounds_empty = self.monitor_bounds.read().map(|b| b.is_empty()).unwrap_or(true);
+                if bounds_empty {
+                    self.refresh_monitors();
+                }
                 let lock = self.monitor_bounds.read().ok();
                 lock.as_ref()
                     .and_then(|b| b.get(cur_idx).or_else(|| b.first()).copied())
@@ -335,6 +341,9 @@ impl InputSimulator {
                     self.send_mouse_input(abs_flags | MOUSEEVENTF_LEFTDOWN, abs_x, abs_y, 0);
                 }
                 1 => {
+                    unsafe {
+                        let _ = SetCursorPos(target_x, target_y);
+                    }
                     self.send_mouse_input(
                         abs_flags | MOUSEEVENTF_MOVE,
                         abs_x,
@@ -343,7 +352,10 @@ impl InputSimulator {
                     );
                 }
                 2 => {
-                    self.send_mouse_input(abs_flags | MOUSEEVENTF_LEFTUP, abs_x, abs_y, 0);
+                    unsafe {
+                        let _ = SetCursorPos(target_x, target_y);
+                    }
+                    self.send_mouse_input(abs_flags | MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTUP, abs_x, abs_y, 0);
                 }
                 _ => {}
             }
