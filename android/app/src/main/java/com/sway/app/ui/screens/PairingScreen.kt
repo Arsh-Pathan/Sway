@@ -353,11 +353,23 @@ fun PairingScreen(
                                 deviceId = it.deviceId
                                 token = it.token
                             } ?: run {
-                                signalingUrl = "192.168.1.100:8089"
+                                signalingUrl = "192.168.11.229:8089"
                             }
                         },
-                        label = { Text("Direct Wi-Fi", fontSize = 12.sp) },
+                        label = { Text("Local Wi-Fi", fontSize = 11.sp) },
                         modifier = Modifier.weight(1f),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = androidx.compose.ui.graphics.Color.White,
+                            selectedLabelColor = androidx.compose.ui.graphics.Color.Black
+                        )
+                    )
+                    FilterChip(
+                        selected = signalingUrl.contains("trycloudflare.com") || (!signalingUrl.contains("8089") && !signalingUrl.contains("8080") && signalingUrl.contains(".")),
+                        onClick = {
+                            signalingUrl = "https://marijuana-generations-publishing-marketplace.trycloudflare.com"
+                        },
+                        label = { Text("Mobile 4G/5G", fontSize = 11.sp) },
+                        modifier = Modifier.weight(1.1f),
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = androidx.compose.ui.graphics.Color.White,
                             selectedLabelColor = androidx.compose.ui.graphics.Color.Black
@@ -368,8 +380,8 @@ fun PairingScreen(
                         onClick = {
                             signalingUrl = "127.0.0.1:8080"
                         },
-                        label = { Text("Relay / Localhost", fontSize = 12.sp) },
-                        modifier = Modifier.weight(1f),
+                        label = { Text("Relay", fontSize = 11.sp) },
+                        modifier = Modifier.weight(0.8f),
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = androidx.compose.ui.graphics.Color.White,
                             selectedLabelColor = androidx.compose.ui.graphics.Color.Black

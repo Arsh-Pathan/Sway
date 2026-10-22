@@ -78,14 +78,14 @@ class SignalingClient(
 
     fun connect() {
         _state.value = SignalingState.Connecting
-        val wsUrl = if (serverUrl.startsWith("http://")) {
-            serverUrl.replace("http://", "ws://") + "/ws"
-        } else if (serverUrl.startsWith("https://")) {
-            serverUrl.replace("https://", "wss://") + "/ws"
-        } else if (!serverUrl.startsWith("ws://") && !serverUrl.startsWith("wss://")) {
-            "ws://$serverUrl/ws"
-        } else {
-            "$serverUrl/ws"
+        val trimmed = serverUrl.trim().trimEnd('/')
+        val wsUrl = when {
+            trimmed.startsWith("http://") -> trimmed.replace("http://", "ws://") + "/ws"
+            trimmed.startsWith("https://") -> trimmed.replace("https://", "wss://") + "/ws"
+            trimmed.startsWith("ws://") || trimmed.startsWith("wss://") -> "$trimmed/ws"
+            // If it's a domain name (like trycloudflare.com or custom domain), use secure WSS
+            trimmed.contains(".trycloudflare.com") || trimmed.contains(".ngrok") || (trimmed.contains(".") && !trimmed.matches(Regex("^[0-9.:]+$"))) -> "wss://$trimmed/ws"
+            else -> "ws://$trimmed/ws"
         }
 
         val request = Request.Builder().url(wsUrl).build()

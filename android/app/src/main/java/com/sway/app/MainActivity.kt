@@ -99,12 +99,8 @@ class MainActivity : ComponentActivity() {
         currentHostName = deviceId
         cleanupSession()
 
-        val isDirectLocal = serverUrl.contains(":8089") ||
-                serverUrl.startsWith("192.168.") ||
-                serverUrl.startsWith("10.") ||
-                serverUrl.startsWith("172.") ||
-                serverUrl.startsWith("127.0.0.1") ||
-                serverUrl.startsWith("localhost")
+        // Sway host streams optimized frames and binary input directly over WebSocket for both local Wi-Fi and cloud tunnels
+        val isDirectLocal = true
 
         val client = SignalingClient(
             serverUrl = serverUrl,
@@ -124,14 +120,6 @@ class MainActivity : ComponentActivity() {
 
         // Connect WebSocket and initialize session
         client.connect()
-
-        if (!isDirectLocal) {
-            val defaultIceServers = listOf(
-                PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-                PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
-            )
-            rtc.startSession(defaultIceServers)
-        }
 
         NotificationHelper.notifySessionConnected(this, deviceId)
     }

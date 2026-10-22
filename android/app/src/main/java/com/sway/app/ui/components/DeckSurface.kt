@@ -467,7 +467,7 @@ private fun RowScope.DeckToolButton(
 }
 
 @Composable
-private fun MouseButton(
+fun MouseButton(
     modifier: Modifier = Modifier,
     label: String,
     isActive: Boolean = false,

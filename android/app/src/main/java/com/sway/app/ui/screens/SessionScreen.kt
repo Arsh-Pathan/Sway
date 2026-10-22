@@ -47,6 +47,7 @@ import com.sway.app.network.StreamFrame
 import com.sway.app.ui.components.ControlCenterSheet
 import com.sway.app.ui.components.QuickPreset
 import com.sway.app.ui.components.DeckSurface
+import com.sway.app.ui.components.MouseButton
 import com.sway.app.ui.components.ModifierDock
 import com.sway.app.ui.components.QuickActionsSheet
 import com.sway.app.ui.components.ResolutionSheet
@@ -302,13 +303,8 @@ private fun DesktopStreamView(
                                         }
                                     }
                                 }
-                                val tapDuration = System.currentTimeMillis() - downTime
-                                if (tapDuration < 280 && !hasDragged) {
-                                    if (System.currentTimeMillis() - lastTapTime < 350) {
-                                        onRequestKeyboard()
-                                    }
-                                    lastTapTime = System.currentTimeMillis()
-                                }
+                                // Clean single/double touch direct click without accidental keyboard popup
+                                lastTapTime = System.currentTimeMillis()
                             }
                             break
                         }
@@ -1201,7 +1197,7 @@ fun SessionScreen(
                     }
                 }
 
-                // Middle: Dedicated Virtual Trackpad (Only displayed in Trackpad mode)
+                // Middle: Dedicated Virtual Trackpad with Physical Click & Drag Bar
                 if (controlMode == ControlMode.TRACKPAD) {
                     TrackpadSurface(
                         modifier = Modifier
@@ -1212,6 +1208,69 @@ fun SessionScreen(
                         hapticsEnabled = hapticsEnabled,
                         onInputEvent = { webRtcManager.sendInput(it) }
                     )
+
+                    var isTrackpadDragLocked by remember { mutableStateOf(false) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        MouseButton(
+                            modifier = Modifier.weight(1.4f),
+                            label = "LEFT CLICK",
+                            isActive = isTrackpadDragLocked,
+                            onDown = {
+                                if (!isTrackpadDragLocked) {
+                                    webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                                }
+                            },
+                            onUp = {
+                                if (!isTrackpadDragLocked) {
+                                    webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                                }
+                            }
+                        )
+
+                        Surface(
+                            onClick = {
+                                isTrackpadDragLocked = !isTrackpadDragLocked
+                                if (isTrackpadDragLocked) {
+                                    webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                                } else {
+                                    webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                                }
+                            },
+                            color = if (isTrackpadDragLocked) Color.White else SurfaceCard,
+                            shape = RoundedCornerShape(10.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, if (isTrackpadDragLocked) Color.White else SurfaceCardBorder),
+                            modifier = Modifier.weight(1.1f)
+                        ) {
+                            Box(
+                                modifier = Modifier.padding(vertical = 12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    if (isTrackpadDragLocked) "DRAG [ON]" else "DRAG LOCK",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isTrackpadDragLocked) Color.Black else TextSecondary
+                                )
+                            }
+                        }
+
+                        MouseButton(
+                            modifier = Modifier.weight(0.8f),
+                            label = "MID",
+                            onDown = { webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_MIDDLE)) },
+                            onUp = { webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_MIDDLE)) }
+                        )
+
+                        MouseButton(
+                            modifier = Modifier.weight(1.3f),
+                            label = "RIGHT CLICK",
+                            onDown = { webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_RIGHT)) },
+                            onUp = { webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_RIGHT)) }
+                        )
+                    }
                 }
 
                 // Bottom: Sticky Modifier Dock

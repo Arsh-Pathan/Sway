@@ -137,6 +137,13 @@ fun TrackpadSurface(
                         touchPoint = activePointers.first().position
                         isDragging = true
 
+                        // Intuitive press-and-hold to start window/selection dragging
+                        if (!isDragHolding && !hasMoved && maxPointers == 1 && (System.currentTimeMillis() - startTime) > 280) {
+                            isDragHolding = true
+                            triggerHaptic(2)
+                            onInputEvent(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                        }
+
                         if (activePointers.size == 1) {
                             val change = activePointers.first()
                             val dragX = change.position.x - change.previousPosition.x
