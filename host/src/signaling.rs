@@ -56,8 +56,21 @@ impl HostSignaling {
 
     /// Prints a scannable QR code directly to the console for pairing.
     pub fn print_pairing_qr(&self) {
+        let reachable_server = if self.server_url.contains("127.0.0.1") || self.server_url.contains("localhost") {
+            // Find actual LAN IP so scanning with phone camera directly works over Wi-Fi
+            match std::net::UdpSocket::bind("0.0.0.0:0") {
+                Ok(s) => match s.connect("8.8.8.8:80") {
+                    Ok(_) => s.local_addr().ok().map(|a| format!("{}:8089", a.ip())).unwrap_or_else(|| self.server_url.clone()),
+                    Err(_) => self.server_url.clone(),
+                },
+                Err(_) => self.server_url.clone(),
+            }
+        } else {
+            self.server_url.clone()
+        };
+
         let pairing_payload = serde_json::json!({
-            "server": self.server_url,
+            "server": reachable_server,
             "deviceId": self.device_id,
             "token": self.token
         });

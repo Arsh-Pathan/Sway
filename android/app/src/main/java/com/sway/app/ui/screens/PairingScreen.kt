@@ -72,7 +72,7 @@ fun PairingScreen(
     }
 
     // Default to the current live laptop credentials if not saved yet
-    val defaultUrl = "192.168.11.229:8089"
+    val defaultUrl = "192.168.11.154:8089"
     val defaultDeviceId = "sway-laptop-b18602ec"
     val defaultToken = "50f0232b-ea9"
 
@@ -366,7 +366,7 @@ fun PairingScreen(
                     FilterChip(
                         selected = signalingUrl.contains("trycloudflare.com") || (!signalingUrl.contains("8089") && !signalingUrl.contains("8080") && signalingUrl.contains(".")),
                         onClick = {
-                            signalingUrl = "https://marijuana-generations-publishing-marketplace.trycloudflare.com"
+                            signalingUrl = "https://framework-governments-introducing-pregnant.trycloudflare.com"
                         },
                         label = { Text("Mobile 4G/5G", fontSize = 11.sp) },
                         modifier = Modifier.weight(1.1f),
