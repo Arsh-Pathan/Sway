@@ -303,7 +303,7 @@ impl LocalServer {
                     let is_connected = Arc::new(AtomicBool::new(true));
                     let is_streaming = Arc::new(AtomicBool::new(true));
                     let active_monitor = Arc::new(AtomicUsize::new(0));
-                    let stream_quality = Arc::new(AtomicU8::new(80)); // Default to crisp balanced HD quality
+                    let stream_quality = Arc::new(AtomicU8::new(50)); // Default to responsive low-latency Turbo (50) for immediate smoothness
                     let client_ack = Arc::new(AtomicBool::new(true));
                     let last_ack_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
                     let is_audio_streaming = Arc::new(AtomicBool::new(false));
@@ -340,12 +340,12 @@ impl LocalServer {
                             };
 
                             // Zero-Bufferbloat Flow Control:
-                            // Check if client has acknowledged the previous frame or if 45ms watchdog expired.
-                            // If client is still processing or Wi-Fi dropped packets, drop intermediate frames
-                            // and send only the newest real-time screen image to eliminate latency drift.
+                            // Check if client has acknowledged the previous frame or if 300ms watchdog expired.
+                            // If client is still receiving over cellular or Wi-Fi, NEVER queue frames into TCP buffers!
+                            // Send only the newest real-time screen image on demand to eliminate latency drift completely.
                             let is_ready = client_ack_flag.load(Ordering::Relaxed) || {
                                 if let Ok(guard) = last_ack_ref.lock() {
-                                    guard.elapsed() >= std::time::Duration::from_millis(45)
+                                    guard.elapsed() >= std::time::Duration::from_millis(300)
                                 } else {
                                     true
                                 }

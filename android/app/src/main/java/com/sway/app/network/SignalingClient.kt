@@ -159,7 +159,7 @@ class SignalingClient(
                         pendingFrameBytes = null
 
                         val decodeOpts = BitmapFactory.Options().apply {
-                            inPreferredConfig = Bitmap.Config.ARGB_8888
+                            inPreferredConfig = Bitmap.Config.RGB_565
                         }
                         val bmp = try {
                             BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)

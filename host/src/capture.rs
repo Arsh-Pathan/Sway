@@ -388,8 +388,15 @@ impl ScreenCapture {
             (0, 0, width.max(1), height.max(1))
         };
 
-        // Stream native resolution up to 1080p / 1920 with smooth bilinear filtering if downscale is required
-        let max_dim = 1920;
+        // Adaptive resolution scaling:
+        // Turbo / mobile data (quality <= 55) uses 1280 (720p) for ultra-low latency & small JPEG packets (~35 KB).
+        // High fidelity uses full 1080p / 1920.
+        // Uses FilterType::Nearest for instant sub-millisecond scaling instead of slow CPU Triangle convolution.
+        let max_dim = match quality {
+            0..=55 => 1280,
+            56..=75 => 1440,
+            _ => 1920,
+        };
         let mut target_image = if width > max_dim || height > max_dim {
             let (target_w, target_h) = if width >= height {
                 (max_dim, (height * max_dim) / width)
@@ -400,7 +407,7 @@ impl ScreenCapture {
                 &rgba_image,
                 target_w,
                 target_h,
-                image::imageops::FilterType::Triangle,
+                image::imageops::FilterType::Nearest,
             )
         } else {
             rgba_image
