@@ -120,6 +120,11 @@ class SignalingClient(
     private var pendingFrameBytes: ByteArray? = null
     private var frameSeq = 0L
 
+    // High-performance double-buffered Bitmap pool to eliminate GC allocations during video streaming
+    private var bufferA: Bitmap? = null
+    private var bufferB: Bitmap? = null
+    private var useA = true
+
     private val ackByteString = okio.ByteString.of(0xAA.toByte())
     val audioPlayer = com.sway.app.audio.AudioPlayer()
 
@@ -158,17 +163,37 @@ class SignalingClient(
                         val toDecode = pendingFrameBytes ?: break
                         pendingFrameBytes = null
 
+                        val candidate = if (useA) bufferA else bufferB
                         val decodeOpts = BitmapFactory.Options().apply {
                             inPreferredConfig = Bitmap.Config.RGB_565
+                            inMutable = true
+                            if (candidate != null && !candidate.isRecycled) {
+                                inBitmap = candidate
+                            }
                         }
                         val bmp = try {
                             BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)
+                        } catch (iae: IllegalArgumentException) {
+                            // If dimensions changed (e.g. resolution switch or rotation), re-allocate cleanly
+                            decodeOpts.inBitmap = null
+                            try {
+                                BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)
+                            } catch (e: Exception) {
+                                Log.e(tag, "Failed to decode JPEG frame after fallback", e)
+                                null
+                            }
                         } catch (e: Exception) {
                             Log.e(tag, "Failed to decode JPEG frame", e)
                             null
                         }
 
                         if (bmp != null) {
+                            if (useA) {
+                                bufferA = bmp
+                            } else {
+                                bufferB = bmp
+                            }
+                            useA = !useA
                             frameSeq++
                             _currentFrame.value = StreamFrame(bmp, frameSeq)
                         }
@@ -286,6 +311,10 @@ class SignalingClient(
         webSocket?.close(1000, "User disconnected")
         webSocket = null
         _currentFrame.value = null
+        bufferA?.recycle()
+        bufferA = null
+        bufferB?.recycle()
+        bufferB = null
         _state.value = SignalingState.Disconnected
     }
 }

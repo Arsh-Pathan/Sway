@@ -225,13 +225,59 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
 #[cfg(not(windows))]
 fn draw_real_cursor(_img: &mut image::RgbaImage, _mon_x: i32, _mon_y: i32, _mon_w: u32, _mon_h: u32) {}
 
+#[cfg(windows)]
+fn get_current_cursor_state() -> (isize, i32, i32) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetCursorInfo, CURSORINFO, CURSOR_SHOWING};
+    let mut ci = CURSORINFO {
+        cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if GetCursorInfo(&mut ci).is_ok() && (ci.flags.0 & CURSOR_SHOWING.0) != 0 {
+            (ci.hCursor.0 as isize, ci.ptScreenPos.x, ci.ptScreenPos.y)
+        } else {
+            (0, i32::MIN, i32::MIN)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn get_current_cursor_state() -> (isize, i32, i32) {
+    (0, 0, 0)
+}
+
+#[inline(always)]
+fn compute_sample_hash(data: &[u8]) -> u64 {
+    let len = data.len();
+    if len < 8 {
+        return 0;
+    }
+    let step = (len / 256).max(8);
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut i = 0;
+    while i + 8 <= len {
+        let chunk = u64::from_le_bytes([
+            data[i], data[i + 1], data[i + 2], data[i + 3],
+            data[i + 4], data[i + 5], data[i + 6], data[i + 7],
+        ]);
+        h ^= chunk;
+        h = h.wrapping_mul(0x100000001b3);
+        i += step;
+    }
+    h
+}
+
 pub struct ScreenCapture {
     pub active_monitor: usize,
     pub monitors: Vec<MonitorInfo>,
     cached_monitors: Vec<Monitor>,
     rgb_buffer: Vec<u8>,
+    jpeg_buffer: Vec<u8>,
     last_frame_time: std::time::Instant,
     last_monitor_refresh: std::time::Instant,
+    last_frame_hash: u64,
+    last_cursor_state: (isize, i32, i32),
+    last_encoded_time: std::time::Instant,
 }
 
 impl ScreenCapture {
@@ -278,8 +324,12 @@ impl ScreenCapture {
             monitors,
             cached_monitors,
             rgb_buffer: Vec::with_capacity(1920 * 1080 * 3),
+            jpeg_buffer: Vec::with_capacity(64 * 1024),
             last_frame_time: std::time::Instant::now(),
             last_monitor_refresh: std::time::Instant::now(),
+            last_frame_hash: 0,
+            last_cursor_state: (0, 0, 0),
+            last_encoded_time: std::time::Instant::now().checked_sub(std::time::Duration::from_secs(10)).unwrap_or_else(std::time::Instant::now),
         }
     }
 
@@ -377,6 +427,21 @@ impl ScreenCapture {
         let width = rgba_image.width();
         let height = rgba_image.height();
 
+        // Screen Change Detection:
+        // Skip redundant JPEG encoding and network transmission if desktop and cursor are identical,
+        // while enforcing a 1000ms periodic heartbeat frame to keep the client screen synchronized.
+        let cur_cursor = get_current_cursor_state();
+        let frame_hash = compute_sample_hash(rgba_image.as_raw());
+        let is_identical = frame_hash == self.last_frame_hash && cur_cursor == self.last_cursor_state;
+
+        if is_identical && self.last_encoded_time.elapsed() < std::time::Duration::from_millis(1000) {
+            return None;
+        }
+
+        self.last_frame_hash = frame_hash;
+        self.last_cursor_state = cur_cursor;
+        self.last_encoded_time = std::time::Instant::now();
+
         let (mon_x, mon_y, mon_w, mon_h) = if let Some(m) = self.cached_monitors.get(monitor_idx) {
             (
                 m.x().unwrap_or(0),
@@ -416,7 +481,7 @@ impl ScreenCapture {
         // Render real hardware mouse cursor overlay directly on the frame
         draw_real_cursor(&mut target_image, mon_x, mon_y, mon_w, mon_h);
 
-        // Fast zero-allocation RGBA to RGB conversion into reusable pre-allocated buffer
+        // Vectorized RGBA to RGB conversion using chunk iterators (SIMD auto-vectorization without bound checks)
         let raw_rgba = target_image.as_raw();
         let pixel_count = (target_image.width() * target_image.height()) as usize;
         let rgb_len = pixel_count * 3;
@@ -425,21 +490,16 @@ impl ScreenCapture {
         }
 
         let dst = &mut self.rgb_buffer[..rgb_len];
-        let src = raw_rgba;
-        let mut s = 0;
-        let mut d = 0;
-        while d < rgb_len {
-            dst[d] = src[s];
-            dst[d + 1] = src[s + 1];
-            dst[d + 2] = src[s + 2];
-            s += 4;
-            d += 3;
+        for (src_chunk, dst_chunk) in raw_rgba.chunks_exact(4).zip(dst.chunks_exact_mut(3)) {
+            dst_chunk[0] = src_chunk[0];
+            dst_chunk[1] = src_chunk[1];
+            dst_chunk[2] = src_chunk[2];
         }
 
         self.last_frame_time = std::time::Instant::now();
 
-        let mut jpeg_bytes = Vec::with_capacity(32 * 1024);
-        let mut encoder = JpegEncoder::new_with_quality(&mut jpeg_bytes, quality);
+        self.jpeg_buffer.clear();
+        let mut encoder = JpegEncoder::new_with_quality(&mut self.jpeg_buffer, quality);
         if encoder
             .encode(
                 dst,
@@ -449,7 +509,7 @@ impl ScreenCapture {
             )
             .is_ok()
         {
-            Some(jpeg_bytes)
+            Some(self.jpeg_buffer.clone())
         } else {
             None
         }

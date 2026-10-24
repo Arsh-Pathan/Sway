@@ -40,7 +40,6 @@ fun TrackpadSurface(
         }
     }
 
-    var touchPoint by remember { mutableStateOf<Offset?>(null) }
     var isDragging by remember { mutableStateOf(false) }
 
     fun triggerHaptic(type: Int) {
@@ -130,7 +129,6 @@ fun TrackpadSurface(
                             } else {
                                 lastTapUpTime = 0L
                             }
-                            touchPoint = null
                             isDragging = false
                             accumX = 0f
                             accumY = 0f
@@ -141,7 +139,6 @@ fun TrackpadSurface(
                             break
                         }
 
-                        touchPoint = activePointers.first().position
                         isDragging = true
 
                         // Intuitive press-and-hold to start window/selection dragging

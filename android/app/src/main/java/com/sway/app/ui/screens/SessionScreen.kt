@@ -216,7 +216,7 @@ private fun DesktopStreamCanvas(
                         image = imageBitmap,
                         dstOffset = androidx.compose.ui.unit.IntOffset(padX.toInt(), padY.toInt()),
                         dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt()),
-                        filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium
+                        filterQuality = androidx.compose.ui.graphics.FilterQuality.Low
                     )
                 }
             } else {
@@ -224,7 +224,7 @@ private fun DesktopStreamCanvas(
                     image = imageBitmap,
                     dstOffset = androidx.compose.ui.unit.IntOffset(padX.toInt(), padY.toInt()),
                     dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt()),
-                    filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium
+                    filterQuality = androidx.compose.ui.graphics.FilterQuality.Low
                 )
             }
         }
