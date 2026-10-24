@@ -3,6 +3,7 @@ package com.sway.app.ui.screens
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
@@ -75,10 +76,24 @@ fun PairingScreen(
     val defaultUrl = "192.168.11.154:8089"
     val defaultDeviceId = "sway-laptop-b18602ec"
     val defaultToken = "50f0232b-ea9"
+    val cloudflareTunnelUrl = "https://framework-governments-introducing-pregnant.trycloudflare.com"
 
-    // Manual Form & Saved State
+    val isCellular = remember {
+        val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+        val cap = cm?.getNetworkCapabilities(cm.activeNetwork)
+        cap?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) == true &&
+            !(cap.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI))
+    }
+
+    // Manual Form & Saved State: Auto-select Cloudflare tunnel if phone is on mobile cellular network
     var signalingUrl by remember {
-        mutableStateOf(prefs.getString("saved_signaling_url", null) ?: defaultUrl)
+        val saved = prefs.getString("saved_signaling_url", null)
+        val initial = if (isCellular && (saved == null || saved.contains("192.168.") || saved.contains("10.") || saved.contains("172.") || saved.contains("127.0.0.1"))) {
+            cloudflareTunnelUrl
+        } else {
+            saved ?: defaultUrl
+        }
+        mutableStateOf(initial)
     }
     var deviceId by remember {
         mutableStateOf(prefs.getString("saved_device_id", null) ?: defaultDeviceId)
@@ -272,15 +287,22 @@ fun PairingScreen(
                     CameraQrScannerView { scannedJson ->
                         try {
                             val obj = JSONObject(scannedJson)
-                            val scannedUrl = obj.optString("server", signalingUrl)
+                            var scannedUrl = obj.optString("server", signalingUrl)
                             val scannedId = obj.getString("deviceId")
                             val scannedToken = obj.getString("token")
+
+                            // If on Mobile Data (Cellular), auto-route local Wi-Fi IPs to the live Cloudflare Remote Tunnel
+                            if (isCellular && (scannedUrl.contains("192.168.") || scannedUrl.contains("10.") || scannedUrl.contains("172.") || scannedUrl.contains("127.0.0.1"))) {
+                                scannedUrl = cloudflareTunnelUrl
+                                Toast.makeText(context, "Mobile Data detected: Connecting via Remote Tunnel", Toast.LENGTH_SHORT).show()
+                            }
                             connectAndSave(scannedUrl, scannedId, scannedToken)
                         } catch (e: Exception) {
                             // Raw format: deviceId:token
                             if (scannedJson.contains(":")) {
                                 val parts = scannedJson.split(":")
-                                connectAndSave(signalingUrl, parts[0], parts[1])
+                                val targetUrl = if (isCellular) cloudflareTunnelUrl else signalingUrl
+                                connectAndSave(targetUrl, parts[0], parts[1])
                             }
                         }
                     }

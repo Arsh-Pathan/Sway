@@ -656,21 +656,41 @@ fun SessionScreen(
                         Surface(
                             modifier = Modifier
                                 .align(Alignment.Center)
-                                .padding(8.dp),
-                            color = SurfaceDark.copy(alpha = 0.85f),
-                            shape = MaterialTheme.shapes.medium
+                                .padding(16.dp),
+                            color = SurfaceDark.copy(alpha = 0.95f),
+                            shape = RoundedCornerShape(12.dp)
                         ) {
-                            val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
-                            } else {
-                                "Connecting to desktop..."
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                    val r = (rtcState as RtcConnectionState.Failed).reason
+                                    if (r.contains("192.168.") || r.contains("10.") || r.contains("172.")) {
+                                        "Local Wi-Fi IP unreachable on Mobile Data.\nPlease tap 'Back' and select 'Mobile 4G/5G'."
+                                    } else {
+                                        "Connection failed:\n$r"
+                                    }
+                                } else {
+                                    "Connecting to desktop..."
+                                }
+                                Text(
+                                    text = statusMsg,
+                                    style = Typography.bodyMedium,
+                                    color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                                if (rtcState is RtcConnectionState.Failed) {
+                                    Button(
+                                        onClick = onDisconnect,
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color.White),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("Back to Pairing", color = Color.Black, fontWeight = FontWeight.Bold)
+                                    }
+                                }
                             }
-                            Text(
-                                text = statusMsg,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                style = Typography.bodyMedium,
-                                color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
-                            )
                         }
                     }
                 } else if (rtcState is RtcConnectionState.Connected) {
@@ -687,21 +707,41 @@ fun SessionScreen(
                     Surface(
                         modifier = Modifier
                             .align(Alignment.Center)
-                            .padding(8.dp),
-                        color = SurfaceDark.copy(alpha = 0.85f),
-                        shape = MaterialTheme.shapes.medium
+                            .padding(16.dp),
+                        color = SurfaceDark.copy(alpha = 0.95f),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                            "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
-                        } else {
-                            "Connecting to desktop..."
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                                val r = (rtcState as RtcConnectionState.Failed).reason
+                                if (r.contains("192.168.") || r.contains("10.") || r.contains("172.")) {
+                                    "Local Wi-Fi IP unreachable on Mobile Data.\nPlease tap 'Back' and select 'Mobile 4G/5G'."
+                                } else {
+                                    "Connection failed:\n$r"
+                                }
+                            } else {
+                                "Connecting to desktop..."
+                            }
+                            Text(
+                                text = statusMsg,
+                                style = Typography.bodyMedium,
+                                color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                            if (rtcState is RtcConnectionState.Failed) {
+                                Button(
+                                    onClick = onDisconnect,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Back to Pairing", color = Color.Black, fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
-                        Text(
-                            text = statusMsg,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            style = Typography.bodyMedium,
-                            color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
-                        )
                     }
                 }
 
