@@ -28,6 +28,7 @@ fun TrackpadSurface(
     scrollSpeed: Float = 1.0f,
     hapticsEnabled: Boolean = true,
     isDeckMode: Boolean = false,
+    isInvisible: Boolean = false,
     onInputEvent: (InputEvent) -> Unit
 ) {
     val context = LocalContext.current
@@ -58,14 +59,18 @@ fun TrackpadSurface(
     }
 
     Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(20.dp))
-            .background(TrackpadFill)
-            .border(
-                width = 1.5.dp,
-                color = if (isDragging) TrackpadActiveBorder else TrackpadBorder,
-                shape = RoundedCornerShape(20.dp)
-            )
+        modifier = if (isInvisible) {
+            modifier
+        } else {
+            modifier
+                .clip(RoundedCornerShape(20.dp))
+                .background(TrackpadFill)
+                .border(
+                    width = 1.5.dp,
+                    color = if (isDragging) TrackpadActiveBorder else TrackpadBorder,
+                    shape = RoundedCornerShape(20.dp)
+                )
+        }
             .pointerInput(sensitivity, scrollSpeed, hapticsEnabled, isDeckMode) {
                 var lastTapUpTime = 0L
                 var isDragHolding = false

@@ -592,20 +592,102 @@ fun SessionScreen(
                     }
                 }
 
-                // If in Trackpad mode, overlay transparent trackpad surface
+                // ==================== HORIZONTAL GAME-CONTROLLER HUD ====================
+                // Right Half (55% width): Invisible Full-Height Glide Trackpad
                 if (controlMode == ControlMode.TRACKPAD && zoomScale <= 1.05f) {
-                    TrackpadSurface(
-                        modifier = Modifier.fillMaxSize(),
-                        sensitivity = sensitivity,
-                        scrollSpeed = scrollSpeed,
-                        hapticsEnabled = hapticsEnabled,
-                        onInputEvent = { webRtcManager.sendInput(it) }
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                    ) {
+                        TrackpadSurface(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(0.58f)
+                                .align(Alignment.CenterEnd),
+                            sensitivity = sensitivity,
+                            scrollSpeed = scrollSpeed,
+                            hapticsEnabled = hapticsEnabled,
+                            isInvisible = true,
+                            onInputEvent = { webRtcManager.sendInput(it) }
+                        )
+                    }
                 }
 
-                // Floating Action Header
-                // Minimalist Floating Header
+                // Left Side: Floating HUD Controls & Action Pad (like 3D action shooter games)
                 if (!isPanelHidden) {
+                    // Floating Left Gamepad Controls
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 16.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Top row: Middle click & Drag lock
+                        var isLandscapeDragLocked by remember { mutableStateOf(false) }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // Drag Lock button
+                            Surface(
+                                onClick = {
+                                    isLandscapeDragLocked = !isLandscapeDragLocked
+                                    if (isLandscapeDragLocked) {
+                                        webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                                    } else {
+                                        webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                                    }
+                                },
+                                color = if (isLandscapeDragLocked) Color.White else SurfaceDark.copy(alpha = 0.82f),
+                                shape = RoundedCornerShape(14.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, if (isLandscapeDragLocked) Color.White else SurfaceCardBorder),
+                                modifier = Modifier.size(width = 72.dp, height = 44.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = if (isLandscapeDragLocked) "LOCK [ON]" else "DRAG",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isLandscapeDragLocked) Color.Black else Color.White
+                                    )
+                                }
+                            }
+
+                            // Middle Click button
+                            Surface(
+                                onClick = {
+                                    webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_MIDDLE))
+                                    webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_MIDDLE))
+                                },
+                                color = SurfaceDark.copy(alpha = 0.82f),
+                                shape = RoundedCornerShape(14.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
+                                modifier = Modifier.size(width = 64.dp, height = 44.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text("MID", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            }
+                        }
+
+                        // Bottom row: Prominent Primary Action Buttons (Left Click & Right Click)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // Primary Trigger / Left Click (Large Action Button)
+                            MouseButton(
+                                modifier = Modifier.size(width = 86.dp, height = 54.dp),
+                                label = "L-CLICK",
+                                onDown = { webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT)) },
+                                onUp = { webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT)) }
+                            )
+
+                            // Secondary Trigger / Right Click
+                            MouseButton(
+                                modifier = Modifier.size(width = 86.dp, height = 54.dp),
+                                label = "R-CLICK",
+                                onDown = { webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_RIGHT)) },
+                                onUp = { webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_RIGHT)) }
+                            )
+                        }
+                    }
+
+                    // Floating Action Header: Top HUD with System Buttons
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -639,37 +721,21 @@ fun SessionScreen(
                             }
                         }
 
-                        // Stream vs Deck Mode Toggle Pill
-                        Surface(
-                            onClick = {
-                                controlMode = if (controlMode == ControlMode.DECK) ControlMode.TRACKPAD else ControlMode.DECK
-                            },
-                            color = SurfaceDark.copy(alpha = 0.85f),
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    if (controlMode == ControlMode.DECK) Icons.Default.Tv else Icons.Default.Gamepad,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    if (controlMode == ControlMode.DECK) "Stream" else "Deck Mode (1ms)",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                            }
-                        }
-
-                        // Action Buttons: Keyboard, Control Center, Disconnect
+                        // Right Top Actions: Rotate back to Portrait, Keyboard, Tools, Hide, Close
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            // Rotate back to Portrait
+                            Surface(
+                                onClick = { toggleOrientation() },
+                                color = SurfaceDark.copy(alpha = 0.85f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                            ) {
+                                Box(modifier = Modifier.padding(6.dp)) {
+                                    Icon(Icons.Default.ScreenRotation, contentDescription = "Portrait Mode", tint = Color.White, modifier = Modifier.size(16.dp))
+                                }
+                            }
+
+                            // Native Keyboard
                             Surface(
                                 onClick = {
                                     focusRequester.requestFocus()
@@ -684,6 +750,7 @@ fun SessionScreen(
                                 }
                             }
 
+                            // Control Center & Presets
                             Surface(
                                 onClick = { showControlCenter = true },
                                 color = SurfaceDark.copy(alpha = 0.85f),
@@ -695,6 +762,31 @@ fun SessionScreen(
                                 }
                             }
 
+                            // Quick Action Tools (Alt-Tab, Win, etc.)
+                            Surface(
+                                onClick = { showQuickActions = true },
+                                color = SurfaceDark.copy(alpha = 0.85f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                            ) {
+                                Box(modifier = Modifier.padding(6.dp)) {
+                                    Icon(Icons.Default.Bolt, contentDescription = "Tools", tint = Color.White, modifier = Modifier.size(16.dp))
+                                }
+                            }
+
+                            // Hide HUD (Immersive clean screen)
+                            Surface(
+                                onClick = { isPanelHidden = true },
+                                color = SurfaceDark.copy(alpha = 0.85f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                            ) {
+                                Box(modifier = Modifier.padding(6.dp)) {
+                                    Icon(Icons.Default.Fullscreen, contentDescription = "Hide HUD", tint = Color.White, modifier = Modifier.size(16.dp))
+                                }
+                            }
+
+                            // Disconnect
                             Surface(
                                 onClick = { handleDisconnect() },
                                 color = SurfaceDark.copy(alpha = 0.85f),
@@ -707,28 +799,8 @@ fun SessionScreen(
                             }
                         }
                     }
-
-                    // Sleek Bottom Slider Pill: Slide Up to Open Control Center & Presets
-                Surface(
-                    onClick = { showControlCenter = true },
-                    color = SurfaceDark.copy(alpha = 0.85f),
-                    shape = RoundedCornerShape(20.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Text("Control Center & Presets", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    }
-                }
                 } else {
-                    // Floating pill to unhide controls in Landscape
+                    // Floating button to unhide controls in Landscape
                     Surface(
                         onClick = { isPanelHidden = false },
                         modifier = Modifier
@@ -913,6 +985,14 @@ fun SessionScreen(
 
                     // Quick Action Buttons
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // Rotate to Landscape Game Controller Mode
+                        IconButton(
+                            onClick = { toggleOrientation() },
+                            colors = IconButtonDefaults.iconButtonColors(containerColor = SurfaceDark)
+                        ) {
+                            Icon(Icons.Default.ScreenRotation, contentDescription = "Horizontal Mode", tint = Color.White)
+                        }
+
                         // Native Keyboard
                         IconButton(
                             onClick = {
