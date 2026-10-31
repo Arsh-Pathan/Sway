@@ -180,7 +180,7 @@ impl HostSignaling {
         let simulator = self.simulator.clone();
         let is_streaming = Arc::new(AtomicBool::new(false));
         let active_monitor = Arc::new(AtomicUsize::new(0));
-        let stream_quality = Arc::new(AtomicU8::new(50));
+        let stream_quality = Arc::new(AtomicU8::new(45));
         let is_audio_streaming = Arc::new(AtomicBool::new(false));
         let audio_handle: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(std::sync::Mutex::new(None));
 
@@ -198,16 +198,16 @@ impl HostSignaling {
                     let frame_tx = frame_tx.clone();
                     tokio::task::spawn_blocking(move || {
                         let mut capture = ScreenCapture::new();
-                        info!("Started cloud screen capture & streaming loop");
+                        info!("Started screen capture & streaming loop (up to 60 FPS)");
                         while stream_flag.load(Ordering::Relaxed) {
                             let start = std::time::Instant::now();
                             capture.active_monitor = monitor_flag.load(Ordering::Relaxed);
                             let q = quality_flag.load(Ordering::Relaxed);
 
                             let target_interval = match q {
-                                40..=45 => std::time::Duration::from_millis(20), // ~50 FPS Cloud Turbo
-                                70..=100 => std::time::Duration::from_millis(40), // ~25 FPS Cloud HQ
-                                _ => std::time::Duration::from_millis(28),        // ~35 FPS Cloud Balanced
+                                1..=50 => std::time::Duration::from_millis(16),  // ~60 FPS Real-time
+                                51..=70 => std::time::Duration::from_millis(22), // ~45 FPS Balanced HD
+                                _ => std::time::Duration::from_millis(33),       // ~30 FPS High Fidelity
                             };
 
                             if let Some(frame) = capture.capture_frame_jpeg(q) {
@@ -278,9 +278,9 @@ impl HostSignaling {
                             }
                             InputPacket::SetQuality { mode } => {
                                 let q = match mode {
-                                    0 => 40,
-                                    1 => 50,
-                                    _ => 70,
+                                    0 => 45, // Mobile 60 FPS smooth
+                                    1 => 65, // Balanced crisp HD
+                                    _ => 80, // High Fidelity
                                 };
                                 stream_quality.store(q, Ordering::SeqCst);
                             }
