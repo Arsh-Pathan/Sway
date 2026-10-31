@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, W
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
     CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
-    Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor,
+    LineTo, MoveToEx, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor,
     DT_CENTER, DT_NOPREFIX, DT_VCENTER, DT_SINGLELINE, FW_BOLD, FW_NORMAL, FW_SEMIBOLD,
     PS_NULL, PS_SOLID, TRANSPARENT,
 };
@@ -68,18 +68,6 @@ impl PrivacyCurtain {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn set_pin(&self, new_pin: String) {
-        if let Ok(mut lock) = self.pin.write() {
-            *lock = new_pin;
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn is_enabled(&self) -> bool {
-        self.is_active.load(Ordering::SeqCst)
-    }
-
     pub fn set_enabled(&self, enable: bool) {
         #[cfg(windows)]
         {
@@ -119,7 +107,7 @@ impl PrivacyCurtain {
                         set_system_cursor_hidden(true);
 
                         let class_name = w!("SwayPrivacyCurtainClass");
-                        let black_brush = CreateSolidBrush(COLORREF(0x000A0806));
+                        let black_brush = CreateSolidBrush(COLORREF(0x00000000));
                         let wc = WNDCLASSEXW {
                             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
                             lpfnWndProc: Some(curtain_wnd_proc),
@@ -411,8 +399,8 @@ unsafe extern "system" fn curtain_wnd_proc(
                 let mut rect = RECT::default();
                 let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
 
-                // Deep Obsidian Dark Background
-                let bg_brush = CreateSolidBrush(COLORREF(0x000C0908)); // Ultra-Deep Charcoal OLED
+                // Pitch OLED Black Background (Monochrome Theme)
+                let bg_brush = CreateSolidBrush(COLORREF(0x00000000));
                 FillRect(hdc, &rect, bg_brush);
                 let _ = DeleteObject(bg_brush);
 
@@ -465,23 +453,39 @@ unsafe extern "system" fn curtain_wnd_proc(
                     w!("Segoe UI"),
                 );
 
-                // Brushes and Pens for Visual Components
-                let badge_bg_brush = CreateSolidBrush(COLORREF(0x001B1714)); // Dark Glass Pill
-                let badge_border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00332B25)); // Subtle Border
-                let shield_brush = CreateSolidBrush(COLORREF(0x00FFFFFF)); // Crisp White Shield
-                let shield_inner_brush = CreateSolidBrush(COLORREF(0x000C0908)); // Cutout
-                let mint_brush = CreateSolidBrush(COLORREF(0x009DFF00)); // Glowing Mint Emerald
+                // Brushes and Pens for Visual Components (Strict Pure Black & White / Monochrome Theme)
+                let badge_bg_brush = CreateSolidBrush(COLORREF(0x00141414)); // Sleek Dark Surface #141414
+                let badge_border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00262626)); // Subtle Crisp Border #262626
+                let white_dot_brush = CreateSolidBrush(COLORREF(0x00FFFFFF)); // Stark Pure White Dot
 
-                // Slot Box Styles
-                let slot_empty_brush = CreateSolidBrush(COLORREF(0x00130F0D)); // Empty Slot Glass
-                let slot_empty_pen = CreatePen(PS_SOLID, 1, COLORREF(0x002D2520)); // Slot Border
-                let slot_filled_brush = CreateSolidBrush(COLORREF(0x00221C17)); // Filled Slot Glow
-                let slot_filled_pen = CreatePen(PS_SOLID, 2, COLORREF(0x009DFF00)); // Emerald Active Border
-                let slot_active_pen = CreatePen(PS_SOLID, 2, COLORREF(0x00554A40)); // Focus Slot Border
+                // Background Blurred Watermark App Icon Resources (Large Ethereal Frosted Silhouette)
+                let bg_glow_pen_1 = CreatePen(PS_SOLID, 4, COLORREF(0x00060606));
+                let bg_glow_pen_2 = CreatePen(PS_SOLID, 3, COLORREF(0x000A0A0A));
+                let bg_glow_pen_3 = CreatePen(PS_SOLID, 2, COLORREF(0x000F0F0F));
+                let bg_tile_brush = CreateSolidBrush(COLORREF(0x000E0E0E)); // Deep Frosted Charcoal Tile #0E0E0E
+                let bg_tile_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00171717));
+                let bg_bezel_brush = CreateSolidBrush(COLORREF(0x00242424)); // Subtle Watermark Bezel #242424
+                let bg_screen_brush = CreateSolidBrush(COLORREF(0x00070707)); // Deep Dark Glass #070707
+                let bg_base_brush = CreateSolidBrush(COLORREF(0x00202020)); // Watermark Base #202020
+                let bg_notch_pen = CreatePen(PS_SOLID, 4, COLORREF(0x00151515)); // Subtle Notch
+
+                // Sway Foreground App Icon GDI Resources (Enlarged Crisp Pure Black & White Vector)
+                let squircle_bg_brush = CreateSolidBrush(COLORREF(0x00121212)); // Clean Flat Dark Squircle #121212
+                let squircle_border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00262626)); // Crisp Border
+                let icon_white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF)); // Solid Pure White Bezel & Base
+                let icon_glass_brush = CreateSolidBrush(COLORREF(0x00000000)); // Pitch Black Glass #000000
+                let icon_notch_pen = CreatePen(PS_SOLID, 2, COLORREF(0x003F3F46)); // Trackpad Notch #3F3F46
+
+                // Slot Box Styles (Monochrome)
+                let slot_empty_brush = CreateSolidBrush(COLORREF(0x000A0A0A)); // Empty Slot Charcoal
+                let slot_empty_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00262626)); // Subtle Border
+                let slot_filled_brush = CreateSolidBrush(COLORREF(0x001A1A1A)); // Filled Slot Background
+                let slot_filled_pen = CreatePen(PS_SOLID, 2, COLORREF(0x00FFFFFF)); // Stark Pure White Active Border
+                let slot_active_pen = CreatePen(PS_SOLID, 2, COLORREF(0x0052525B)); // Focus Slot Border
 
                 // Pill Tag Brush & Pen
-                let pill_bg_brush = CreateSolidBrush(COLORREF(0x0017120F));
-                let pill_border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x0028211B));
+                let pill_bg_brush = CreateSolidBrush(COLORREF(0x00141414));
+                let pill_border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00262626));
 
                 // Get Current Local Time for Realistic Lock Screen
                 let st = windows::Win32::System::SystemInformation::GetLocalTime();
@@ -510,50 +514,94 @@ unsafe extern "system" fn curtain_wnd_proc(
                     let cx = (ml + mr) / 2;
                     let cy = (mt + mb) / 2;
 
-                    // 1. Clock Display (Top-Centered)
+                    // 0. Background Blurred / Frosted Watermark App Icon (Huge 496x496 Silhouette)
+                    let bg_size = 496;
+                    let bg_x = cx - bg_size / 2;
+                    let bg_y = (cy - 20) - bg_size / 2;
+
+                    // Soft Blurred Halo Rings (Simulating smooth depth-of-field Gaussian blur)
+                    SelectObject(hdc, bg_glow_pen_1);
+                    SelectObject(hdc, bg_tile_brush);
+                    let _ = RoundRect(hdc, bg_x - 12, bg_y - 12, bg_x + bg_size + 12, bg_y + bg_size + 12, 136, 136);
+
+                    SelectObject(hdc, bg_glow_pen_2);
+                    let _ = RoundRect(hdc, bg_x - 6, bg_y - 6, bg_x + bg_size + 6, bg_y + bg_size + 6, 124, 124);
+
+                    SelectObject(hdc, bg_glow_pen_3);
+                    let _ = RoundRect(hdc, bg_x - 2, bg_y - 2, bg_x + bg_size + 2, bg_y + bg_size + 2, 116, 116);
+
+                    // Main Background Squircle Tile
+                    SelectObject(hdc, bg_tile_pen);
+                    let _ = RoundRect(hdc, bg_x, bg_y, bg_x + bg_size, bg_y + bg_size, 112, 112);
+
+                    // Watermark Laptop Screen Bezel
+                    SelectObject(hdc, null_pen);
+                    SelectObject(hdc, bg_bezel_brush);
+                    let _ = RoundRect(hdc, bg_x + 116, bg_y + 88, bg_x + 380, bg_y + 268, 24, 24);
+
+                    // Watermark Screen Glass
+                    SelectObject(hdc, bg_screen_brush);
+                    let _ = RoundRect(hdc, bg_x + 120, bg_y + 108, bg_x + 376, bg_y + 280, 16, 16);
+
+                    // Watermark Laptop Base
+                    SelectObject(hdc, bg_base_brush);
+                    let bg_base_pts = [
+                        POINT { x: bg_x + 72, y: bg_y + 332 },
+                        POINT { x: bg_x + 424, y: bg_y + 332 },
+                        POINT { x: bg_x + 456, y: bg_y + 392 },
+                        POINT { x: bg_x + 40, y: bg_y + 392 },
+                    ];
+                    let _ = Polygon(hdc, &bg_base_pts);
+
+                    // Watermark Opening Notch
+                    SelectObject(hdc, bg_notch_pen);
+                    let _ = MoveToEx(hdc, bg_x + 208, bg_y + 364, None);
+                    let _ = LineTo(hdc, bg_x + 288, bg_y + 364);
+
+                    // 1. Clock Display (Top-Centered, Pure Stark White)
                     SelectObject(hdc, clock_font);
                     SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Solid Pure White
                     let mut clock_rect = RECT {
                         left: ml + 20,
-                        top: cy - 250,
+                        top: cy - 280,
                         right: mr - 20,
-                        bottom: cy - 180,
+                        bottom: cy - 215,
                     };
                     let mut clock_utf16: Vec<u16> = format!("{}\0", time_str).encode_utf16().collect();
                     DrawTextW(hdc, &mut clock_utf16, &mut clock_rect, DT_CENTER | DT_NOPREFIX);
 
-                    // 2. Date Display
+                    // 2. Date Display (Neutral Silver Zinc)
                     SelectObject(hdc, date_font);
-                    SetTextColor(hdc, COLORREF(0x00A09890)); // Soft Silver Warm Gray
+                    SetTextColor(hdc, COLORREF(0x00AAA1A1)); // Soft Silver Zinc #A1A1AA
                     let mut date_rect = RECT {
                         left: ml + 20,
-                        top: cy - 185,
+                        top: cy - 215,
                         right: mr - 20,
-                        bottom: cy - 160,
+                        bottom: cy - 190,
                     };
                     let mut date_utf16: Vec<u16> = format!("{}\0", date_str).encode_utf16().collect();
                     DrawTextW(hdc, &mut date_utf16, &mut date_rect, DT_CENTER | DT_NOPREFIX);
 
-                    // 3. Security Status Capsule Badge
+                    // 3. Security Status Capsule Badge (Monochrome Pill)
                     let badge_w = 264;
-                    let badge_h = 32;
+                    let badge_h = 30;
                     let badge_x = cx - badge_w / 2;
-                    let badge_y = cy - 145;
+                    let badge_y = cy - 180;
 
                     SelectObject(hdc, badge_border_pen);
                     SelectObject(hdc, badge_bg_brush);
-                    let _ = RoundRect(hdc, badge_x, badge_y, badge_x + badge_w, badge_y + badge_h, 16, 16);
+                    let _ = RoundRect(hdc, badge_x, badge_y, badge_x + badge_w, badge_y + badge_h, 15, 15);
 
-                    // Glowing Emerald Indicator Dot inside Capsule
+                    // Crisp Pure White Indicator Dot inside Capsule
                     SelectObject(hdc, null_pen);
-                    SelectObject(hdc, mint_brush);
+                    SelectObject(hdc, white_dot_brush);
                     let dot_x = badge_x + 16;
-                    let dot_y = badge_y + 12;
+                    let dot_y = badge_y + 11;
                     let _ = RoundRect(hdc, dot_x, dot_y, dot_x + 8, dot_y + 8, 8, 8);
 
                     // Badge Text: ENCRYPTED REMOTE SESSION
                     SelectObject(hdc, badge_font);
-                    SetTextColor(hdc, COLORREF(0x00E2DBD5));
+                    SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Crisp Pure White
                     let mut badge_txt_rect = RECT {
                         left: dot_x + 14,
                         top: badge_y,
@@ -563,63 +611,59 @@ unsafe extern "system" fn curtain_wnd_proc(
                     let mut badge_utf16: Vec<u16> = "ENCRYPTED REMOTE SESSION\0".encode_utf16().collect();
                     DrawTextW(hdc, &mut badge_utf16, &mut badge_txt_rect, DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-                    // 4. Modern Geometric Security Shield Icon
-                    let icon_cx = cx;
-                    let icon_cy = cy - 65;
+                    // 4. Official Sway Foreground App Icon (Enlarged 124x124 Crisp Pure Black & White)
+                    let tile_size = 124;
+                    let tile_x = cx - tile_size / 2;
+                    let tile_y = (cy - 75) - tile_size / 2;
 
-                    // Shield outer polygon
+                    // Outer Squircle Background
+                    SelectObject(hdc, squircle_border_pen);
+                    SelectObject(hdc, squircle_bg_brush);
+                    let _ = RoundRect(hdc, tile_x, tile_y, tile_x + tile_size, tile_y + tile_size, 28, 28);
+
+                    // Laptop Screen Bezel (Pure White)
                     SelectObject(hdc, null_pen);
-                    SelectObject(hdc, shield_brush);
-                    let shield_pts = [
-                        POINT { x: icon_cx - 24, y: icon_cy - 24 },
-                        POINT { x: icon_cx + 24, y: icon_cy - 24 },
-                        POINT { x: icon_cx + 24, y: icon_cy + 2 },
-                        POINT { x: icon_cx, y: icon_cy + 24 },
-                        POINT { x: icon_cx - 24, y: icon_cy + 2 },
-                    ];
-                    let _ = Polygon(hdc, &shield_pts);
+                    SelectObject(hdc, icon_white_brush);
+                    let _ = RoundRect(hdc, tile_x + 29, tile_y + 22, tile_x + 95, tile_y + 67, 8, 8);
 
-                    // Inner cutout for sleek layered lock aesthetic
-                    SelectObject(hdc, shield_inner_brush);
-                    let inner_pts = [
-                        POINT { x: icon_cx - 18, y: icon_cy - 18 },
-                        POINT { x: icon_cx + 18, y: icon_cy - 18 },
-                        POINT { x: icon_cx + 18, y: icon_cy },
-                        POINT { x: icon_cx, y: icon_cy + 17 },
-                        POINT { x: icon_cx - 18, y: icon_cy },
-                    ];
-                    let _ = Polygon(hdc, &inner_pts);
+                    // Screen Glass (Deep Contrast Pitch Black)
+                    SelectObject(hdc, icon_glass_brush);
+                    let _ = RoundRect(hdc, tile_x + 30, tile_y + 27, tile_x + 94, tile_y + 70, 4, 4);
 
-                    // Padlock Keyhole in glowing Mint
-                    SelectObject(hdc, mint_brush);
-                    let _ = RoundRect(hdc, icon_cx - 4, icon_cy - 8, icon_cx + 4, icon_cy, 4, 4);
-                    let key_stem = [
-                        POINT { x: icon_cx - 3, y: icon_cy - 2 },
-                        POINT { x: icon_cx + 3, y: icon_cy - 2 },
-                        POINT { x: icon_cx + 2, y: icon_cy + 6 },
-                        POINT { x: icon_cx - 2, y: icon_cy + 6 },
+                    // Laptop Base (Pure White Trapezoid)
+                    SelectObject(hdc, icon_white_brush);
+                    let base_pts = [
+                        POINT { x: tile_x + 18, y: tile_y + 83 },
+                        POINT { x: tile_x + 106, y: tile_y + 83 },
+                        POINT { x: tile_x + 114, y: tile_y + 98 },
+                        POINT { x: tile_x + 10, y: tile_y + 98 },
                     ];
-                    let _ = Polygon(hdc, &key_stem);
+                    let _ = Polygon(hdc, &base_pts);
+
+                    // Trackpad Opening Notch
+                    SelectObject(hdc, icon_notch_pen);
+                    let _ = MoveToEx(hdc, tile_x + 52, tile_y + 91, None);
+                    let _ = LineTo(hdc, tile_x + 72, tile_y + 91);
 
                     // 5. Title & Subtitle
                     SelectObject(hdc, title_font);
                     SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Solid Pure White
                     let mut title_rect = RECT {
                         left: ml + 20,
-                        top: cy - 20,
+                        top: cy,
                         right: mr - 20,
-                        bottom: cy + 12,
+                        bottom: cy + 28,
                     };
                     let mut title_text: Vec<u16> = "Windows Display Protected\0".encode_utf16().collect();
                     DrawTextW(hdc, &mut title_text, &mut title_rect, DT_CENTER | DT_NOPREFIX);
 
                     SelectObject(hdc, sub_font);
-                    SetTextColor(hdc, COLORREF(0x008E857D)); // Soft Muted Slate
+                    SetTextColor(hdc, COLORREF(0x00AAA1A1)); // Soft Neutral Zinc #A1A1AA
                     let mut sub_rect = RECT {
                         left: ml + 20,
-                        top: cy + 14,
+                        top: cy + 30,
                         right: mr - 20,
-                        bottom: cy + 38,
+                        bottom: cy + 54,
                     };
                     let mut sub_text: Vec<u16> = "Screen is shielded on laptop • Live controls active on phone\0".encode_utf16().collect();
                     DrawTextW(hdc, &mut sub_text, &mut sub_rect, DT_CENTER | DT_NOPREFIX);
@@ -627,11 +671,11 @@ unsafe extern "system" fn curtain_wnd_proc(
                     // 6. Interactive PIN Slots Grid (Fluent Glass Slots)
                     let num_slots = pin_len.clamp(4, 8);
                     let slot_w = 48;
-                    let slot_h = 56;
+                    let slot_h = 54;
                     let slot_gap = 12;
                     let total_grid_w = (num_slots as i32) * slot_w + ((num_slots as i32) - 1) * slot_gap;
                     let start_x = cx - total_grid_w / 2;
-                    let slot_y = cy + 50;
+                    let slot_y = cy + 66;
 
                     for i in 0..num_slots {
                         let sx = start_x + (i as i32) * (slot_w + slot_gap);
@@ -642,9 +686,9 @@ unsafe extern "system" fn curtain_wnd_proc(
                             SelectObject(hdc, slot_filled_brush);
                             let _ = RoundRect(hdc, sx, slot_y, sx + slot_w, slot_y + slot_h, 14, 14);
 
-                            // Glowing Emerald Dot: ●
+                            // Crisp Pure White Pip: ●
                             SelectObject(hdc, pin_dot_font);
-                            SetTextColor(hdc, COLORREF(0x009DFF00)); // Sway Emerald Mint
+                            SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Stark Pure White
                             let mut dot_rect = RECT {
                                 left: sx,
                                 top: slot_y,
@@ -670,30 +714,30 @@ unsafe extern "system" fn curtain_wnd_proc(
                     SelectObject(hdc, hint_font);
                     let mut feedback_rect = RECT {
                         left: ml + 20,
-                        top: slot_y + slot_h + 16,
+                        top: slot_y + slot_h + 14,
                         right: mr - 20,
-                        bottom: slot_y + slot_h + 38,
+                        bottom: slot_y + slot_h + 36,
                     };
 
                     if is_error {
-                        SetTextColor(hdc, COLORREF(0x005555FF)); // Soft Coral Red
+                        SetTextColor(hdc, COLORREF(0x00E4E4E7)); // Stark High-Contrast Neutral
                         let mut err_text: Vec<u16> = "⚠ Incorrect PIN. Please try again.\0".encode_utf16().collect();
                         DrawTextW(hdc, &mut err_text, &mut feedback_rect, DT_CENTER | DT_NOPREFIX);
                     } else if pin_len == 0 {
-                        SetTextColor(hdc, COLORREF(0x0080766E)); // Muted Guidance Gray
+                        SetTextColor(hdc, COLORREF(0x0071717A)); // Muted Neutral Gray
                         let mut hint_text: Vec<u16> = "Type laptop PIN or Sway token on keyboard to unlock\0".encode_utf16().collect();
                         DrawTextW(hdc, &mut hint_text, &mut feedback_rect, DT_CENTER | DT_NOPREFIX);
                     } else {
-                        SetTextColor(hdc, COLORREF(0x009DFF00)); // Glowing Active
+                        SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Crisp Active White
                         let mut hint_text: Vec<u16> = "Press Enter to verify • Backspace to erase\0".encode_utf16().collect();
                         DrawTextW(hdc, &mut hint_text, &mut feedback_rect, DT_CENTER | DT_NOPREFIX);
                     }
 
-                    // 8. Bottom Helper Badges
+                    // 8. Bottom Helper Badges (Monochrome)
                     let pill_tag_w = 140;
                     let pill_tag_h = 26;
                     let pill_tag_gap = 10;
-                    let pill_tag_y = feedback_rect.bottom + 18;
+                    let pill_tag_y = feedback_rect.bottom + 16;
 
                     let tags = [
                         "⌨ Keyboard Active",
@@ -704,7 +748,7 @@ unsafe extern "system" fn curtain_wnd_proc(
                     let start_tag_x = cx - total_tags_w / 2;
 
                     SelectObject(hdc, pill_tag_font);
-                    SetTextColor(hdc, COLORREF(0x007A7067)); // Muted Warm Slate
+                    SetTextColor(hdc, COLORREF(0x00AAA1A1)); // Clean Neutral Gray #A1A1AA
 
                     for (idx, tag) in tags.iter().enumerate() {
                         let tx = start_tag_x + (idx as i32) * (pill_tag_w + pill_tag_gap);
@@ -729,7 +773,7 @@ unsafe extern "system" fn curtain_wnd_proc(
                         right: mr - 20,
                         bottom: pill_tag_y + pill_tag_h + 34,
                     };
-                    SetTextColor(hdc, COLORREF(0x004A423C)); // Subtle Deep Slate
+                    SetTextColor(hdc, COLORREF(0x0052525B)); // Subtle Muted Gray #52525B
                     let mut foot_text: Vec<u16> = "Default unlock PIN: 1234 or your Sway pairing token\0".encode_utf16().collect();
                     DrawTextW(hdc, &mut foot_text, &mut foot_rect, DT_CENTER | DT_NOPREFIX);
                 }
@@ -739,9 +783,21 @@ unsafe extern "system" fn curtain_wnd_proc(
                 let _ = DeleteObject(null_pen);
                 let _ = DeleteObject(badge_bg_brush);
                 let _ = DeleteObject(badge_border_pen);
-                let _ = DeleteObject(shield_brush);
-                let _ = DeleteObject(shield_inner_brush);
-                let _ = DeleteObject(mint_brush);
+                let _ = DeleteObject(white_dot_brush);
+                let _ = DeleteObject(bg_glow_pen_1);
+                let _ = DeleteObject(bg_glow_pen_2);
+                let _ = DeleteObject(bg_glow_pen_3);
+                let _ = DeleteObject(bg_tile_brush);
+                let _ = DeleteObject(bg_tile_pen);
+                let _ = DeleteObject(bg_bezel_brush);
+                let _ = DeleteObject(bg_screen_brush);
+                let _ = DeleteObject(bg_base_brush);
+                let _ = DeleteObject(bg_notch_pen);
+                let _ = DeleteObject(squircle_bg_brush);
+                let _ = DeleteObject(squircle_border_pen);
+                let _ = DeleteObject(icon_white_brush);
+                let _ = DeleteObject(icon_glass_brush);
+                let _ = DeleteObject(icon_notch_pen);
                 let _ = DeleteObject(slot_empty_brush);
                 let _ = DeleteObject(slot_empty_pen);
                 let _ = DeleteObject(slot_filled_brush);

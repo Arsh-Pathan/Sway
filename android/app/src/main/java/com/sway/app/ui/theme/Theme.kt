@@ -27,8 +27,8 @@ private val MonochromeColorScheme = darkColorScheme(
     onSurfaceVariant = TextSecondary,
     outline = SurfaceCardBorder,
     outlineVariant = Color(0xFF3F3F46),
-    error = Color(0xFFEF4444),
-    onError = Color.White
+    error = Color(0xFFE4E4E7),
+    onError = Color.Black
 )
 
 @Composable

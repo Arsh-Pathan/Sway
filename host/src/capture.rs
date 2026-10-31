@@ -377,17 +377,6 @@ impl ScreenCapture {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn set_active_monitor(&mut self, index: usize) -> bool {
-        if index < self.monitors.len() {
-            self.active_monitor = index;
-            info!("Switched active capture monitor to: #{}", index);
-            true
-        } else {
-            false
-        }
-    }
-
     pub fn detect_monitors() -> Vec<MonitorInfo> {
         if let Ok(all) = Monitor::all() {
             if !all.is_empty() {

@@ -12,6 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -525,7 +526,7 @@ fun SessionScreen(
                                 Text(
                                     text = statusMsg,
                                     style = Typography.bodyMedium,
-                                    color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White,
+                                    color = Color.White,
                                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                                 )
                                 if (rtcState is RtcConnectionState.Failed) {
@@ -576,7 +577,7 @@ fun SessionScreen(
                             Text(
                                 text = statusMsg,
                                 style = Typography.bodyMedium,
-                                color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White,
+                                color = Color.White,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
                             )
                             if (rtcState is RtcConnectionState.Failed) {
@@ -593,7 +594,7 @@ fun SessionScreen(
                 }
 
                 // ==================== HORIZONTAL GAME-CONTROLLER HUD ====================
-                // Right Half (55% width): Invisible Full-Height Glide Trackpad
+                // Right Half (65% width): Invisible Full-Height Glide Trackpad
                 if (controlMode == ControlMode.TRACKPAD && zoomScale <= 1.05f) {
                     Box(
                         modifier = Modifier
@@ -602,7 +603,7 @@ fun SessionScreen(
                         TrackpadSurface(
                             modifier = Modifier
                                 .fillMaxHeight()
-                                .fillMaxWidth(0.58f)
+                                .fillMaxWidth(0.65f)
                                 .align(Alignment.CenterEnd),
                             sensitivity = sensitivity,
                             scrollSpeed = scrollSpeed,
@@ -613,77 +614,145 @@ fun SessionScreen(
                     }
                 }
 
-                // Left Side: Floating HUD Controls & Action Pad (like 3D action shooter games)
+                // Left Side: Ergonomic Gamepad HUD (Free Fire / 3D Action Style)
                 if (!isPanelHidden) {
-                    // Floating Left Gamepad Controls
-                    Column(
+                    Row(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
-                            .padding(start = 16.dp, bottom = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                            .padding(start = 14.dp, bottom = 14.dp),
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        // Top row: Middle click & Drag lock
-                        var isLandscapeDragLocked by remember { mutableStateOf(false) }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            // Drag Lock button
-                            Surface(
-                                onClick = {
-                                    isLandscapeDragLocked = !isLandscapeDragLocked
-                                    if (isLandscapeDragLocked) {
-                                        webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
-                                    } else {
-                                        webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                        // Left Column: Action Buttons Cluster
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Row 1: Modifier / Utility actions (Drag Lock, Double Click 2X, Middle Click)
+                            var isLandscapeDragLocked by remember { mutableStateOf(false) }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                // Drag Lock button
+                                Surface(
+                                    onClick = {
+                                        isLandscapeDragLocked = !isLandscapeDragLocked
+                                        if (isLandscapeDragLocked) {
+                                            webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                                        } else {
+                                            webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                                        }
+                                    },
+                                    color = if (isLandscapeDragLocked) Color.White else SurfaceDark.copy(alpha = 0.82f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, if (isLandscapeDragLocked) Color.White else SurfaceCardBorder),
+                                    modifier = Modifier.size(width = 62.dp, height = 40.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = if (isLandscapeDragLocked) "LOCK [ON]" else "DRAG",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isLandscapeDragLocked) Color.Black else Color.White
+                                        )
                                     }
-                                },
-                                color = if (isLandscapeDragLocked) Color.White else SurfaceDark.copy(alpha = 0.82f),
-                                shape = RoundedCornerShape(14.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, if (isLandscapeDragLocked) Color.White else SurfaceCardBorder),
-                                modifier = Modifier.size(width = 72.dp, height = 44.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Text(
-                                        text = if (isLandscapeDragLocked) "LOCK [ON]" else "DRAG",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isLandscapeDragLocked) Color.Black else Color.White
-                                    )
+                                }
+
+                                // Double Click 2X button
+                                Surface(
+                                    onClick = {
+                                        webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                                        webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                                        webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
+                                        webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+                                    },
+                                    color = SurfaceDark.copy(alpha = 0.82f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
+                                    modifier = Modifier.size(width = 48.dp, height = 40.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text("2X", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+                                }
+
+                                // Middle Click button
+                                Surface(
+                                    onClick = {
+                                        webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_MIDDLE))
+                                        webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_MIDDLE))
+                                    },
+                                    color = SurfaceDark.copy(alpha = 0.82f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
+                                    modifier = Modifier.size(width = 48.dp, height = 40.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text("MID", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
                                 }
                             }
 
-                            // Middle Click button
-                            Surface(
-                                onClick = {
-                                    webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_MIDDLE))
-                                    webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_MIDDLE))
-                                },
-                                color = SurfaceDark.copy(alpha = 0.82f),
-                                shape = RoundedCornerShape(14.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
-                                modifier = Modifier.size(width = 64.dp, height = 44.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Text("MID", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                }
+                            // Row 2: Primary Large Action Triggers (L-CLICK & R-CLICK)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                // Primary Trigger / Left Click (Large Action Fire Button)
+                                MouseButton(
+                                    modifier = Modifier.size(width = 86.dp, height = 54.dp),
+                                    label = "L-CLICK",
+                                    onDown = { webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT)) },
+                                    onUp = { webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT)) }
+                                )
+
+                                // Secondary Trigger / Right Click (Scope / Secondary Button)
+                                MouseButton(
+                                    modifier = Modifier.size(width = 74.dp, height = 54.dp),
+                                    label = "R-CLICK",
+                                    onDown = { webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_RIGHT)) },
+                                    onUp = { webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_RIGHT)) }
+                                )
                             }
                         }
 
-                        // Bottom row: Prominent Primary Action Buttons (Left Click & Right Click)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            // Primary Trigger / Left Click (Large Action Button)
-                            MouseButton(
-                                modifier = Modifier.size(width = 86.dp, height = 54.dp),
-                                label = "L-CLICK",
-                                onDown = { webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT)) },
-                                onUp = { webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT)) }
-                            )
-
-                            // Secondary Trigger / Right Click
-                            MouseButton(
-                                modifier = Modifier.size(width = 86.dp, height = 54.dp),
-                                label = "R-CLICK",
-                                onDown = { webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_RIGHT)) },
-                                onUp = { webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_RIGHT)) }
-                            )
+                        // Vertical Scroll Wheel Strip (Drag up/down or tap arrows to scroll smoothly)
+                        Surface(
+                            modifier = Modifier
+                                .width(36.dp)
+                                .height(102.dp),
+                            color = SurfaceDark.copy(alpha = 0.82f),
+                            shape = RoundedCornerShape(18.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .pointerInput(Unit) {
+                                        detectVerticalDragGestures { change, dragAmount ->
+                                            change.consume()
+                                            val scrollVal = (-dragAmount * 2.2f).toInt().coerceIn(-120, 120)
+                                            if (scrollVal != 0) {
+                                                webRtcManager.sendInput(InputEvent.MouseScroll(scrollVal.toShort()))
+                                            }
+                                        }
+                                    },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                IconButton(
+                                    onClick = { webRtcManager.sendInput(InputEvent.MouseScroll(120)) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Scroll Up", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .width(16.dp)
+                                        .height(3.dp)
+                                        .background(Color.White.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
+                                )
+                                IconButton(
+                                    onClick = { webRtcManager.sendInput(InputEvent.MouseScroll(-120)) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Scroll Down", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
+                            }
                         }
                     }
 
@@ -721,8 +790,27 @@ fun SessionScreen(
                             }
                         }
 
-                        // Right Top Actions: Rotate back to Portrait, Keyboard, Tools, Hide, Close
+                        // Right Top Actions: FIT/FILL, Portrait Rotate, Keyboard, Tools, Hide, Close
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            // Aspect Ratio Toggle: FIT (16:9 Letterbox) or FILL (Edge-to-Edge)
+                            Surface(
+                                onClick = {
+                                    viewFitMode = if (viewFitMode == ViewFitMode.FILL) ViewFitMode.FIT else ViewFitMode.FILL
+                                },
+                                color = if (viewFitMode == ViewFitMode.FILL) Color.White else SurfaceDark.copy(alpha = 0.85f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, if (viewFitMode == ViewFitMode.FILL) Color.White else SurfaceCardBorder)
+                            ) {
+                                Box(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                                    Text(
+                                        text = if (viewFitMode == ViewFitMode.FILL) "FILL" else "FIT",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (viewFitMode == ViewFitMode.FILL) Color.Black else Color.White
+                                    )
+                                }
+                            }
+
                             // Rotate back to Portrait
                             Surface(
                                 onClick = { toggleOrientation() },
@@ -859,7 +947,7 @@ fun SessionScreen(
                                     text = statusMsg,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = Typography.bodyMedium,
-                                    color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                                    color = Color.White
                                 )
                             }
                         }
@@ -890,7 +978,7 @@ fun SessionScreen(
                                 text = statusMsg,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                 style = Typography.bodyMedium,
-                                color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                                color = Color.White
                             )
                         }
                     }
@@ -1105,7 +1193,7 @@ fun SessionScreen(
                                     text = statusMsg,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = Typography.bodyMedium,
-                                    color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                                    color = Color.White
                                 )
                             }
                         }
@@ -1136,7 +1224,7 @@ fun SessionScreen(
                                 text = statusMsg,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                 style = Typography.bodyMedium,
-                                color = if (rtcState is RtcConnectionState.Failed) Color.Red else Color.White
+                                color = Color.White
                             )
                         }
                     }
