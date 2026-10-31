@@ -132,7 +132,7 @@ class SignalingClient(
     init {
         scope.launch(Dispatchers.Default) {
             val decodeOpts = BitmapFactory.Options().apply {
-                inPreferredConfig = Bitmap.Config.RGB_565
+                inPreferredConfig = Bitmap.Config.ARGB_8888
                 inMutable = true
             }
 
@@ -168,6 +168,15 @@ class SignalingClient(
                     useA = !useA
                     frameSeq++
                     _currentFrame.value = StreamFrame(bmp, frameSeq)
+
+                    // Update real-time rendered FPS counter
+                    frameCounter++
+                    val now = System.currentTimeMillis()
+                    if (now - lastFpsTimestamp >= 1000) {
+                        _fps.value = frameCounter
+                        frameCounter = 0
+                        lastFpsTimestamp = now
+                    }
                 }
 
                 // Send 1-byte frame ACK back to host immediately upon render completion
@@ -192,15 +201,6 @@ class SignalingClient(
 
         // Deliver directly to the conflated decode pipeline
         decodeChannel.trySend(raw)
-
-        // Update real-time FPS counter
-        frameCounter++
-        val now = System.currentTimeMillis()
-        if (now - lastFpsTimestamp >= 1000) {
-            _fps.value = frameCounter
-            frameCounter = 0
-            lastFpsTimestamp = now
-        }
     }
 
     override fun onMessage(webSocket: WebSocket, text: String) {

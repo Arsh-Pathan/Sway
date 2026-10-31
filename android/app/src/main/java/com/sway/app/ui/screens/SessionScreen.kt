@@ -76,80 +76,79 @@ enum class ViewFitMode {
 
 @Composable
 private fun DesktopStreamCanvas(
-    frame: android.graphics.Bitmap?,
-    sequence: Long = 0L,
+    currentFrameFlow: kotlinx.coroutines.flow.StateFlow<com.sway.app.network.StreamFrame?>,
     fitMode: ViewFitMode = ViewFitMode.FIT,
     modifier: Modifier = Modifier
 ) {
-    if (frame != null) {
-        val paint = remember {
-            android.graphics.Paint().apply {
-                isFilterBitmap = true
-                isDither = false
+    val frameState = currentFrameFlow.collectAsState()
+    val paint = remember {
+        android.graphics.Paint().apply {
+            isFilterBitmap = true
+            isDither = false
+        }
+    }
+    val dstRect = remember { android.graphics.Rect() }
+
+    androidx.compose.foundation.Canvas(modifier = modifier.fillMaxSize()) {
+        val frameWrapper = frameState.value ?: return@Canvas
+        val frame = frameWrapper.bitmap
+        val canvasWidth = size.width
+        val canvasHeight = size.height
+
+        val imgW = frame.width.toFloat()
+        val imgH = frame.height.toFloat()
+        val streamAspect = imgW / imgH
+        val canvasAspect = canvasWidth / canvasHeight
+
+        val fitW: Float
+        val fitH: Float
+        val padX: Float
+        val padY: Float
+
+        if (fitMode == ViewFitMode.FILL) {
+            fitW = canvasWidth
+            fitH = canvasHeight
+            padX = 0f
+            padY = 0f
+        } else if (fitMode == ViewFitMode.ROTATE_90) {
+            val rotFitW: Float
+            val rotFitH: Float
+            if (canvasHeight / canvasWidth.coerceAtLeast(1f) > streamAspect) {
+                rotFitH = canvasWidth
+                rotFitW = rotFitH * streamAspect
+            } else {
+                rotFitW = canvasHeight
+                rotFitH = rotFitW / streamAspect
+            }
+            fitW = rotFitW
+            fitH = rotFitH
+            padX = (canvasWidth - fitW) / 2f
+            padY = (canvasHeight - fitH) / 2f
+        } else {
+            if (canvasAspect > streamAspect) {
+                fitH = canvasHeight
+                fitW = fitH * streamAspect
+                padX = (canvasWidth - fitW) / 2f
+                padY = 0f
+            } else {
+                fitW = canvasWidth
+                fitH = fitW / streamAspect
+                padX = 0f
+                padY = (canvasHeight - fitH) / 2f
             }
         }
-        val dstRect = remember { android.graphics.Rect() }
 
-        androidx.compose.foundation.Canvas(modifier = modifier.fillMaxSize()) {
-            val _seq = sequence // Read sequence to subscribe draw phase
-            val canvasWidth = size.width
-            val canvasHeight = size.height
+        dstRect.set(padX.toInt(), padY.toInt(), (padX + fitW).toInt(), (padY + fitH).toInt())
 
-            val imgW = frame.width.toFloat()
-            val imgH = frame.height.toFloat()
-            val streamAspect = imgW / imgH
-            val canvasAspect = canvasWidth / canvasHeight
-
-            val fitW: Float
-            val fitH: Float
-            val padX: Float
-            val padY: Float
-
-            if (fitMode == ViewFitMode.FILL) {
-                fitW = canvasWidth
-                fitH = canvasHeight
-                padX = 0f
-                padY = 0f
-            } else if (fitMode == ViewFitMode.ROTATE_90) {
-                val rotFitW: Float
-                val rotFitH: Float
-                if (canvasHeight / canvasWidth.coerceAtLeast(1f) > streamAspect) {
-                    rotFitH = canvasWidth
-                    rotFitW = rotFitH * streamAspect
-                } else {
-                    rotFitW = canvasHeight
-                    rotFitH = rotFitW / streamAspect
-                }
-                fitW = rotFitW
-                fitH = rotFitH
-                padX = (canvasWidth - fitW) / 2f
-                padY = (canvasHeight - fitH) / 2f
+        drawIntoCanvas { canvas ->
+            val nativeCanvas = canvas.nativeCanvas
+            if (fitMode == ViewFitMode.ROTATE_90) {
+                nativeCanvas.save()
+                nativeCanvas.rotate(90f, canvasWidth / 2f, canvasHeight / 2f)
+                nativeCanvas.drawBitmap(frame, null, dstRect, paint)
+                nativeCanvas.restore()
             } else {
-                if (canvasAspect > streamAspect) {
-                    fitH = canvasHeight
-                    fitW = fitH * streamAspect
-                    padX = (canvasWidth - fitW) / 2f
-                    padY = 0f
-                } else {
-                    fitW = canvasWidth
-                    fitH = fitW / streamAspect
-                    padX = 0f
-                    padY = (canvasHeight - fitH) / 2f
-                }
-            }
-
-            dstRect.set(padX.toInt(), padY.toInt(), (padX + fitW).toInt(), (padY + fitH).toInt())
-
-            drawIntoCanvas { canvas ->
-                val nativeCanvas = canvas.nativeCanvas
-                if (fitMode == ViewFitMode.ROTATE_90) {
-                    nativeCanvas.save()
-                    nativeCanvas.rotate(90f, canvasWidth / 2f, canvasHeight / 2f)
-                    nativeCanvas.drawBitmap(frame, null, dstRect, paint)
-                    nativeCanvas.restore()
-                } else {
-                    nativeCanvas.drawBitmap(frame, null, dstRect, paint)
-                }
+                nativeCanvas.drawBitmap(frame, null, dstRect, paint)
             }
         }
     }
@@ -167,9 +166,9 @@ private fun DesktopStreamView(
     onZoomChange: (Float, Float, Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val frameWrapper by webRtcManager.currentFrame.collectAsState()
-    val frame = frameWrapper?.bitmap
-    val sequence = frameWrapper?.sequence ?: 0L
+    val hasFrame by remember {
+        derivedStateOf { webRtcManager.currentFrame.value != null }
+    }
 
     Box(
         modifier = modifier
@@ -234,7 +233,7 @@ private fun DesktopStreamView(
                 }
             }
     ) {
-        if (frame != null) {
+        if (hasFrame) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -245,7 +244,7 @@ private fun DesktopStreamView(
                         translationY = zoomOffsetY
                     )
             ) {
-                DesktopStreamCanvas(frame = frame, sequence = sequence, fitMode = fitMode)
+                DesktopStreamCanvas(currentFrameFlow = webRtcManager.currentFrame, fitMode = fitMode)
             }
         } else {
             Surface(

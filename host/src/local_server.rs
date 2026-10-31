@@ -326,9 +326,7 @@ impl LocalServer {
                     let is_connected = Arc::new(AtomicBool::new(true));
                     let is_streaming = Arc::new(AtomicBool::new(true));
                     let active_monitor = Arc::new(AtomicUsize::new(0));
-                    let stream_quality = Arc::new(AtomicU8::new(50));
-                    let client_ack = Arc::new(AtomicBool::new(true));
-                    let last_ack_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+                    let stream_quality = Arc::new(AtomicU8::new(45));
                     let is_audio_streaming = Arc::new(AtomicBool::new(false));
                     let audio_handle: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(std::sync::Mutex::new(None));
 
@@ -338,8 +336,6 @@ impl LocalServer {
                     let monitor_flag = active_monitor.clone();
                     let quality_flag = stream_quality.clone();
                     let ft_tx = frame_tx.clone();
-                    let client_ack_flag = client_ack.clone();
-                    let last_ack_ref = last_ack_time.clone();
 
                     let capture_handle = tokio::task::spawn_blocking(move || {
                         let mut capture = ScreenCapture::new();
@@ -356,36 +352,18 @@ impl LocalServer {
                             let q = quality_flag.load(Ordering::Relaxed);
 
                             let target_interval = match q {
-                                40..=45 => std::time::Duration::from_millis(16), // ~60 FPS Turbo Mode
-                                70..=100 => std::time::Duration::from_millis(33), // ~30 FPS Fidelity Mode
-                                _ => std::time::Duration::from_millis(16),        // ~60 FPS Smooth Real-Time
+                                1..=50 => std::time::Duration::from_millis(16),  // ~60 FPS Butter-smooth Real-time
+                                51..=70 => std::time::Duration::from_millis(22), // ~45 FPS Balanced HD
+                                _ => std::time::Duration::from_millis(33),       // ~30 FPS High Fidelity
                             };
 
-                            // Zero-Bufferbloat Flow Control:
-                            // Never pump frames into TCP buffers faster than client renders them.
-                            // If client acknowledged the previous frame OR 25ms watchdog elapsed (prevents stalls on dropped packets),
-                            // capture and send the absolute freshest desktop frame.
-                            let is_ready = client_ack_flag.load(Ordering::Relaxed) || {
-                                if let Ok(guard) = last_ack_ref.lock() {
-                                    guard.elapsed() >= std::time::Duration::from_millis(25)
-                                } else {
-                                    true
-                                }
-                            };
-
-                            if is_ready {
-                                if let Some(frame) = capture.capture_frame_jpeg(q) {
-                                    client_ack_flag.store(false, Ordering::Relaxed);
-                                    if let Ok(mut guard) = last_ack_ref.lock() {
-                                        *guard = std::time::Instant::now();
+                            if let Some(frame) = capture.capture_frame_jpeg(q) {
+                                match ft_tx.try_send(Message::Binary(frame)) {
+                                    Ok(_) => {}
+                                    Err(mpsc::error::TrySendError::Full(_)) => {
+                                        // Channel has pending unsent frame: drop intermediate frame to guarantee ZERO lag
                                     }
-                                    match ft_tx.try_send(Message::Binary(frame)) {
-                                        Ok(_) => {}
-                                        Err(mpsc::error::TrySendError::Full(_)) => {
-                                            client_ack_flag.store(true, Ordering::Relaxed);
-                                        }
-                                        Err(mpsc::error::TrySendError::Closed(_)) => break,
-                                    }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => break,
                                 }
                             }
 
@@ -401,11 +379,7 @@ impl LocalServer {
                         match msg {
                             Ok(Message::Binary(bin)) => {
                                 if bin.len() == 1 && bin[0] == 0xAA {
-                                    // Client frame acknowledgment - unblocks next real-time frame immediately
-                                    client_ack.store(true, Ordering::Relaxed);
-                                    if let Ok(mut guard) = last_ack_time.lock() {
-                                        *guard = std::time::Instant::now();
-                                    }
+                                    // Client frame acknowledgment heartbeat
                                     continue;
                                 }
 
@@ -416,9 +390,9 @@ impl LocalServer {
                                         }
                                         InputPacket::SetQuality { mode } => {
                                             let q = match mode {
-                                                0 => 50, // Mobile data saving
-                                                1 => 80, // Balanced crisp HD
-                                                _ => 92, // High Fidelity / Ultra crisp
+                                                0 => 45, // Mobile 60 FPS smooth
+                                                1 => 65, // Balanced crisp HD
+                                                _ => 80, // High Fidelity
                                             };
                                             stream_quality.store(q, Ordering::SeqCst);
                                         }
@@ -434,9 +408,6 @@ impl LocalServer {
                                         InputPacket::SetStreaming { enabled } => {
                                             info!("Client requested screen streaming: {}", enabled);
                                             is_streaming.store(*enabled, Ordering::SeqCst);
-                                            if *enabled {
-                                                client_ack.store(true, Ordering::Relaxed);
-                                            }
                                         }
                                         InputPacket::SetAudioConfig { speaker_enabled, mic_enabled } => {
                                             info!("Audio config updated: speaker={}, mic={}", speaker_enabled, mic_enabled);
@@ -469,10 +440,6 @@ impl LocalServer {
                             }
                             Ok(Message::Text(t)) => {
                                 if t.contains("\"ack\"") {
-                                    client_ack.store(true, Ordering::Relaxed);
-                                    if let Ok(mut guard) = last_ack_time.lock() {
-                                        *guard = std::time::Instant::now();
-                                    }
                                     continue;
                                 }
                                 if t.contains("\"ping\"") {
