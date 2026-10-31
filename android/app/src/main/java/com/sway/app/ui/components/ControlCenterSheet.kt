@@ -155,9 +155,9 @@ fun ControlCenterSheet(
                 )
                 PresetCard(
                     title = "Code & Reading",
-                    subtitle = "Crisp Text · Touch",
+                    subtitle = "Crisp Text · Native HD",
                     icon = Icons.Default.MenuBook,
-                    isSelected = currentQuality == 2 && controlMode == ControlMode.TOUCH_SCREEN,
+                    isSelected = currentQuality == 2 && controlMode != ControlMode.DECK,
                     onClick = { onApplyPreset(QuickPreset.CODE_REVIEW) }
                 )
                 PresetCard(

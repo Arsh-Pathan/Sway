@@ -62,7 +62,6 @@ import org.webrtc.SurfaceViewRenderer
 
 enum class ControlMode {
     TRACKPAD,
-    TOUCH_SCREEN,
     DECK
 }
 
@@ -70,88 +69,6 @@ enum class ViewFitMode {
     FIT,
     FILL,
     ROTATE_90
-}
-
-private fun mapTouchToNormalized(
-    touchX: Float,
-    touchY: Float,
-    boxWidth: Float,
-    boxHeight: Float,
-    frameWidth: Int?,
-    frameHeight: Int?,
-    isVerticalPc: Boolean,
-    scale: Float,
-    offsetX: Float,
-    offsetY: Float,
-    fitMode: ViewFitMode = ViewFitMode.FIT
-): Pair<Int, Int>? {
-    val fw = (frameWidth ?: if (isVerticalPc) 1080 else 1920).toFloat().coerceAtLeast(1f)
-    val fh = (frameHeight ?: if (isVerticalPc) 1920 else 1080).toFloat().coerceAtLeast(1f)
-
-    // Invert zoom & pan from the center of the container
-    val unzoomedX = (touchX - boxWidth / 2f - offsetX) / scale + boxWidth / 2f
-    val unzoomedY = (touchY - boxHeight / 2f - offsetY) / scale + boxHeight / 2f
-
-    if (fitMode == ViewFitMode.FILL) {
-        val normX = ((unzoomedX / boxWidth.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
-        val normY = ((unzoomedY / boxHeight.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
-        return Pair(normX, normY)
-    }
-
-    if (fitMode == ViewFitMode.ROTATE_90) {
-        val streamAspect = fw / fh
-        val rotFitW: Float
-        val rotFitH: Float
-        if (boxHeight / boxWidth.coerceAtLeast(1f) > streamAspect) {
-            rotFitH = boxWidth
-            rotFitW = rotFitH * streamAspect
-        } else {
-            rotFitW = boxHeight
-            rotFitH = rotFitW / streamAspect
-        }
-
-        val cx = boxWidth / 2f
-        val cy = boxHeight / 2f
-        val preRotX = cx + (unzoomedY - cy)
-        val preRotY = cy - (unzoomedX - cx)
-
-        val padX = (boxWidth - rotFitW) / 2f
-        val padY = (boxHeight - rotFitH) / 2f
-
-        val contentX = (preRotX - padX).coerceIn(0f, rotFitW)
-        val contentY = (preRotY - padY).coerceIn(0f, rotFitH)
-
-        val origNormX = ((contentX / rotFitW.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
-        val origNormY = ((contentY / rotFitH.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
-        return Pair(origNormX, origNormY)
-    }
-
-    val streamAspect = fw / fh
-    val boxAspect = boxWidth / boxHeight.coerceAtLeast(1f)
-
-    val fitW: Float
-    val fitH: Float
-    val padX: Float
-    val padY: Float
-
-    if (boxAspect > streamAspect) {
-        fitH = boxHeight
-        fitW = fitH * streamAspect
-        padX = (boxWidth - fitW) / 2f
-        padY = 0f
-    } else {
-        fitW = boxWidth
-        fitH = fitW / streamAspect
-        padX = 0f
-        padY = (boxHeight - fitH) / 2f
-    }
-
-    val contentX = (unzoomedX - padX).coerceIn(0f, fitW)
-    val contentY = (unzoomedY - padY).coerceIn(0f, fitH)
-
-    val normX = ((contentX / fitW.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
-    val normY = ((contentY / fitH.coerceAtLeast(1f)) * 65535f).toInt().coerceIn(0, 65535)
-    return Pair(normX, normY)
 }
 
 @Composable
@@ -236,43 +153,20 @@ private fun DesktopStreamView(
     frame: android.graphics.Bitmap?,
     sequence: Long,
     fitMode: ViewFitMode,
-    controlMode: ControlMode,
     zoomScale: Float,
     zoomOffsetX: Float,
     zoomOffsetY: Float,
     isVerticalPc: Boolean,
     onZoomChange: (Float, Float, Float) -> Unit,
-    onInputEvent: (InputEvent) -> Unit,
-    onRequestKeyboard: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(controlMode, zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPc, frame, fitMode) {
-                var lastTapTime = 0L
+            .pointerInput(zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPc, frame, fitMode) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position
-                    val downTime = System.currentTimeMillis()
-                    var hasDragged = false
-                    val touchSlop = 16f
-                    val pointerId = down.id
-
-                    val initialPt = mapTouchToNormalized(
-                        down.position.x, down.position.y,
-                        size.width.toFloat(), size.height.toFloat(),
-                        frame?.width, frame?.height,
-                        isVerticalPc, zoomScale, zoomOffsetX, zoomOffsetY,
-                        fitMode
-                    )
-
-                    if (controlMode == ControlMode.TOUCH_SCREEN && zoomScale <= 1.05f) {
-                        if (initialPt != null) {
-                            onInputEvent(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_DOWN))
-                        }
-                    }
-
                     var prevPointers = listOf(down)
                     var currentScale = zoomScale
                     var currentOffsetX = zoomOffsetX
@@ -283,30 +177,6 @@ private fun DesktopStreamView(
                         val pressedPointers = event.changes.filter { it.pressed }
 
                         if (pressedPointers.isEmpty()) {
-                            // All fingers lifted
-                            if (controlMode == ControlMode.TOUCH_SCREEN && zoomScale <= 1.05f) {
-                                if (!hasDragged) {
-                                    if (initialPt != null) {
-                                        onInputEvent(InputEvent.TouchDirect(initialPt.first, initialPt.second, InputEvent.TouchDirect.ACTION_UP))
-                                    }
-                                } else {
-                                    val lastChange = event.changes.firstOrNull { it.id == pointerId } ?: event.changes.firstOrNull()
-                                    if (lastChange != null) {
-                                        val curPt = mapTouchToNormalized(
-                                            lastChange.position.x, lastChange.position.y,
-                                            size.width.toFloat(), size.height.toFloat(),
-                                            frame?.width, frame?.height,
-                                            isVerticalPc, zoomScale, zoomOffsetX, zoomOffsetY,
-                                            fitMode
-                                        )
-                                        if (curPt != null) {
-                                            onInputEvent(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_UP))
-                                        }
-                                    }
-                                }
-                                // Clean single/double touch direct click without accidental keyboard popup
-                                lastTapTime = System.currentTimeMillis()
-                            }
                             break
                         }
 
@@ -337,7 +207,6 @@ private fun DesktopStreamView(
                             for (p in pressedPointers) p.consume()
                         } else if (pressedPointers.size == 1) {
                             val current = pressedPointers[0]
-                            val dist = (current.position - downPos).getDistance()
 
                             if (zoomScale > 1.05f) {
                                 // Viewport panning when zoomed in
@@ -346,22 +215,6 @@ private fun DesktopStreamView(
                                 currentOffsetX += pan.x
                                 currentOffsetY += pan.y
                                 onZoomChange(currentScale, currentOffsetX, currentOffsetY)
-                                current.consume()
-                            } else if (controlMode == ControlMode.TOUCH_SCREEN) {
-                                // 1:1 direct touch input
-                                if (dist > touchSlop) {
-                                    hasDragged = true
-                                    val curPt = mapTouchToNormalized(
-                                        current.position.x, current.position.y,
-                                        size.width.toFloat(), size.height.toFloat(),
-                                        frame?.width, frame?.height,
-                                        isVerticalPc, zoomScale, zoomOffsetX, zoomOffsetY,
-                                        fitMode
-                                    )
-                                    if (curPt != null) {
-                                        onInputEvent(InputEvent.TouchDirect(curPt.first, curPt.second, InputEvent.TouchDirect.ACTION_MOVE))
-                                    }
-                                }
                                 current.consume()
                             }
                         }
@@ -510,10 +363,10 @@ fun SessionScreen(
         zoomOffsetX = 0f
         zoomOffsetY = 0f
         if (isVerticalPcMode) {
-            controlMode = ControlMode.TOUCH_SCREEN
+            controlMode = ControlMode.TRACKPAD
             viewFitMode = ViewFitMode.FILL // Full screen fill, larger scale matching phone screen
             isPanelHidden = true           // Automatically fullscreen with zero black bars
-            Toast.makeText(context, "Vertical PC: Fullscreen Touch Active", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Vertical PC: Fullscreen Active", Toast.LENGTH_SHORT).show()
         } else {
             controlMode = ControlMode.TRACKPAD
             viewFitMode = ViewFitMode.FIT
@@ -537,7 +390,7 @@ fun SessionScreen(
                 Toast.makeText(context, "Preset: Productivity Active", Toast.LENGTH_SHORT).show()
             }
             QuickPreset.CINEMA_MEDIA -> {
-                controlMode = ControlMode.TOUCH_SCREEN
+                controlMode = ControlMode.TRACKPAD
                 currentQuality = InputEvent.SetQuality.NATIVE
                 webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
                 viewFitMode = ViewFitMode.FILL
@@ -558,7 +411,7 @@ fun SessionScreen(
                 Toast.makeText(context, "Preset: Pure Control Deck (1ms Latency)", Toast.LENGTH_SHORT).show()
             }
             QuickPreset.CODE_REVIEW -> {
-                controlMode = ControlMode.TOUCH_SCREEN
+                controlMode = ControlMode.TRACKPAD
                 currentQuality = InputEvent.SetQuality.NATIVE
                 webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
                 viewFitMode = ViewFitMode.FIT
@@ -636,7 +489,6 @@ fun SessionScreen(
                             frame = currentFrame,
                             sequence = currentSequence,
                             fitMode = viewFitMode,
-                            controlMode = controlMode,
                             zoomScale = zoomScale,
                             zoomOffsetX = zoomOffsetX,
                             zoomOffsetY = zoomOffsetY,
@@ -645,11 +497,6 @@ fun SessionScreen(
                                 zoomScale = z
                                 zoomOffsetX = ox
                                 zoomOffsetY = oy
-                            },
-                            onInputEvent = { webRtcManager.sendInput(it) },
-                            onRequestKeyboard = {
-                                focusRequester.requestFocus()
-                                keyboardController?.show()
                             }
                         )
                     } else {
@@ -913,7 +760,6 @@ fun SessionScreen(
                                 frame = currentFrame,
                                 sequence = currentSequence,
                                 fitMode = viewFitMode,
-                                controlMode = controlMode,
                                 zoomScale = zoomScale,
                                 zoomOffsetX = zoomOffsetX,
                                 zoomOffsetY = zoomOffsetY,
@@ -922,11 +768,6 @@ fun SessionScreen(
                                     zoomScale = z
                                     zoomOffsetX = ox
                                     zoomOffsetY = oy
-                                },
-                                onInputEvent = { webRtcManager.sendInput(it) },
-                                onRequestKeyboard = {
-                                    focusRequester.requestFocus()
-                                    keyboardController?.show()
                                 }
                             )
                         } else {
@@ -1157,7 +998,6 @@ fun SessionScreen(
                                 frame = currentFrame,
                                 sequence = currentSequence,
                                 fitMode = viewFitMode,
-                                controlMode = controlMode,
                                 zoomScale = zoomScale,
                                 zoomOffsetX = zoomOffsetX,
                                 zoomOffsetY = zoomOffsetY,
@@ -1166,11 +1006,6 @@ fun SessionScreen(
                                     zoomScale = z
                                     zoomOffsetX = ox
                                     zoomOffsetY = oy
-                                },
-                                onInputEvent = { webRtcManager.sendInput(it) },
-                                onRequestKeyboard = {
-                                    focusRequester.requestFocus()
-                                    keyboardController?.show()
                                 }
                             )
                         } else {
