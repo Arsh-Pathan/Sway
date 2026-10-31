@@ -114,8 +114,9 @@ func (h *Hub) handleDisconnect(client *Client) {
 			}
 		}
 
-		// If no more mobile clients remain for this host, notify host
+		// If no more mobile clients remain for this host, notify host and clean up map entry
 		if len(h.clients[client.deviceID]) == 0 {
+			delete(h.clients, client.deviceID)
 			if host, exists := h.hosts[client.deviceID]; exists {
 				notifyHost, _ := json.Marshal(SignalingMessage{
 					Type:     TypeStatus,

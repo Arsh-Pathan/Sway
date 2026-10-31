@@ -115,7 +115,13 @@ fun PairingScreen(
     LaunchedEffect(discoveredHost) {
         discoveredHost?.let { host ->
             deviceId = host.deviceId
-            token = host.token
+            val savedDevId = prefs.getString("saved_device_id", null)
+            val savedToken = prefs.getString("saved_token", null)
+            if (host.token.isNotEmpty()) {
+                token = host.token
+            } else if (savedDevId == host.deviceId && !savedToken.isNullOrEmpty()) {
+                token = savedToken
+            }
             signalingUrl = "${host.ipAddress}:${host.port}"
         }
     }

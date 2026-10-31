@@ -237,27 +237,33 @@ impl LocalServer {
                         }
                     });
 
-                    // Authenticate client handshake if join message is sent
-                    let auth_timeout = std::time::Duration::from_secs(4);
-                    let mut initial_packet = None;
+                    // Authenticate client handshake: client MUST send a valid `join` message with the correct token within auth_timeout
+                    let auth_timeout = std::time::Duration::from_secs(5);
+                    let mut authenticated = false;
 
-                    let authenticated = match tokio::time::timeout(auth_timeout, read.next()).await {
+                    match tokio::time::timeout(auth_timeout, read.next()).await {
                         Ok(Some(Ok(Message::Text(t)))) => {
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&t) {
                                 let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
                                 if msg_type == "join" {
                                     let client_token = val.get("token").and_then(|v| v.as_str()).unwrap_or("");
                                     let client_device = val.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
-                                    if client_token == expected_token && (client_device == expected_device_id || client_device.is_empty()) {
+
+                                    use subtle::ConstantTimeEq;
+                                    let token_matches: bool = client_token.as_bytes().ct_eq(expected_token.as_bytes()).into();
+                                    let device_matches: bool = client_device.is_empty()
+                                        || client_device.as_bytes().ct_eq(expected_device_id.as_bytes()).into();
+
+                                    if token_matches && device_matches {
                                         info!("Local client at {} authenticated successfully", peer_addr);
                                         let paired_resp = serde_json::json!({
                                             "type": "status",
                                             "payload": "paired"
                                         });
                                         let _ = ctrl_tx.send(Message::Text(paired_resp.to_string())).await;
-                                        true
+                                        authenticated = true;
                                     } else {
-                                        warn!("Local client at {} sent invalid token. Rejecting.", peer_addr);
+                                        warn!("Local client at {} sent invalid token/deviceId. Rejecting.", peer_addr);
                                         let err_resp = serde_json::json!({
                                             "type": "error",
                                             "error": "Authentication failed: invalid token"
@@ -267,37 +273,30 @@ impl LocalServer {
                                         writer_handle.abort();
                                         return;
                                     }
-                                } else if msg_type == "ping" {
-                                    let pong = serde_json::json!({"type": "pong"});
-                                    let _ = ctrl_tx.send(Message::Text(pong.to_string())).await;
-                                    true
                                 } else {
-                                    true
+                                    warn!("Local client at {} sent non-join message '{}' before authenticating. Rejecting.", peer_addr, msg_type);
                                 }
                             } else {
-                                true
+                                warn!("Local client at {} sent invalid JSON during handshake. Rejecting.", peer_addr);
                             }
                         }
-                        Ok(Some(Ok(Message::Binary(bin)))) => {
-                            initial_packet = Some(bin);
-                            true
+                        Ok(Some(Ok(other))) => {
+                            warn!("Local client at {} sent unexpected message {:?} before authenticating. Rejecting.", peer_addr, other);
                         }
-                        Ok(Some(Ok(Message::Ping(p)))) => {
-                            let _ = ctrl_tx.send(Message::Pong(p)).await;
-                            true
+                        Ok(Some(Err(e))) => {
+                            warn!("Local client at {} connection error during handshake: {}. Rejecting.", peer_addr, e);
                         }
-                        _ => true,
-                    };
+                        Ok(None) => {
+                            warn!("Local client at {} disconnected before sending authentication handshake.", peer_addr);
+                        }
+                        Err(_) => {
+                            warn!("Local client at {} timed out waiting for authentication handshake.", peer_addr);
+                        }
+                    }
 
                     if !authenticated {
                         writer_handle.abort();
                         return;
-                    }
-
-                    if let Some(bin) = initial_packet {
-                        if let Ok(pkt) = InputPacket::parse(&bin) {
-                            sim.dispatch(pkt);
-                        }
                     }
 
                     let is_connected = Arc::new(AtomicBool::new(true));

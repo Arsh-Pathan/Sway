@@ -438,9 +438,7 @@ impl InputSimulator {
                         || dm.dmPelsWidth < dm.dmPelsHeight;
 
                     if vertical && !is_already_vertical {
-                        let temp = dm.dmPelsWidth;
-                        dm.dmPelsWidth = dm.dmPelsHeight;
-                        dm.dmPelsHeight = temp;
+                        std::mem::swap(&mut dm.dmPelsWidth, &mut dm.dmPelsHeight);
                         dm.Anonymous1.Anonymous2.dmDisplayOrientation = DMDO_90;
                         dm.dmFields |= DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT;
                         let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_UPDATEREGISTRY, None);
@@ -449,9 +447,7 @@ impl InputSimulator {
                         }
                         info!("Rotated display to vertical portrait");
                     } else if !vertical && is_already_vertical {
-                        let temp = dm.dmPelsWidth;
-                        dm.dmPelsWidth = dm.dmPelsHeight;
-                        dm.dmPelsHeight = temp;
+                        std::mem::swap(&mut dm.dmPelsWidth, &mut dm.dmPelsHeight);
                         dm.Anonymous1.Anonymous2.dmDisplayOrientation = DMDO_DEFAULT;
                         dm.dmFields |= DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT;
                         let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_UPDATEREGISTRY, None);

@@ -15,7 +15,7 @@ import java.net.InetAddress
 data class DiscoveredHost(
     val name: String,
     val deviceId: String,
-    val token: String,
+    val token: String = "",
     val port: Int,
     val ipAddress: String
 )
@@ -107,7 +107,7 @@ class NetworkDiscovery {
 private data class DiscoveredHostJson(
     val name: String,
     val deviceId: String,
-    val token: String,
+    val token: String = "",
     val port: Int,
     val ip: String? = null
 )

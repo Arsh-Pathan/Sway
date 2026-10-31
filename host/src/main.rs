@@ -26,6 +26,8 @@ pub struct HostConfig {
     pub device_id: String,
     pub token: String,
     pub local_port: u16,
+    #[serde(default)]
+    pub pin: Option<String>,
 }
 
 impl HostConfig {
@@ -62,6 +64,12 @@ impl HostConfig {
         if let Ok(t) = env::var("SWAY_TOKEN") {
             config.token = t;
         }
+        if let Ok(p) = env::var("SWAY_PIN") {
+            config.pin = Some(p);
+        }
+        if config.pin.is_none() {
+            config.pin = Some("1234".to_string());
+        }
         if let Ok(p) = env::var("SWAY_LOCAL_PORT") {
             if let Ok(port) = p.parse::<u16>() {
                 config.local_port = port;
@@ -77,6 +85,7 @@ impl HostConfig {
             device_id: format!("sway-laptop-{}", &Uuid::new_v4().to_string()[..8]),
             token: Uuid::new_v4().to_string()[..12].to_string(),
             local_port: 8089,
+            pin: Some("1234".to_string()),
         }
     }
 }
@@ -109,8 +118,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let capture = ScreenCapture::new();
     info!("Initialized capture for {} display(s)", capture.monitors.len());
 
-    // Initialize privacy curtain manager
-    let privacy = Arc::new(PrivacyCurtain::new());
+    // Initialize privacy curtain manager with laptop PIN and token
+    let pin = config.pin.clone().unwrap_or_else(|| "1234".to_string());
+    let privacy = Arc::new(PrivacyCurtain::new(pin, token.clone()));
 
     // Initialize signaling manager
     let host = Arc::new(HostSignaling::new(signaling_url, device_id.clone(), token.clone(), privacy.clone()));

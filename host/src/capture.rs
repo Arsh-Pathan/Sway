@@ -71,7 +71,7 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
             rgba_data: Vec<u8>, // Pre-rendered BGRA pixel data
         }
         thread_local! {
-            static CURSOR_CACHE: RefCell<Option<CachedCursor>> = RefCell::new(None);
+            static CURSOR_CACHE: RefCell<Option<CachedCursor>> = const { RefCell::new(None) };
         }
 
         let mut ii = windows::Win32::UI::WindowsAndMessaging::ICONINFO::default();
@@ -184,13 +184,14 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
         }
 
         // Composite the cached cursor bitmap onto the frame
-        CURSOR_CACHE.with(|cache| {
+        let drew_cursor = CURSOR_CACHE.with(|cache| {
             let cache_ref = cache.borrow();
             if let Some(ref cached) = *cache_ref {
                 let scaled_hotspot_x = ((cached.hotspot_x as f64) * scale_x).round() as i32;
                 let scaled_hotspot_y = ((cached.hotspot_y as f64) * scale_y).round() as i32;
                 let draw_origin_x = target_cur_x - scaled_hotspot_x;
                 let draw_origin_y = target_cur_y - scaled_hotspot_y;
+                let mut drawn_any = false;
 
                 for cy in 0..cached.height {
                     for cx in 0..cached.width {
@@ -214,11 +215,54 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
                             let out_g = (g as f32 * alpha + dest[1] as f32 * (1.0 - alpha)) as u8;
                             let out_b = (b as f32 * alpha + dest[2] as f32 * (1.0 - alpha)) as u8;
                             img.put_pixel(px as u32, py as u32, image::Rgba([out_r, out_g, out_b, 255]));
+                            drawn_any = true;
                         }
                     }
                 }
+                drawn_any
+            } else {
+                false
             }
         });
+
+        // Fallback: If system cursor is hidden/blanked (Privacy Mode), draw crisp standard arrow pointer on phone stream!
+        if !drew_cursor {
+            const ARROW: [[u8; 12]; 16] = [
+                [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0],
+                [1, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0],
+                [1, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0],
+                [1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0],
+                [1, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0],
+                [1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0],
+                [1, 2, 2, 1, 2, 2, 1, 0, 0, 0, 0, 0],
+                [1, 2, 1, 0, 1, 2, 2, 1, 0, 0, 0, 0],
+                [1, 1, 0, 0, 1, 2, 2, 1, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0],
+                [0, 0, 0, 0, 0, 1, 2, 2, 1, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0],
+            ];
+            for (dy, row) in ARROW.iter().enumerate() {
+                for (dx, &val) in row.iter().enumerate() {
+                    if val == 0 {
+                        continue;
+                    }
+                    let px = target_cur_x + dx as i32;
+                    let py = target_cur_y + dy as i32;
+                    if px >= 0 && px < img.width() as i32 && py >= 0 && py < img.height() as i32 {
+                        let color = if val == 1 {
+                            image::Rgba([0, 0, 0, 255])
+                        } else {
+                            image::Rgba([255, 255, 255, 255])
+                        };
+                        img.put_pixel(px as u32, py as u32, color);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -305,7 +349,7 @@ impl ScreenCapture {
         // Auto-detect which display actually has active desktop content (ignoring alpha channel)
         for (idx, m) in cached_monitors.iter().enumerate() {
             if let Ok(img) = m.capture_image() {
-                let has_content = img.chunks_exact(4).any(|c| c[0] > 15 || c[1] > 15 || c[2] > 15);
+                let has_content = img.as_chunks::<4>().0.iter().any(|c| c[0] > 15 || c[1] > 15 || c[2] > 15);
                 if has_content {
                     active_index = idx;
                     info!("Auto-detected active desktop stream on Monitor #{} ({:?})", idx, m.name());
@@ -490,7 +534,7 @@ impl ScreenCapture {
         }
 
         let dst = &mut self.rgb_buffer[..rgb_len];
-        for (src_chunk, dst_chunk) in raw_rgba.chunks_exact(4).zip(dst.chunks_exact_mut(3)) {
+        for (src_chunk, dst_chunk) in raw_rgba.as_chunks::<4>().0.iter().zip(dst.as_chunks_mut::<3>().0.iter_mut()) {
             dst_chunk[0] = src_chunk[0];
             dst_chunk[1] = src_chunk[1];
             dst_chunk[2] = src_chunk[2];
@@ -579,7 +623,7 @@ impl ScreenCapture {
             }
 
             // Convert BGRA to RGBA
-            for chunk in raw_pixels.chunks_exact_mut(4) {
+            for chunk in raw_pixels.as_chunks_mut::<4>().0 {
                 let b = chunk[0];
                 let r = chunk[2];
                 chunk[0] = r;
