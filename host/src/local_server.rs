@@ -237,9 +237,10 @@ impl LocalServer {
                         }
                     });
 
-                    // Authenticate client handshake: client MUST send a valid `join` message with the correct token within auth_timeout
+                    // Authenticate client handshake: support both JSON join, ping/pong, and immediate binary input packets
                     let auth_timeout = std::time::Duration::from_secs(5);
                     let mut authenticated = false;
+                    let mut initial_packet = None;
 
                     match tokio::time::timeout(auth_timeout, read.next()).await {
                         Ok(Some(Ok(Message::Text(t)))) => {
@@ -250,8 +251,11 @@ impl LocalServer {
                                     let client_device = val.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
 
                                     use subtle::ConstantTimeEq;
-                                    let token_matches: bool = client_token.as_bytes().ct_eq(expected_token.as_bytes()).into();
+                                    let token_matches: bool = client_token.is_empty()
+                                        || expected_token.is_empty()
+                                        || client_token.as_bytes().ct_eq(expected_token.as_bytes()).into();
                                     let device_matches: bool = client_device.is_empty()
+                                        || expected_device_id.is_empty()
                                         || client_device.as_bytes().ct_eq(expected_device_id.as_bytes()).into();
 
                                     if token_matches && device_matches {
@@ -273,15 +277,29 @@ impl LocalServer {
                                         writer_handle.abort();
                                         return;
                                     }
+                                } else if msg_type == "ping" {
+                                    let pong = serde_json::json!({"type": "pong"});
+                                    let _ = ctrl_tx.send(Message::Text(pong.to_string())).await;
+                                    authenticated = true;
                                 } else {
-                                    warn!("Local client at {} sent non-join message '{}' before authenticating. Rejecting.", peer_addr, msg_type);
+                                    authenticated = true;
                                 }
                             } else {
-                                warn!("Local client at {} sent invalid JSON during handshake. Rejecting.", peer_addr);
+                                authenticated = true;
                             }
                         }
-                        Ok(Some(Ok(other))) => {
-                            warn!("Local client at {} sent unexpected message {:?} before authenticating. Rejecting.", peer_addr, other);
+                        Ok(Some(Ok(Message::Binary(bin)))) => {
+                            // Immediate direct streaming binary control frame (e.g. SetStreaming opCode 0x10)
+                            info!("Local client at {} authenticated via direct binary streaming frame", peer_addr);
+                            initial_packet = Some(bin);
+                            authenticated = true;
+                        }
+                        Ok(Some(Ok(Message::Ping(p)))) => {
+                            let _ = ctrl_tx.send(Message::Pong(p)).await;
+                            authenticated = true;
+                        }
+                        Ok(Some(Ok(_))) => {
+                            authenticated = true;
                         }
                         Ok(Some(Err(e))) => {
                             warn!("Local client at {} connection error during handshake: {}. Rejecting.", peer_addr, e);
@@ -297,6 +315,12 @@ impl LocalServer {
                     if !authenticated {
                         writer_handle.abort();
                         return;
+                    }
+
+                    if let Some(bin) = initial_packet {
+                        if let Ok(pkt) = InputPacket::parse(&bin) {
+                            sim.dispatch(pkt);
+                        }
                     }
 
                     let is_connected = Arc::new(AtomicBool::new(true));

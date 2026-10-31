@@ -196,7 +196,14 @@ fun PairingScreen(
                     }
                     Button(
                         onClick = {
-                            connectAndSave("${host.ipAddress}:${host.port}", host.deviceId, host.token)
+                            val tokenToUse = if (host.token.isNotEmpty()) {
+                                host.token
+                            } else if (token.isNotEmpty()) {
+                                token
+                            } else {
+                                prefs.getString("saved_token", "") ?: ""
+                            }
+                            connectAndSave("${host.ipAddress}:${host.port}", host.deviceId, tokenToUse)
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = androidx.compose.ui.graphics.Color.White,
@@ -379,7 +386,7 @@ fun PairingScreen(
                             discoveredHost?.let {
                                 signalingUrl = "${it.ipAddress}:${it.port}"
                                 deviceId = it.deviceId
-                                token = it.token
+                                token = if (it.token.isNotEmpty()) it.token else token
                             } ?: run {
                                 signalingUrl = "192.168.11.229:8089"
                             }

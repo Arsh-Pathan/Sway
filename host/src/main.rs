@@ -138,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Start UDP auto-discovery service on port 8088
-    DiscoveryService::start(device_id.clone(), local_port);
+    DiscoveryService::start(device_id.clone(), local_port, token.clone());
 
     // Spawn signaling background worker with automatic reconnection
     let host_signaling = host.clone();

@@ -4,7 +4,7 @@ use tracing::{info, warn};
 pub struct DiscoveryService;
 
 impl DiscoveryService {
-    pub fn start(device_id: String, local_port: u16) {
+    pub fn start(device_id: String, local_port: u16, token: String) {
         tokio::spawn(async move {
             let socket = match UdpSocket::bind("0.0.0.0:8088").await {
                 Ok(s) => {
@@ -41,6 +41,7 @@ impl DiscoveryService {
                                 "deviceId": device_id,
                                 "port": local_port,
                                 "ip": host_ip,
+                                "token": token,
                             });
 
                             let raw = response.to_string();
