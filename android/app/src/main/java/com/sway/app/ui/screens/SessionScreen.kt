@@ -42,7 +42,9 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.viewinterop.AndroidView
 import com.sway.app.model.InputEvent
 import com.sway.app.network.StreamFrame
@@ -80,8 +82,16 @@ private fun DesktopStreamCanvas(
     modifier: Modifier = Modifier
 ) {
     if (frame != null) {
-        val imageBitmap = remember(sequence) { frame.asImageBitmap() }
+        val paint = remember {
+            android.graphics.Paint().apply {
+                isFilterBitmap = true
+                isDither = false
+            }
+        }
+        val dstRect = remember { android.graphics.Rect() }
+
         androidx.compose.foundation.Canvas(modifier = modifier.fillMaxSize()) {
+            val _seq = sequence // Read sequence to subscribe draw phase
             val canvasWidth = size.width
             val canvasHeight = size.height
 
@@ -128,22 +138,18 @@ private fun DesktopStreamCanvas(
                 }
             }
 
-            if (fitMode == ViewFitMode.ROTATE_90) {
-                rotate(degrees = 90f, pivot = androidx.compose.ui.geometry.Offset(canvasWidth / 2f, canvasHeight / 2f)) {
-                    drawImage(
-                        image = imageBitmap,
-                        dstOffset = androidx.compose.ui.unit.IntOffset(padX.toInt(), padY.toInt()),
-                        dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt()),
-                        filterQuality = androidx.compose.ui.graphics.FilterQuality.Low
-                    )
+            dstRect.set(padX.toInt(), padY.toInt(), (padX + fitW).toInt(), (padY + fitH).toInt())
+
+            drawIntoCanvas { canvas ->
+                val nativeCanvas = canvas.nativeCanvas
+                if (fitMode == ViewFitMode.ROTATE_90) {
+                    nativeCanvas.save()
+                    nativeCanvas.rotate(90f, canvasWidth / 2f, canvasHeight / 2f)
+                    nativeCanvas.drawBitmap(frame, null, dstRect, paint)
+                    nativeCanvas.restore()
+                } else {
+                    nativeCanvas.drawBitmap(frame, null, dstRect, paint)
                 }
-            } else {
-                drawImage(
-                    image = imageBitmap,
-                    dstOffset = androidx.compose.ui.unit.IntOffset(padX.toInt(), padY.toInt()),
-                    dstSize = androidx.compose.ui.unit.IntSize(fitW.toInt(), fitH.toInt()),
-                    filterQuality = androidx.compose.ui.graphics.FilterQuality.Low
-                )
             }
         }
     }
@@ -151,8 +157,8 @@ private fun DesktopStreamCanvas(
 
 @Composable
 private fun DesktopStreamView(
-    frame: android.graphics.Bitmap?,
-    sequence: Long,
+    webRtcManager: WebRtcManager,
+    rtcState: RtcConnectionState,
     fitMode: ViewFitMode,
     zoomScale: Float,
     zoomOffsetX: Float,
@@ -161,10 +167,14 @@ private fun DesktopStreamView(
     onZoomChange: (Float, Float, Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val frameWrapper by webRtcManager.currentFrame.collectAsState()
+    val frame = frameWrapper?.bitmap
+    val sequence = frameWrapper?.sequence ?: 0L
+
     Box(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPc, frame, fitMode) {
+            .pointerInput(zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPc, fitMode) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position
@@ -224,17 +234,49 @@ private fun DesktopStreamView(
                 }
             }
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer(
-                    scaleX = zoomScale,
-                    scaleY = zoomScale,
-                    translationX = zoomOffsetX,
-                    translationY = zoomOffsetY
-                )
-        ) {
-            DesktopStreamCanvas(frame = frame, sequence = sequence, fitMode = fitMode)
+        if (frame != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer(
+                        scaleX = zoomScale,
+                        scaleY = zoomScale,
+                        translationX = zoomOffsetX,
+                        translationY = zoomOffsetY
+                    )
+            ) {
+                DesktopStreamCanvas(frame = frame, sequence = sequence, fitMode = fitMode)
+            }
+        } else {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(16.dp),
+                color = SurfaceDark.copy(alpha = 0.95f),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                        val r = (rtcState as RtcConnectionState.Failed).reason
+                        if (r.contains("192.168.") || r.contains("10.") || r.contains("172.")) {
+                            "Local Wi-Fi IP unreachable on Mobile Data.\nPlease tap 'Back' and select 'Mobile 4G/5G'."
+                        } else {
+                            "Connection failed:\n$r"
+                        }
+                    } else {
+                        "Connecting to desktop..."
+                    }
+                    Text(
+                        text = statusMsg,
+                        style = Typography.bodyMedium,
+                        color = Color.White
+                    )
+                }
+            }
         }
     }
 }
@@ -251,9 +293,6 @@ fun SessionScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
 
     val rtcState by webRtcManager.connectionState.collectAsState()
-    val currentFrameWrapper: StreamFrame? by webRtcManager.currentFrame.collectAsState()
-    val currentFrame: android.graphics.Bitmap? = currentFrameWrapper?.bitmap
-    val currentSequence: Long = currentFrameWrapper?.sequence ?: 0L
 
     var controlMode by remember { mutableStateOf(ControlMode.TRACKPAD) }
     var privacyCurtainActive by remember { mutableStateOf(false) }
@@ -484,63 +523,21 @@ fun SessionScreen(
         } else if (isLandscape) {
             // ==================== LANDSCAPE MODE: IMMERSIVE HORIZONTAL ====================
             Box(modifier = Modifier.fillMaxSize()) {
-                if (webRtcManager.isDirectLocal || currentFrame != null) {
-                    if (currentFrame != null) {
-                        DesktopStreamView(
-                            frame = currentFrame,
-                            sequence = currentSequence,
-                            fitMode = viewFitMode,
-                            zoomScale = zoomScale,
-                            zoomOffsetX = zoomOffsetX,
-                            zoomOffsetY = zoomOffsetY,
-                            isVerticalPc = isVerticalPcMode,
-                            onZoomChange = { z, ox, oy ->
-                                zoomScale = z
-                                zoomOffsetX = ox
-                                zoomOffsetY = oy
-                            }
-                        )
-                    } else {
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(16.dp),
-                            color = SurfaceDark.copy(alpha = 0.95f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                    val r = (rtcState as RtcConnectionState.Failed).reason
-                                    if (r.contains("192.168.") || r.contains("10.") || r.contains("172.")) {
-                                        "Local Wi-Fi IP unreachable on Mobile Data.\nPlease tap 'Back' and select 'Mobile 4G/5G'."
-                                    } else {
-                                        "Connection failed:\n$r"
-                                    }
-                                } else {
-                                    "Connecting to desktop..."
-                                }
-                                Text(
-                                    text = statusMsg,
-                                    style = Typography.bodyMedium,
-                                    color = Color.White,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                )
-                                if (rtcState is RtcConnectionState.Failed) {
-                                    Button(
-                                        onClick = onDisconnect,
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color.White),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text("Back to Pairing", color = Color.Black, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
+                if (webRtcManager.isDirectLocal) {
+                    DesktopStreamView(
+                        webRtcManager = webRtcManager,
+                        rtcState = rtcState,
+                        fitMode = viewFitMode,
+                        zoomScale = zoomScale,
+                        zoomOffsetX = zoomOffsetX,
+                        zoomOffsetY = zoomOffsetY,
+                        isVerticalPc = isVerticalPcMode,
+                        onZoomChange = { z, ox, oy ->
+                            zoomScale = z
+                            zoomOffsetX = ox
+                            zoomOffsetY = oy
                         }
-                    }
+                    )
                 } else if (rtcState is RtcConnectionState.Connected) {
                     AndroidView(
                         factory = { ctx ->
@@ -593,318 +590,134 @@ fun SessionScreen(
                     }
                 }
 
-                // ==================== HORIZONTAL GAME-CONTROLLER HUD ====================
-                // Right Half (65% width): Invisible Full-Height Glide Trackpad
+                // ==================== HORIZONTAL CLEAN MODE ====================
+                // Full-Screen Edge-to-Edge Invisible Glide Trackpad (100% clean desktop view)
                 if (controlMode == ControlMode.TRACKPAD && zoomScale <= 1.05f) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                    ) {
-                        TrackpadSurface(
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .fillMaxWidth(0.65f)
-                                .align(Alignment.CenterEnd),
-                            sensitivity = sensitivity,
-                            scrollSpeed = scrollSpeed,
-                            hapticsEnabled = hapticsEnabled,
-                            isInvisible = true,
-                            onInputEvent = { webRtcManager.sendInput(it) }
-                        )
-                    }
+                    TrackpadSurface(
+                        modifier = Modifier.fillMaxSize(),
+                        sensitivity = sensitivity,
+                        scrollSpeed = scrollSpeed,
+                        hapticsEnabled = hapticsEnabled,
+                        isInvisible = true,
+                        onInputEvent = { webRtcManager.sendInput(it) }
+                    )
                 }
 
-                // Left Side: Ergonomic Gamepad HUD (Free Fire / 3D Action Style)
-                if (!isPanelHidden) {
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(start = 14.dp, bottom = 14.dp),
-                        verticalAlignment = Alignment.Bottom,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                // Ultra-Subtle Minimalist Floating Trigger (Hidden in corner, zero obstruction on sides or top)
+                var showLandscapeMenu by remember { mutableStateOf(false) }
+
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
+                ) {
+                    Surface(
+                        onClick = { showLandscapeMenu = !showLandscapeMenu },
+                        modifier = Modifier.size(36.dp),
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.35f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.25f))
                     ) {
-                        // Left Column: Action Buttons Cluster
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            // Row 1: Modifier / Utility actions (Drag Lock, Double Click 2X, Middle Click)
-                            var isLandscapeDragLocked by remember { mutableStateOf(false) }
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                // Drag Lock button
-                                Surface(
-                                    onClick = {
-                                        isLandscapeDragLocked = !isLandscapeDragLocked
-                                        if (isLandscapeDragLocked) {
-                                            webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
-                                        } else {
-                                            webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
-                                        }
-                                    },
-                                    color = if (isLandscapeDragLocked) Color.White else SurfaceDark.copy(alpha = 0.82f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, if (isLandscapeDragLocked) Color.White else SurfaceCardBorder),
-                                    modifier = Modifier.size(width = 62.dp, height = 40.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text(
-                                            text = if (isLandscapeDragLocked) "LOCK [ON]" else "DRAG",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isLandscapeDragLocked) Color.Black else Color.White
-                                        )
-                                    }
-                                }
-
-                                // Double Click 2X button
-                                Surface(
-                                    onClick = {
-                                        webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
-                                        webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
-                                        webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT))
-                                        webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
-                                    },
-                                    color = SurfaceDark.copy(alpha = 0.82f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
-                                    modifier = Modifier.size(width = 48.dp, height = 40.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text("2X", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                    }
-                                }
-
-                                // Middle Click button
-                                Surface(
-                                    onClick = {
-                                        webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_MIDDLE))
-                                        webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_MIDDLE))
-                                    },
-                                    color = SurfaceDark.copy(alpha = 0.82f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder),
-                                    modifier = Modifier.size(width = 48.dp, height = 40.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text("MID", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                    }
-                                }
-                            }
-
-                            // Row 2: Primary Large Action Triggers (L-CLICK & R-CLICK)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                // Primary Trigger / Left Click (Large Action Fire Button)
-                                MouseButton(
-                                    modifier = Modifier.size(width = 86.dp, height = 54.dp),
-                                    label = "L-CLICK",
-                                    onDown = { webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_LEFT)) },
-                                    onUp = { webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT)) }
-                                )
-
-                                // Secondary Trigger / Right Click (Scope / Secondary Button)
-                                MouseButton(
-                                    modifier = Modifier.size(width = 74.dp, height = 54.dp),
-                                    label = "R-CLICK",
-                                    onDown = { webRtcManager.sendInput(InputEvent.MouseDown(InputEvent.MouseDown.BUTTON_RIGHT)) },
-                                    onUp = { webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_RIGHT)) }
-                                )
-                            }
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                if (showLandscapeMenu) Icons.Default.Close else Icons.Default.MoreVert,
+                                contentDescription = "Menu",
+                                tint = Color.White.copy(alpha = 0.7f),
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
+                    }
 
-                        // Vertical Scroll Wheel Strip (Drag up/down or tap arrows to scroll smoothly)
+                    // Floating Compact Quick Action Menu (Only when tapped)
+                    if (showLandscapeMenu) {
                         Surface(
                             modifier = Modifier
-                                .width(36.dp)
-                                .height(102.dp),
-                            color = SurfaceDark.copy(alpha = 0.82f),
-                            shape = RoundedCornerShape(18.dp),
+                                .align(Alignment.BottomEnd)
+                                .padding(bottom = 44.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            color = SurfaceDark.copy(alpha = 0.95f),
                             border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
                         ) {
                             Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .pointerInput(Unit) {
-                                        detectVerticalDragGestures { change, dragAmount ->
-                                            change.consume()
-                                            val scrollVal = (-dragAmount * 2.2f).toInt().coerceIn(-120, 120)
-                                            if (scrollVal != 0) {
-                                                webRtcManager.sendInput(InputEvent.MouseScroll(scrollVal.toShort()))
-                                            }
+                                modifier = Modifier.padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                // Fit / Fill Toggle
+                                Row(
+                                    modifier = Modifier
+                                        .clickable {
+                                            viewFitMode = if (viewFitMode == ViewFitMode.FILL) ViewFitMode.FIT else ViewFitMode.FILL
+                                            showLandscapeMenu = false
                                         }
-                                    },
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                IconButton(
-                                    onClick = { webRtcManager.sendInput(InputEvent.MouseScroll(120)) },
-                                    modifier = Modifier.size(36.dp)
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Scroll Up", tint = Color.White, modifier = Modifier.size(20.dp))
+                                    Icon(Icons.Default.AspectRatio, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                    Text(if (viewFitMode == ViewFitMode.FILL) "Letterbox (FIT)" else "Edge-to-Edge (FILL)", color = Color.White, fontSize = 13.sp)
                                 }
-                                Box(
+
+                                // Rotate back to Portrait
+                                Row(
                                     modifier = Modifier
-                                        .width(16.dp)
-                                        .height(3.dp)
-                                        .background(Color.White.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
-                                )
-                                IconButton(
-                                    onClick = { webRtcManager.sendInput(InputEvent.MouseScroll(-120)) },
-                                    modifier = Modifier.size(36.dp)
+                                        .clickable {
+                                            toggleOrientation()
+                                            showLandscapeMenu = false
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Scroll Down", tint = Color.White, modifier = Modifier.size(20.dp))
+                                    Icon(Icons.Default.ScreenRotation, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                    Text("Portrait Mode", color = Color.White, fontSize = 13.sp)
                                 }
-                            }
-                        }
-                    }
 
-                    // Floating Action Header: Top HUD with System Buttons
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Live HUD
-                        Surface(
-                            color = SurfaceDark.copy(alpha = 0.85f),
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Box(
+                                // Keyboard
+                                Row(
                                     modifier = Modifier
-                                        .size(7.dp)
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(Color.White)
-                                )
-                                Text(
-                                    if (controlMode == ControlMode.DECK) "DECK 1ms" else "$liveFps FPS · ${liveRtt}ms",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                            }
-                        }
+                                        .clickable {
+                                            focusRequester.requestFocus()
+                                            keyboardController?.show()
+                                            showLandscapeMenu = false
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Keyboard, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                    Text("Keyboard", color = Color.White, fontSize = 13.sp)
+                                }
 
-                        // Right Top Actions: FIT/FILL, Portrait Rotate, Keyboard, Tools, Hide, Close
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            // Aspect Ratio Toggle: FIT (16:9 Letterbox) or FILL (Edge-to-Edge)
-                            Surface(
-                                onClick = {
-                                    viewFitMode = if (viewFitMode == ViewFitMode.FILL) ViewFitMode.FIT else ViewFitMode.FILL
-                                },
-                                color = if (viewFitMode == ViewFitMode.FILL) Color.White else SurfaceDark.copy(alpha = 0.85f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, if (viewFitMode == ViewFitMode.FILL) Color.White else SurfaceCardBorder)
-                            ) {
-                                Box(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-                                    Text(
-                                        text = if (viewFitMode == ViewFitMode.FILL) "FILL" else "FIT",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (viewFitMode == ViewFitMode.FILL) Color.Black else Color.White
-                                    )
+                                // Quick Tools
+                                Row(
+                                    modifier = Modifier
+                                        .clickable {
+                                            showQuickActions = true
+                                            showLandscapeMenu = false
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Bolt, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                    Text("Shortcuts & Tools", color = Color.White, fontSize = 13.sp)
+                                }
+
+                                // Disconnect
+                                Row(
+                                    modifier = Modifier
+                                        .clickable {
+                                            showLandscapeMenu = false
+                                            handleDisconnect()
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Default.PowerSettingsNew, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                    Text("Disconnect", color = Color.White, fontSize = 13.sp)
                                 }
                             }
-
-                            // Rotate back to Portrait
-                            Surface(
-                                onClick = { toggleOrientation() },
-                                color = SurfaceDark.copy(alpha = 0.85f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                            ) {
-                                Box(modifier = Modifier.padding(6.dp)) {
-                                    Icon(Icons.Default.ScreenRotation, contentDescription = "Portrait Mode", tint = Color.White, modifier = Modifier.size(16.dp))
-                                }
-                            }
-
-                            // Native Keyboard
-                            Surface(
-                                onClick = {
-                                    focusRequester.requestFocus()
-                                    keyboardController?.show()
-                                },
-                                color = SurfaceDark.copy(alpha = 0.85f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                            ) {
-                                Box(modifier = Modifier.padding(6.dp)) {
-                                    Icon(Icons.Default.Keyboard, contentDescription = "Keyboard", tint = Color.White, modifier = Modifier.size(16.dp))
-                                }
-                            }
-
-                            // Control Center & Presets
-                            Surface(
-                                onClick = { showControlCenter = true },
-                                color = SurfaceDark.copy(alpha = 0.85f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                            ) {
-                                Box(modifier = Modifier.padding(6.dp)) {
-                                    Icon(Icons.Default.Tune, contentDescription = "Control Center", tint = Color.White, modifier = Modifier.size(16.dp))
-                                }
-                            }
-
-                            // Quick Action Tools (Alt-Tab, Win, etc.)
-                            Surface(
-                                onClick = { showQuickActions = true },
-                                color = SurfaceDark.copy(alpha = 0.85f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                            ) {
-                                Box(modifier = Modifier.padding(6.dp)) {
-                                    Icon(Icons.Default.Bolt, contentDescription = "Tools", tint = Color.White, modifier = Modifier.size(16.dp))
-                                }
-                            }
-
-                            // Hide HUD (Immersive clean screen)
-                            Surface(
-                                onClick = { isPanelHidden = true },
-                                color = SurfaceDark.copy(alpha = 0.85f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                            ) {
-                                Box(modifier = Modifier.padding(6.dp)) {
-                                    Icon(Icons.Default.Fullscreen, contentDescription = "Hide HUD", tint = Color.White, modifier = Modifier.size(16.dp))
-                                }
-                            }
-
-                            // Disconnect
-                            Surface(
-                                onClick = { handleDisconnect() },
-                                color = SurfaceDark.copy(alpha = 0.85f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                            ) {
-                                Box(modifier = Modifier.padding(6.dp)) {
-                                    Icon(Icons.Default.Close, contentDescription = "Disconnect", tint = TextMuted, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Floating button to unhide controls in Landscape
-                    Surface(
-                        onClick = { isPanelHidden = false },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(16.dp),
-                        color = SurfaceDark.copy(alpha = 0.85f),
-                        shape = RoundedCornerShape(20.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(Icons.Default.FullscreenExit, contentDescription = "Show Controls", tint = Color.White, modifier = Modifier.size(16.dp))
-                            Text("Controls", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -914,43 +727,21 @@ fun SessionScreen(
             if (isPanelHidden) {
                 // Immersive full-screen video in portrait
                 Box(modifier = Modifier.fillMaxSize()) {
-                    if (webRtcManager.isDirectLocal || currentFrame != null) {
-                        if (currentFrame != null) {
-                            DesktopStreamView(
-                                frame = currentFrame,
-                                sequence = currentSequence,
-                                fitMode = viewFitMode,
-                                zoomScale = zoomScale,
-                                zoomOffsetX = zoomOffsetX,
-                                zoomOffsetY = zoomOffsetY,
-                                isVerticalPc = isVerticalPcMode,
-                                onZoomChange = { z, ox, oy ->
-                                    zoomScale = z
-                                    zoomOffsetX = ox
-                                    zoomOffsetY = oy
-                                }
-                            )
-                        } else {
-                            Surface(
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(8.dp),
-                                color = SurfaceDark.copy(alpha = 0.85f),
-                                shape = MaterialTheme.shapes.medium
-                            ) {
-                                val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                    "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
-                                } else {
-                                    "Connecting to desktop..."
-                                }
-                                Text(
-                                    text = statusMsg,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    style = Typography.bodyMedium,
-                                    color = Color.White
-                                )
+                    if (webRtcManager.isDirectLocal) {
+                        DesktopStreamView(
+                            webRtcManager = webRtcManager,
+                            rtcState = rtcState,
+                            fitMode = viewFitMode,
+                            zoomScale = zoomScale,
+                            zoomOffsetX = zoomOffsetX,
+                            zoomOffsetY = zoomOffsetY,
+                            isVerticalPc = isVerticalPcMode,
+                            onZoomChange = { z, ox, oy ->
+                                zoomScale = z
+                                zoomOffsetX = ox
+                                zoomOffsetY = oy
                             }
-                        }
+                        )
                     } else if (rtcState is RtcConnectionState.Connected) {
                         AndroidView(
                             factory = { ctx ->
@@ -1160,43 +951,21 @@ fun SessionScreen(
                         .clip(MaterialTheme.shapes.large)
                         .background(SurfaceDark)
                 ) {
-                    if (webRtcManager.isDirectLocal || currentFrame != null) {
-                        if (currentFrame != null) {
-                            DesktopStreamView(
-                                frame = currentFrame,
-                                sequence = currentSequence,
-                                fitMode = viewFitMode,
-                                zoomScale = zoomScale,
-                                zoomOffsetX = zoomOffsetX,
-                                zoomOffsetY = zoomOffsetY,
-                                isVerticalPc = isVerticalPcMode,
-                                onZoomChange = { z, ox, oy ->
-                                    zoomScale = z
-                                    zoomOffsetX = ox
-                                    zoomOffsetY = oy
-                                }
-                            )
-                        } else {
-                            Surface(
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(8.dp),
-                                color = SurfaceDark.copy(alpha = 0.85f),
-                                shape = MaterialTheme.shapes.medium
-                            ) {
-                                val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                    "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
-                                } else {
-                                    "Connecting to desktop..."
-                                }
-                                Text(
-                                    text = statusMsg,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    style = Typography.bodyMedium,
-                                    color = Color.White
-                                )
+                    if (webRtcManager.isDirectLocal) {
+                        DesktopStreamView(
+                            webRtcManager = webRtcManager,
+                            rtcState = rtcState,
+                            fitMode = viewFitMode,
+                            zoomScale = zoomScale,
+                            zoomOffsetX = zoomOffsetX,
+                            zoomOffsetY = zoomOffsetY,
+                            isVerticalPc = isVerticalPcMode,
+                            onZoomChange = { z, ox, oy ->
+                                zoomScale = z
+                                zoomOffsetX = ox
+                                zoomOffsetY = oy
                             }
-                        }
+                        )
                     } else if (rtcState is RtcConnectionState.Connected) {
                         AndroidView(
                             factory = { ctx ->

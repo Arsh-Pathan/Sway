@@ -5,12 +5,12 @@ use tracing::info;
 #[cfg(windows)]
 use windows::core::w;
 #[cfg(windows)]
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
-    LineTo, MoveToEx, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor,
-    DT_CENTER, DT_NOPREFIX, DT_VCENTER, DT_SINGLELINE, FW_BOLD, FW_NORMAL, FW_SEMIBOLD,
+    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse, FillRect,
+    GetTextExtentPoint32W, LineTo, MoveToEx, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor,
+    TextOutW, DT_CENTER, DT_NOPREFIX, FW_BOLD, FW_NORMAL,
     PS_NULL, PS_SOLID, TRANSPARENT,
 };
 #[cfg(windows)]
@@ -289,80 +289,15 @@ unsafe extern "system" fn ll_keyboard_hook(code: i32, wparam: WPARAM, lparam: LP
             return CallNextHookEx(None, code, wparam, lparam);
         }
 
-        // Physical keystroke on the laptop keyboard: process PIN
-        let vk = kbd.vkCode;
-        let mut should_consume = false;
-
-        if let Ok(mut state) = PIN_STATE.lock() {
+        // Any physical key pressed on the physical laptop keyboard immediately exits privacy mode
+        if let Ok(state) = PIN_STATE.lock() {
             let hwnd = HWND(state.curtain_hwnd as *mut _);
-
-            let char_val = match vk {
-                0x30..=0x39 => Some((b'0' + (vk - 0x30) as u8) as char),
-                0x60..=0x69 => Some((b'0' + (vk - 0x60) as u8) as char),
-                0x41..=0x5A => Some((b'a' + (vk - 0x41) as u8) as char),
-                _ => None,
-            };
-
-            if let Some(ch) = char_val {
-                if state.entered_pin.len() < 16 {
-                    state.entered_pin.push(ch);
-                    state.last_error = false;
-                }
-
-                let entered = state.entered_pin.to_lowercase();
-                let exp_pin = state.expected_pin.to_lowercase();
-                let exp_tok = state.expected_token.to_lowercase();
-
-                let is_match = (!exp_pin.is_empty() && entered == exp_pin)
-                    || (!exp_tok.is_empty() && entered == exp_tok);
-
-                if is_match {
-                    info!("Laptop PIN verified! Unlocking screen from laptop keyboard...");
-                    let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
-                } else if !hwnd.is_invalid() {
-                    let _ = windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
-                }
-                should_consume = true;
-            } else if vk == 0x0D { // VK_RETURN
-                let entered = state.entered_pin.to_lowercase();
-                let exp_pin = state.expected_pin.to_lowercase();
-                let exp_tok = state.expected_token.to_lowercase();
-
-                let is_match = (!exp_pin.is_empty() && entered == exp_pin)
-                    || (!exp_tok.is_empty() && entered == exp_tok)
-                    || (!exp_tok.is_empty() && exp_tok.starts_with(&entered) && entered.len() >= 4);
-
-                if is_match {
-                    info!("Laptop PIN verified on Enter! Unlocking screen...");
-                    let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
-                } else {
-                    state.entered_pin.clear();
-                    state.last_error = true;
-                    if !hwnd.is_invalid() {
-                        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
-                    }
-                }
-                should_consume = true;
-            } else if vk == 0x08 { // VK_BACK
-                state.entered_pin.pop();
-                state.last_error = false;
-                if !hwnd.is_invalid() {
-                    let _ = windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
-                }
-                should_consume = true;
-            } else if vk == 0x1B { // VK_ESCAPE
-                state.entered_pin.clear();
-                state.last_error = false;
-                if !hwnd.is_invalid() {
-                    let _ = windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
-                }
-                should_consume = true;
+            if !hwnd.is_invalid() {
+                info!("Physical keyboard interaction detected! Exiting privacy curtain immediately...");
+                let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
             }
         }
-
-        if should_consume {
-            return LRESULT(1);
-        }
+        return LRESULT(1);
     }
 
     CallNextHookEx(None, code, wparam, lparam)
@@ -419,91 +354,32 @@ unsafe extern "system" fn curtain_wnd_proc(
                 let null_pen = CreatePen(PS_NULL, 0, COLORREF(0));
                 let old_pen = SelectObject(hdc, null_pen);
 
-                // Fonts for Modern Lock Screen UI
-                let clock_font = CreateFontW(
-                    56, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
-                    w!("Segoe UI Variable Display"),
-                );
-                let date_font = CreateFontW(
-                    16, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
+                // Typography for Privacy Screen: "Your system is being controlled" / "remotely using Sway."
+                let title_font_normal = CreateFontW(
+                    32, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
                     w!("Segoe UI"),
                 );
-                let badge_font = CreateFontW(
-                    12, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
+                let title_font_bold = CreateFontW(
+                    32, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
                     w!("Segoe UI"),
                 );
-                let title_font = CreateFontW(
-                    24, 0, 0, 0, FW_SEMIBOLD.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
-                    w!("Segoe UI Variable Display"),
-                );
-                let sub_font = CreateFontW(
-                    14, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
-                    w!("Segoe UI"),
-                );
-                let pin_dot_font = CreateFontW(
-                    22, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
-                    w!("Segoe UI"),
-                );
-                let hint_font = CreateFontW(
-                    13, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
-                    w!("Segoe UI"),
-                );
-                let pill_tag_font = CreateFontW(
-                    11, 0, 0, 0, FW_SEMIBOLD.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
-                    w!("Segoe UI"),
+                let matrix_font = CreateFontW(
+                    17, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
+                    w!("Consolas"),
                 );
 
-                // Brushes and Pens for Visual Components (Strict Pure Black & White / Monochrome Theme)
-                let badge_bg_brush = CreateSolidBrush(COLORREF(0x00141414)); // Sleek Dark Surface #141414
-                let badge_border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00262626)); // Subtle Crisp Border #262626
-                let white_dot_brush = CreateSolidBrush(COLORREF(0x00FFFFFF)); // Stark Pure White Dot
+                // Soft Bokeh Background Brushes (Out-of-focus atmospheric cyber circles)
+                let bokeh_brush_1 = CreateSolidBrush(COLORREF(0x00131316)); // Soft dark charcoal
+                let bokeh_brush_2 = CreateSolidBrush(COLORREF(0x001E1E24)); // Subtle mid glow
+                let bokeh_brush_3 = CreateSolidBrush(COLORREF(0x00282832)); // Distinct soft bokeh
+                let bokeh_brush_4 = CreateSolidBrush(COLORREF(0x003A3A46)); // Ambient blurred bokeh
 
-                // Background Blurred Watermark App Icon Resources (Large Ethereal Frosted Silhouette)
-                let bg_glow_pen_1 = CreatePen(PS_SOLID, 4, COLORREF(0x00060606));
-                let bg_glow_pen_2 = CreatePen(PS_SOLID, 3, COLORREF(0x000A0A0A));
-                let bg_glow_pen_3 = CreatePen(PS_SOLID, 2, COLORREF(0x000F0F0F));
-                let bg_tile_brush = CreateSolidBrush(COLORREF(0x000E0E0E)); // Deep Frosted Charcoal Tile #0E0E0E
-                let bg_tile_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00171717));
-                let bg_bezel_brush = CreateSolidBrush(COLORREF(0x00242424)); // Subtle Watermark Bezel #242424
-                let bg_screen_brush = CreateSolidBrush(COLORREF(0x00070707)); // Deep Dark Glass #070707
-                let bg_base_brush = CreateSolidBrush(COLORREF(0x00202020)); // Watermark Base #202020
-                let bg_notch_pen = CreatePen(PS_SOLID, 4, COLORREF(0x00151515)); // Subtle Notch
+                // Laptop Vector Graphics Brushes
+                let laptop_white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF)); // Solid Pure White Bezel & Base
+                let laptop_screen_brush = CreateSolidBrush(COLORREF(0x00000000)); // Pitch Black Glass #000000
+                let laptop_notch_pen = CreatePen(PS_SOLID, 3, COLORREF(0x00000000)); // Dark Trackpad Notch
 
-                // Sway Foreground App Icon GDI Resources (Enlarged Crisp Pure Black & White Vector)
-                let squircle_bg_brush = CreateSolidBrush(COLORREF(0x00121212)); // Clean Flat Dark Squircle #121212
-                let squircle_border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00262626)); // Crisp Border
-                let icon_white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF)); // Solid Pure White Bezel & Base
-                let icon_glass_brush = CreateSolidBrush(COLORREF(0x00000000)); // Pitch Black Glass #000000
-                let icon_notch_pen = CreatePen(PS_SOLID, 2, COLORREF(0x003F3F46)); // Trackpad Notch #3F3F46
-
-                // Slot Box Styles (Monochrome)
-                let slot_empty_brush = CreateSolidBrush(COLORREF(0x000A0A0A)); // Empty Slot Charcoal
-                let slot_empty_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00262626)); // Subtle Border
-                let slot_filled_brush = CreateSolidBrush(COLORREF(0x001A1A1A)); // Filled Slot Background
-                let slot_filled_pen = CreatePen(PS_SOLID, 2, COLORREF(0x00FFFFFF)); // Stark Pure White Active Border
-                let slot_active_pen = CreatePen(PS_SOLID, 2, COLORREF(0x0052525B)); // Focus Slot Border
-
-                // Pill Tag Brush & Pen
-                let pill_bg_brush = CreateSolidBrush(COLORREF(0x00141414));
-                let pill_border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00262626));
-
-                // Get Current Local Time for Realistic Lock Screen
-                let st = windows::Win32::System::SystemInformation::GetLocalTime();
-                let time_str = format!("{:02}:{:02}", st.wHour, st.wMinute);
-                let days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-                let months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-                let day_name = days.get(st.wDayOfWeek as usize).unwrap_or(&"");
-                let month_name = months.get(st.wMonth.saturating_sub(1) as usize).unwrap_or(&"");
-                let date_str = format!("{}, {} {}", day_name, month_name, st.wDay);
-
-                // Retrieve current PIN state
-                let (pin_len, is_error) = if let Ok(state) = PIN_STATE.lock() {
-                    (state.entered_pin.len(), state.last_error)
-                } else {
-                    (0, false)
-                };
-
-                // Render the unified professional lock screen centered on EACH active monitor
+                // Render the unified cyber matrix privacy screen centered on EACH active monitor
                 for &(ml, mt, mr, mb) in &mon_list {
                     let mw = mr - ml;
                     let mh = mb - mt;
@@ -512,307 +388,148 @@ unsafe extern "system" fn curtain_wnd_proc(
                     }
 
                     let cx = (ml + mr) / 2;
-                    let cy = (mt + mb) / 2;
+                    let cy = (mt + mb) / 2 - 25;
 
-                    // 0. Background Blurred / Frosted Watermark App Icon (Huge 496x496 Silhouette)
-                    let bg_size = 496;
-                    let bg_x = cx - bg_size / 2;
-                    let bg_y = (cy - 20) - bg_size / 2;
-
-                    // Soft Blurred Halo Rings (Simulating smooth depth-of-field Gaussian blur)
-                    SelectObject(hdc, bg_glow_pen_1);
-                    SelectObject(hdc, bg_tile_brush);
-                    let _ = RoundRect(hdc, bg_x - 12, bg_y - 12, bg_x + bg_size + 12, bg_y + bg_size + 12, 136, 136);
-
-                    SelectObject(hdc, bg_glow_pen_2);
-                    let _ = RoundRect(hdc, bg_x - 6, bg_y - 6, bg_x + bg_size + 6, bg_y + bg_size + 6, 124, 124);
-
-                    SelectObject(hdc, bg_glow_pen_3);
-                    let _ = RoundRect(hdc, bg_x - 2, bg_y - 2, bg_x + bg_size + 2, bg_y + bg_size + 2, 116, 116);
-
-                    // Main Background Squircle Tile
-                    SelectObject(hdc, bg_tile_pen);
-                    let _ = RoundRect(hdc, bg_x, bg_y, bg_x + bg_size, bg_y + bg_size, 112, 112);
-
-                    // Watermark Laptop Screen Bezel
-                    SelectObject(hdc, null_pen);
-                    SelectObject(hdc, bg_bezel_brush);
-                    let _ = RoundRect(hdc, bg_x + 116, bg_y + 88, bg_x + 380, bg_y + 268, 24, 24);
-
-                    // Watermark Screen Glass
-                    SelectObject(hdc, bg_screen_brush);
-                    let _ = RoundRect(hdc, bg_x + 120, bg_y + 108, bg_x + 376, bg_y + 280, 16, 16);
-
-                    // Watermark Laptop Base
-                    SelectObject(hdc, bg_base_brush);
-                    let bg_base_pts = [
-                        POINT { x: bg_x + 72, y: bg_y + 332 },
-                        POINT { x: bg_x + 424, y: bg_y + 332 },
-                        POINT { x: bg_x + 456, y: bg_y + 392 },
-                        POINT { x: bg_x + 40, y: bg_y + 392 },
+                    // 1. Soft Out-of-Focus Bokeh Circles
+                    let bokeh_spots = [
+                        (-440, -190, 34, bokeh_brush_1),
+                        (-320, 220, 44, bokeh_brush_2),
+                        (-250, -130, 22, bokeh_brush_3),
+                        (-160, 270, 30, bokeh_brush_1),
+                        (180, -230, 26, bokeh_brush_2),
+                        (260, 170, 40, bokeh_brush_1),
+                        (340, -150, 46, bokeh_brush_3),
+                        (430, 200, 24, bokeh_brush_2),
+                        (510, -90, 38, bokeh_brush_1),
+                        (-510, 90, 28, bokeh_brush_2),
+                        (130, 290, 22, bokeh_brush_4),
+                        (-140, -280, 24, bokeh_brush_2),
+                        (410, -260, 18, bokeh_brush_3),
+                        (-380, 70, 20, bokeh_brush_4),
                     ];
-                    let _ = Polygon(hdc, &bg_base_pts);
 
-                    // Watermark Opening Notch
-                    SelectObject(hdc, bg_notch_pen);
-                    let _ = MoveToEx(hdc, bg_x + 208, bg_y + 364, None);
-                    let _ = LineTo(hdc, bg_x + 288, bg_y + 364);
-
-                    // 1. Clock Display (Top-Centered, Pure Stark White)
-                    SelectObject(hdc, clock_font);
-                    SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Solid Pure White
-                    let mut clock_rect = RECT {
-                        left: ml + 20,
-                        top: cy - 280,
-                        right: mr - 20,
-                        bottom: cy - 215,
-                    };
-                    let mut clock_utf16: Vec<u16> = format!("{}\0", time_str).encode_utf16().collect();
-                    DrawTextW(hdc, &mut clock_utf16, &mut clock_rect, DT_CENTER | DT_NOPREFIX);
-
-                    // 2. Date Display (Neutral Silver Zinc)
-                    SelectObject(hdc, date_font);
-                    SetTextColor(hdc, COLORREF(0x00AAA1A1)); // Soft Silver Zinc #A1A1AA
-                    let mut date_rect = RECT {
-                        left: ml + 20,
-                        top: cy - 215,
-                        right: mr - 20,
-                        bottom: cy - 190,
-                    };
-                    let mut date_utf16: Vec<u16> = format!("{}\0", date_str).encode_utf16().collect();
-                    DrawTextW(hdc, &mut date_utf16, &mut date_rect, DT_CENTER | DT_NOPREFIX);
-
-                    // 3. Security Status Capsule Badge (Monochrome Pill)
-                    let badge_w = 264;
-                    let badge_h = 30;
-                    let badge_x = cx - badge_w / 2;
-                    let badge_y = cy - 180;
-
-                    SelectObject(hdc, badge_border_pen);
-                    SelectObject(hdc, badge_bg_brush);
-                    let _ = RoundRect(hdc, badge_x, badge_y, badge_x + badge_w, badge_y + badge_h, 15, 15);
-
-                    // Crisp Pure White Indicator Dot inside Capsule
-                    SelectObject(hdc, null_pen);
-                    SelectObject(hdc, white_dot_brush);
-                    let dot_x = badge_x + 16;
-                    let dot_y = badge_y + 11;
-                    let _ = RoundRect(hdc, dot_x, dot_y, dot_x + 8, dot_y + 8, 8, 8);
-
-                    // Badge Text: ENCRYPTED REMOTE SESSION
-                    SelectObject(hdc, badge_font);
-                    SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Crisp Pure White
-                    let mut badge_txt_rect = RECT {
-                        left: dot_x + 14,
-                        top: badge_y,
-                        right: badge_x + badge_w - 12,
-                        bottom: badge_y + badge_h,
-                    };
-                    let mut badge_utf16: Vec<u16> = "ENCRYPTED REMOTE SESSION\0".encode_utf16().collect();
-                    DrawTextW(hdc, &mut badge_utf16, &mut badge_txt_rect, DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-
-                    // 4. Official Sway Foreground App Icon (Enlarged 124x124 Crisp Pure Black & White)
-                    let tile_size = 124;
-                    let tile_x = cx - tile_size / 2;
-                    let tile_y = (cy - 75) - tile_size / 2;
-
-                    // Outer Squircle Background
-                    SelectObject(hdc, squircle_border_pen);
-                    SelectObject(hdc, squircle_bg_brush);
-                    let _ = RoundRect(hdc, tile_x, tile_y, tile_x + tile_size, tile_y + tile_size, 28, 28);
-
-                    // Laptop Screen Bezel (Pure White)
-                    SelectObject(hdc, null_pen);
-                    SelectObject(hdc, icon_white_brush);
-                    let _ = RoundRect(hdc, tile_x + 29, tile_y + 22, tile_x + 95, tile_y + 67, 8, 8);
-
-                    // Screen Glass (Deep Contrast Pitch Black)
-                    SelectObject(hdc, icon_glass_brush);
-                    let _ = RoundRect(hdc, tile_x + 30, tile_y + 27, tile_x + 94, tile_y + 70, 4, 4);
-
-                    // Laptop Base (Pure White Trapezoid)
-                    SelectObject(hdc, icon_white_brush);
-                    let base_pts = [
-                        POINT { x: tile_x + 18, y: tile_y + 83 },
-                        POINT { x: tile_x + 106, y: tile_y + 83 },
-                        POINT { x: tile_x + 114, y: tile_y + 98 },
-                        POINT { x: tile_x + 10, y: tile_y + 98 },
-                    ];
-                    let _ = Polygon(hdc, &base_pts);
-
-                    // Trackpad Opening Notch
-                    SelectObject(hdc, icon_notch_pen);
-                    let _ = MoveToEx(hdc, tile_x + 52, tile_y + 91, None);
-                    let _ = LineTo(hdc, tile_x + 72, tile_y + 91);
-
-                    // 5. Title & Subtitle
-                    SelectObject(hdc, title_font);
-                    SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Solid Pure White
-                    let mut title_rect = RECT {
-                        left: ml + 20,
-                        top: cy,
-                        right: mr - 20,
-                        bottom: cy + 28,
-                    };
-                    let mut title_text: Vec<u16> = "Windows Display Protected\0".encode_utf16().collect();
-                    DrawTextW(hdc, &mut title_text, &mut title_rect, DT_CENTER | DT_NOPREFIX);
-
-                    SelectObject(hdc, sub_font);
-                    SetTextColor(hdc, COLORREF(0x00AAA1A1)); // Soft Neutral Zinc #A1A1AA
-                    let mut sub_rect = RECT {
-                        left: ml + 20,
-                        top: cy + 30,
-                        right: mr - 20,
-                        bottom: cy + 54,
-                    };
-                    let mut sub_text: Vec<u16> = "Screen is shielded on laptop • Live controls active on phone\0".encode_utf16().collect();
-                    DrawTextW(hdc, &mut sub_text, &mut sub_rect, DT_CENTER | DT_NOPREFIX);
-
-                    // 6. Interactive PIN Slots Grid (Fluent Glass Slots)
-                    let num_slots = pin_len.clamp(4, 8);
-                    let slot_w = 48;
-                    let slot_h = 54;
-                    let slot_gap = 12;
-                    let total_grid_w = (num_slots as i32) * slot_w + ((num_slots as i32) - 1) * slot_gap;
-                    let start_x = cx - total_grid_w / 2;
-                    let slot_y = cy + 66;
-
-                    for i in 0..num_slots {
-                        let sx = start_x + (i as i32) * (slot_w + slot_gap);
-
-                        if i < pin_len {
-                            // Filled Slot
-                            SelectObject(hdc, slot_filled_pen);
-                            SelectObject(hdc, slot_filled_brush);
-                            let _ = RoundRect(hdc, sx, slot_y, sx + slot_w, slot_y + slot_h, 14, 14);
-
-                            // Crisp Pure White Pip: ●
-                            SelectObject(hdc, pin_dot_font);
-                            SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Stark Pure White
-                            let mut dot_rect = RECT {
-                                left: sx,
-                                top: slot_y,
-                                right: sx + slot_w,
-                                bottom: slot_y + slot_h,
-                            };
-                            let mut dot_text: Vec<u16> = "●\0".encode_utf16().collect();
-                            DrawTextW(hdc, &mut dot_text, &mut dot_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-                        } else if i == pin_len {
-                            // Active / Next Slot with focus highlight
-                            SelectObject(hdc, slot_active_pen);
-                            SelectObject(hdc, slot_empty_brush);
-                            let _ = RoundRect(hdc, sx, slot_y, sx + slot_w, slot_y + slot_h, 14, 14);
-                        } else {
-                            // Inactive Empty Slot
-                            SelectObject(hdc, slot_empty_pen);
-                            SelectObject(hdc, slot_empty_brush);
-                            let _ = RoundRect(hdc, sx, slot_y, sx + slot_w, slot_y + slot_h, 14, 14);
+                    for &(bx_off, by_off, r, brush) in &bokeh_spots {
+                        let bx = cx + bx_off;
+                        let by = cy + by_off;
+                        if bx - r >= ml && bx + r <= mr && by - r >= mt && by + r <= mb {
+                            SelectObject(hdc, brush);
+                            let _ = Ellipse(hdc, bx - r, by - r, bx + r, by + r);
                         }
                     }
 
-                    // 7. Error or Interaction Feedback Status
-                    SelectObject(hdc, hint_font);
-                    let mut feedback_rect = RECT {
-                        left: ml + 20,
-                        top: slot_y + slot_h + 14,
-                        right: mr - 20,
-                        bottom: slot_y + slot_h + 36,
-                    };
+                    // 2. Monochrome Digital Binary Stream Columns (Cyber Rain)
+                    SelectObject(hdc, matrix_font);
+                    let col_spacing = 44;
+                    let start_col = ml + 28;
+                    let mut col_x = start_col;
+                    let mut seed: u32 = 0x5A17C0DE ^ (ml as u32);
 
-                    if is_error {
-                        SetTextColor(hdc, COLORREF(0x00E4E4E7)); // Stark High-Contrast Neutral
-                        let mut err_text: Vec<u16> = "⚠ Incorrect PIN. Please try again.\0".encode_utf16().collect();
-                        DrawTextW(hdc, &mut err_text, &mut feedback_rect, DT_CENTER | DT_NOPREFIX);
-                    } else if pin_len == 0 {
-                        SetTextColor(hdc, COLORREF(0x0071717A)); // Muted Neutral Gray
-                        let mut hint_text: Vec<u16> = "Type laptop PIN or Sway token on keyboard to unlock\0".encode_utf16().collect();
-                        DrawTextW(hdc, &mut hint_text, &mut feedback_rect, DT_CENTER | DT_NOPREFIX);
-                    } else {
-                        SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Crisp Active White
-                        let mut hint_text: Vec<u16> = "Press Enter to verify • Backspace to erase\0".encode_utf16().collect();
-                        DrawTextW(hdc, &mut hint_text, &mut feedback_rect, DT_CENTER | DT_NOPREFIX);
+                    while col_x < mr - 28 {
+                        // Keep center area around laptop and text clean for pristine readability
+                        if (col_x - cx).abs() > 210 {
+                            let mut row_y = mt + 18 + ((seed % 9) as i32) * 10;
+                            while row_y < mb - 28 {
+                                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                                let bit = if (seed & 1) == 0 { '0' } else { '1' };
+                                let brightness = (seed >> 8) & 0xFF;
+
+                                let color = match brightness {
+                                    0..=100 => COLORREF(0x001A1A1E),   // Soft dim background digit
+                                    101..=180 => COLORREF(0x003E3E48), // Mid-level
+                                    181..=230 => COLORREF(0x00787884), // Distinct
+                                    231..=248 => COLORREF(0x00B0B0BA), // Glowing
+                                    _ => COLORREF(0x00FFFFFF),         // Bright white stream head
+                                };
+
+                                SetTextColor(hdc, color);
+                                let char_u16 = [bit as u16];
+                                let _ = TextOutW(hdc, col_x, row_y, &char_u16);
+
+                                row_y += 26;
+                            }
+                        }
+                        col_x += col_spacing;
                     }
 
-                    // 8. Bottom Helper Badges (Monochrome)
-                    let pill_tag_w = 140;
-                    let pill_tag_h = 26;
-                    let pill_tag_gap = 10;
-                    let pill_tag_y = feedback_rect.bottom + 16;
+                    // 3. Freestanding Stark Pure White Laptop Emblem (Center)
+                    let icon_w = 164;
+                    let lx = cx - icon_w / 2;
+                    let ly = cy - 75;
 
-                    let tags = [
-                        "⌨ Keyboard Active",
-                        "⏎ Enter = Unlock",
-                        "ESC = Clear",
+                    // Laptop Screen Bezel (Pure White Rounded Rectangle)
+                    SelectObject(hdc, null_pen);
+                    SelectObject(hdc, laptop_white_brush);
+                    let _ = RoundRect(hdc, lx + 12, ly, lx + icon_w - 12, ly + 84, 16, 16);
+
+                    // Laptop Screen Glass (Deep Contrast Pitch Black Cutout)
+                    SelectObject(hdc, laptop_screen_brush);
+                    let _ = RoundRect(hdc, lx + 20, ly + 8, lx + icon_w - 20, ly + 76, 8, 8);
+
+                    // Laptop Base (Pure White Trapezoid with Rounded Bottom Corners)
+                    SelectObject(hdc, laptop_white_brush);
+                    let base_pts = [
+                        POINT { x: lx + 8, y: ly + 88 },
+                        POINT { x: lx + icon_w - 8, y: ly + 88 },
+                        POINT { x: lx + icon_w + 4, y: ly + 101 },
+                        POINT { x: lx - 4, y: ly + 101 },
                     ];
-                    let total_tags_w = (tags.len() as i32) * pill_tag_w + ((tags.len() as i32) - 1) * pill_tag_gap;
-                    let start_tag_x = cx - total_tags_w / 2;
+                    let _ = Polygon(hdc, &base_pts);
+                    let _ = RoundRect(hdc, lx - 4, ly + 93, lx + icon_w + 4, ly + 102, 6, 6);
 
-                    SelectObject(hdc, pill_tag_font);
-                    SetTextColor(hdc, COLORREF(0x00AAA1A1)); // Clean Neutral Gray #A1A1AA
+                    // Trackpad Opening Notch (Dark Cutout in Base)
+                    SelectObject(hdc, laptop_notch_pen);
+                    let _ = MoveToEx(hdc, cx - 20, ly + 90, None);
+                    let _ = LineTo(hdc, cx + 20, ly + 90);
 
-                    for (idx, tag) in tags.iter().enumerate() {
-                        let tx = start_tag_x + (idx as i32) * (pill_tag_w + pill_tag_gap);
-                        SelectObject(hdc, pill_border_pen);
-                        SelectObject(hdc, pill_bg_brush);
-                        let _ = RoundRect(hdc, tx, pill_tag_y, tx + pill_tag_w, pill_tag_y + pill_tag_h, 8, 8);
-
-                        let mut tag_rect = RECT {
-                            left: tx,
-                            top: pill_tag_y,
-                            right: tx + pill_tag_w,
-                            bottom: pill_tag_y + pill_tag_h,
-                        };
-                        let mut tag_utf16: Vec<u16> = format!("{}\0", tag).encode_utf16().collect();
-                        DrawTextW(hdc, &mut tag_utf16, &mut tag_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-                    }
-
-                    // 9. Configurable Footnote
-                    let mut foot_rect = RECT {
-                        left: ml + 20,
-                        top: pill_tag_y + pill_tag_h + 14,
-                        right: mr - 20,
-                        bottom: pill_tag_y + pill_tag_h + 34,
+                    // 4. Centered Clean Typography Directly Below Laptop
+                    // Line 1: "Your system is being controlled"
+                    SelectObject(hdc, title_font_normal);
+                    SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Solid Pure White
+                    let mut line1_rect = RECT {
+                        left: ml + 10,
+                        top: ly + 128,
+                        right: mr - 10,
+                        bottom: ly + 166,
                     };
-                    SetTextColor(hdc, COLORREF(0x0052525B)); // Subtle Muted Gray #52525B
-                    let mut foot_text: Vec<u16> = "Default unlock PIN: 1234 or your Sway pairing token\0".encode_utf16().collect();
-                    DrawTextW(hdc, &mut foot_text, &mut foot_rect, DT_CENTER | DT_NOPREFIX);
+                    let mut line1_text: Vec<u16> = "Your system is being controlled\0".encode_utf16().collect();
+                    DrawTextW(hdc, &mut line1_text, &mut line1_rect, DT_CENTER | DT_NOPREFIX);
+
+                    // Line 2: "remotely using Sway." (with "Sway." in bold)
+                    let part1_utf16: Vec<u16> = "remotely using \0".encode_utf16().collect();
+                    let part2_utf16: Vec<u16> = "Sway.\0".encode_utf16().collect();
+
+                    SelectObject(hdc, title_font_normal);
+                    let mut sz1 = SIZE::default();
+                    let _ = GetTextExtentPoint32W(hdc, &part1_utf16[..part1_utf16.len() - 1], &mut sz1);
+
+                    SelectObject(hdc, title_font_bold);
+                    let mut sz2 = SIZE::default();
+                    let _ = GetTextExtentPoint32W(hdc, &part2_utf16[..part2_utf16.len() - 1], &mut sz2);
+
+                    let total_w = sz1.cx + sz2.cx;
+                    let start_x = cx - total_w / 2;
+                    let line2_y = ly + 168;
+
+                    SelectObject(hdc, title_font_normal);
+                    let _ = TextOutW(hdc, start_x, line2_y, &part1_utf16[..part1_utf16.len() - 1]);
+
+                    SelectObject(hdc, title_font_bold);
+                    let _ = TextOutW(hdc, start_x + sz1.cx, line2_y, &part2_utf16[..part2_utf16.len() - 1]);
                 }
 
                 // Clean up GDI resources
                 SelectObject(hdc, old_pen);
                 let _ = DeleteObject(null_pen);
-                let _ = DeleteObject(badge_bg_brush);
-                let _ = DeleteObject(badge_border_pen);
-                let _ = DeleteObject(white_dot_brush);
-                let _ = DeleteObject(bg_glow_pen_1);
-                let _ = DeleteObject(bg_glow_pen_2);
-                let _ = DeleteObject(bg_glow_pen_3);
-                let _ = DeleteObject(bg_tile_brush);
-                let _ = DeleteObject(bg_tile_pen);
-                let _ = DeleteObject(bg_bezel_brush);
-                let _ = DeleteObject(bg_screen_brush);
-                let _ = DeleteObject(bg_base_brush);
-                let _ = DeleteObject(bg_notch_pen);
-                let _ = DeleteObject(squircle_bg_brush);
-                let _ = DeleteObject(squircle_border_pen);
-                let _ = DeleteObject(icon_white_brush);
-                let _ = DeleteObject(icon_glass_brush);
-                let _ = DeleteObject(icon_notch_pen);
-                let _ = DeleteObject(slot_empty_brush);
-                let _ = DeleteObject(slot_empty_pen);
-                let _ = DeleteObject(slot_filled_brush);
-                let _ = DeleteObject(slot_filled_pen);
-                let _ = DeleteObject(slot_active_pen);
-                let _ = DeleteObject(pill_bg_brush);
-                let _ = DeleteObject(pill_border_pen);
-                let _ = DeleteObject(clock_font);
-                let _ = DeleteObject(date_font);
-                let _ = DeleteObject(badge_font);
-                let _ = DeleteObject(title_font);
-                let _ = DeleteObject(sub_font);
-                let _ = DeleteObject(pin_dot_font);
-                let _ = DeleteObject(hint_font);
-                let _ = DeleteObject(pill_tag_font);
+                let _ = DeleteObject(title_font_normal);
+                let _ = DeleteObject(title_font_bold);
+                let _ = DeleteObject(matrix_font);
+                let _ = DeleteObject(bokeh_brush_1);
+                let _ = DeleteObject(bokeh_brush_2);
+                let _ = DeleteObject(bokeh_brush_3);
+                let _ = DeleteObject(bokeh_brush_4);
+                let _ = DeleteObject(laptop_white_brush);
+                let _ = DeleteObject(laptop_screen_brush);
+                let _ = DeleteObject(laptop_notch_pen);
 
                 let _ = windows::Win32::Graphics::Gdi::EndPaint(hwnd, &ps);
             }

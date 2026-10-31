@@ -7,6 +7,7 @@ import com.sway.app.model.CandidatePayload
 import com.sway.app.model.SdpPayload
 import com.sway.app.model.SignalingEnvelope
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -115,9 +116,6 @@ class SignalingClient(
         }
     }
 
-    private val isDecoding = java.util.concurrent.atomic.AtomicBoolean(false)
-    @Volatile
-    private var pendingFrameBytes: ByteArray? = null
     private var frameSeq = 0L
 
     // High-performance double-buffered Bitmap pool to eliminate GC allocations during video streaming
@@ -127,6 +125,56 @@ class SignalingClient(
 
     private val ackByteString = okio.ByteString.of(0xAA.toByte())
     val audioPlayer = com.sway.app.audio.AudioPlayer()
+
+    // Conflated decoding pipeline: zero race conditions, zero thread churn, zero buffer bloat
+    private val decodeChannel = Channel<ByteArray>(Channel.CONFLATED)
+
+    init {
+        scope.launch(Dispatchers.Default) {
+            val decodeOpts = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.RGB_565
+                inMutable = true
+            }
+
+            for (toDecode in decodeChannel) {
+                val candidate = if (useA) bufferA else bufferB
+                if (candidate != null && !candidate.isRecycled) {
+                    decodeOpts.inBitmap = candidate
+                } else {
+                    decodeOpts.inBitmap = null
+                }
+
+                val bmp = try {
+                    BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)
+                } catch (iae: IllegalArgumentException) {
+                    decodeOpts.inBitmap = null
+                    try {
+                        BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)
+                    } catch (e: Exception) {
+                        Log.e(tag, "Failed to decode JPEG frame fallback", e)
+                        null
+                    }
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to decode JPEG frame", e)
+                    null
+                }
+
+                if (bmp != null) {
+                    if (useA) {
+                        bufferA = bmp
+                    } else {
+                        bufferB = bmp
+                    }
+                    useA = !useA
+                    frameSeq++
+                    _currentFrame.value = StreamFrame(bmp, frameSeq)
+                }
+
+                // Send 1-byte frame ACK back to host immediately upon render completion
+                webSocket?.send(ackByteString)
+            }
+        }
+    }
 
     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
         val raw = bytes.toByteArray()
@@ -142,10 +190,8 @@ class SignalingClient(
             return
         }
 
-        // Send instantaneous 1-byte frame ack to host to pace capture loop and eliminate bufferbloat
-        webSocket.send(ackByteString)
-
-        pendingFrameBytes = raw
+        // Deliver directly to the conflated decode pipeline
+        decodeChannel.trySend(raw)
 
         // Update real-time FPS counter
         frameCounter++
@@ -154,56 +200,6 @@ class SignalingClient(
             _fps.value = frameCounter
             frameCounter = 0
             lastFpsTimestamp = now
-        }
-
-        if (isDecoding.compareAndSet(false, true)) {
-            scope.launch(Dispatchers.Default) {
-                try {
-                    while (true) {
-                        val toDecode = pendingFrameBytes ?: break
-                        pendingFrameBytes = null
-
-                        val candidate = if (useA) bufferA else bufferB
-                        val decodeOpts = BitmapFactory.Options().apply {
-                            inPreferredConfig = Bitmap.Config.RGB_565
-                            inMutable = true
-                            if (candidate != null && !candidate.isRecycled) {
-                                inBitmap = candidate
-                            }
-                        }
-                        val bmp = try {
-                            BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)
-                        } catch (iae: IllegalArgumentException) {
-                            // If dimensions changed (e.g. resolution switch or rotation), re-allocate cleanly
-                            decodeOpts.inBitmap = null
-                            try {
-                                BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)
-                            } catch (e: Exception) {
-                                Log.e(tag, "Failed to decode JPEG frame after fallback", e)
-                                null
-                            }
-                        } catch (e: Exception) {
-                            Log.e(tag, "Failed to decode JPEG frame", e)
-                            null
-                        }
-
-                        if (bmp != null) {
-                            if (useA) {
-                                bufferA = bmp
-                            } else {
-                                bufferB = bmp
-                            }
-                            useA = !useA
-                            frameSeq++
-                            _currentFrame.value = StreamFrame(bmp, frameSeq)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(tag, "Failed in decode loop", e)
-                } finally {
-                    isDecoding.set(false)
-                }
-            }
         }
     }
 
