@@ -77,6 +77,7 @@ enum class ViewFitMode {
 @Composable
 private fun DesktopStreamCanvas(
     currentFrameFlow: kotlinx.coroutines.flow.StateFlow<com.sway.app.network.StreamFrame?>,
+    rtcState: RtcConnectionState,
     fitMode: ViewFitMode = ViewFitMode.FIT,
     modifier: Modifier = Modifier
 ) {
@@ -89,66 +90,100 @@ private fun DesktopStreamCanvas(
     }
     val dstRect = remember { android.graphics.Rect() }
 
-    androidx.compose.foundation.Canvas(modifier = modifier.fillMaxSize()) {
-        val frameWrapper = frameState.value ?: return@Canvas
-        val frame = frameWrapper.bitmap
-        val canvasWidth = size.width
-        val canvasHeight = size.height
+    Box(modifier = modifier.fillMaxSize()) {
+        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+            val frameWrapper = frameState.value ?: return@Canvas
+            val frame = frameWrapper.bitmap
+            val canvasWidth = size.width
+            val canvasHeight = size.height
 
-        val imgW = frame.width.toFloat()
-        val imgH = frame.height.toFloat()
-        val streamAspect = imgW / imgH
-        val canvasAspect = canvasWidth / canvasHeight
+            val imgW = frame.width.toFloat()
+            val imgH = frame.height.toFloat()
+            val streamAspect = imgW / imgH
+            val canvasAspect = canvasWidth / canvasHeight
 
-        val fitW: Float
-        val fitH: Float
-        val padX: Float
-        val padY: Float
+            val fitW: Float
+            val fitH: Float
+            val padX: Float
+            val padY: Float
 
-        if (fitMode == ViewFitMode.FILL) {
-            fitW = canvasWidth
-            fitH = canvasHeight
-            padX = 0f
-            padY = 0f
-        } else if (fitMode == ViewFitMode.ROTATE_90) {
-            val rotFitW: Float
-            val rotFitH: Float
-            if (canvasHeight / canvasWidth.coerceAtLeast(1f) > streamAspect) {
-                rotFitH = canvasWidth
-                rotFitW = rotFitH * streamAspect
-            } else {
-                rotFitW = canvasHeight
-                rotFitH = rotFitW / streamAspect
-            }
-            fitW = rotFitW
-            fitH = rotFitH
-            padX = (canvasWidth - fitW) / 2f
-            padY = (canvasHeight - fitH) / 2f
-        } else {
-            if (canvasAspect > streamAspect) {
-                fitH = canvasHeight
-                fitW = fitH * streamAspect
-                padX = (canvasWidth - fitW) / 2f
-                padY = 0f
-            } else {
+            if (fitMode == ViewFitMode.FILL) {
                 fitW = canvasWidth
-                fitH = fitW / streamAspect
+                fitH = canvasHeight
                 padX = 0f
+                padY = 0f
+            } else if (fitMode == ViewFitMode.ROTATE_90) {
+                val rotFitW: Float
+                val rotFitH: Float
+                if (canvasHeight / canvasWidth.coerceAtLeast(1f) > streamAspect) {
+                    rotFitH = canvasWidth
+                    rotFitW = rotFitH * streamAspect
+                } else {
+                    rotFitW = canvasHeight
+                    rotFitH = rotFitW / streamAspect
+                }
+                fitW = rotFitW
+                fitH = rotFitH
+                padX = (canvasWidth - fitW) / 2f
                 padY = (canvasHeight - fitH) / 2f
+            } else {
+                if (canvasAspect > streamAspect) {
+                    fitH = canvasHeight
+                    fitW = fitH * streamAspect
+                    padX = (canvasWidth - fitW) / 2f
+                    padY = 0f
+                } else {
+                    fitW = canvasWidth
+                    fitH = fitW / streamAspect
+                    padX = 0f
+                    padY = (canvasHeight - fitH) / 2f
+                }
+            }
+
+            dstRect.set(padX.toInt(), padY.toInt(), (padX + fitW).toInt(), (padY + fitH).toInt())
+
+            drawIntoCanvas { canvas ->
+                val nativeCanvas = canvas.nativeCanvas
+                if (fitMode == ViewFitMode.ROTATE_90) {
+                    nativeCanvas.save()
+                    nativeCanvas.rotate(90f, canvasWidth / 2f, canvasHeight / 2f)
+                    nativeCanvas.drawBitmap(frame, null, dstRect, paint)
+                    nativeCanvas.restore()
+                } else {
+                    nativeCanvas.drawBitmap(frame, null, dstRect, paint)
+                }
             }
         }
 
-        dstRect.set(padX.toInt(), padY.toInt(), (padX + fitW).toInt(), (padY + fitH).toInt())
-
-        drawIntoCanvas { canvas ->
-            val nativeCanvas = canvas.nativeCanvas
-            if (fitMode == ViewFitMode.ROTATE_90) {
-                nativeCanvas.save()
-                nativeCanvas.rotate(90f, canvasWidth / 2f, canvasHeight / 2f)
-                nativeCanvas.drawBitmap(frame, null, dstRect, paint)
-                nativeCanvas.restore()
-            } else {
-                nativeCanvas.drawBitmap(frame, null, dstRect, paint)
+        if (frameState.value == null) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(16.dp),
+                color = SurfaceDark.copy(alpha = 0.95f),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    val statusMsg = if (rtcState is RtcConnectionState.Failed) {
+                        val r = (rtcState as RtcConnectionState.Failed).reason
+                        if (r.contains("192.168.") || r.contains("10.") || r.contains("172.")) {
+                            "Local Wi-Fi IP unreachable on Mobile Data.\nPlease tap 'Back' and select 'Mobile 4G/5G'."
+                        } else {
+                            "Connection failed:\n$r"
+                        }
+                    } else {
+                        "Connecting to desktop..."
+                    }
+                    Text(
+                        text = statusMsg,
+                        style = Typography.bodyMedium,
+                        color = Color.White
+                    )
+                }
             }
         }
     }
@@ -166,10 +201,6 @@ private fun DesktopStreamView(
     onZoomChange: (Float, Float, Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val hasFrame by remember {
-        derivedStateOf { webRtcManager.currentFrame.value != null }
-    }
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -233,49 +264,21 @@ private fun DesktopStreamView(
                 }
             }
     ) {
-        if (hasFrame) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer(
-                        scaleX = zoomScale,
-                        scaleY = zoomScale,
-                        translationX = zoomOffsetX,
-                        translationY = zoomOffsetY
-                    )
-            ) {
-                DesktopStreamCanvas(currentFrameFlow = webRtcManager.currentFrame, fitMode = fitMode)
-            }
-        } else {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(16.dp),
-                color = SurfaceDark.copy(alpha = 0.95f),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                        val r = (rtcState as RtcConnectionState.Failed).reason
-                        if (r.contains("192.168.") || r.contains("10.") || r.contains("172.")) {
-                            "Local Wi-Fi IP unreachable on Mobile Data.\nPlease tap 'Back' and select 'Mobile 4G/5G'."
-                        } else {
-                            "Connection failed:\n$r"
-                        }
-                    } else {
-                        "Connecting to desktop..."
-                    }
-                    Text(
-                        text = statusMsg,
-                        style = Typography.bodyMedium,
-                        color = Color.White
-                    )
-                }
-            }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(
+                    scaleX = zoomScale,
+                    scaleY = zoomScale,
+                    translationX = zoomOffsetX,
+                    translationY = zoomOffsetY
+                )
+        ) {
+            DesktopStreamCanvas(
+                currentFrameFlow = webRtcManager.currentFrame,
+                rtcState = rtcState,
+                fitMode = fitMode
+            )
         }
     }
 }
