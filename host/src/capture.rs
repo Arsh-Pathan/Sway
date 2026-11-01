@@ -336,6 +336,14 @@ impl ScreenCapture {
                 fn CloseDesktop(hDesktop: isize) -> i32;
             }
             unsafe {
+                use windows::Win32::UI::HiDpi::{
+                    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+                };
+                if SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).is_err() {
+                    let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+                }
+
                 let h_desk = OpenInputDesktop(0, 0, 0x01FF);
                 if h_desk != 0 {
                     let _ = SetThreadDesktop(h_desk);
@@ -667,5 +675,33 @@ mod tests {
             }
         }
         assert!(success > 0, "Should have captured at least 1 valid JPEG frame");
+    }
+
+    #[test]
+    fn test_dpi_cursor_coordinates() {
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{GetCursorInfo, GetSystemMetrics, CURSORINFO, SM_CXSCREEN, SM_CYSCREEN};
+            use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+
+            let before_w = GetSystemMetrics(SM_CXSCREEN);
+            let before_h = GetSystemMetrics(SM_CYSCREEN);
+            println!("Before DPI V2: Screen = {}x{}", before_w, before_h);
+
+            let res = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            println!("SetProcessDpiAwarenessContext result: {:?}", res.is_ok());
+
+            let after_w = GetSystemMetrics(SM_CXSCREEN);
+            let after_h = GetSystemMetrics(SM_CYSCREEN);
+            println!("After DPI V2: Screen = {}x{}", after_w, after_h);
+            assert!(after_w >= 1920, "DPI awareness should report physical monitor width >= 1920");
+
+            let mut ci = CURSORINFO {
+                cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+                ..Default::default()
+            };
+            let cur_ok = GetCursorInfo(&mut ci);
+            println!("Cursor pos: ({}, {}), ok: {:?}", ci.ptScreenPos.x, ci.ptScreenPos.y, cur_ok.is_ok());
+        }
     }
 }

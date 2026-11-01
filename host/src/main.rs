@@ -92,6 +92,19 @@ impl HostConfig {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::UI::HiDpi::{
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+        };
+        // Enable Per-Monitor DPI Awareness V2 so Windows never virtualizes coordinates
+        // regardless of display scaling (100%, 125%, 150%, 175%, 200%).
+        if SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).is_err() {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+        }
+    }
+
     tracing_subscriber::fmt::init();
 
     // Emergency panic safety hook to guarantee display restoration
