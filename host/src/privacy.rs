@@ -9,9 +9,9 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, S
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
     CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse, FillRect,
-    GetTextExtentPoint32W, LineTo, MoveToEx, Polygon, RoundRect, SelectObject, SetBkMode, SetStretchBltMode, SetTextColor,
-    StretchDIBits, TextOutW, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, DT_CENTER, DT_NOPREFIX, FW_BOLD, FW_NORMAL,
-    HALFTONE, PS_NULL, PS_SOLID, SRCCOPY, TRANSPARENT,
+    GetTextExtentPoint32W, LineTo, MoveToEx, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor,
+    TextOutW, DT_CENTER, DT_NOPREFIX, FW_BOLD, FW_NORMAL,
+    PS_NULL, PS_SOLID, TRANSPARENT,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -52,27 +52,6 @@ static PIN_STATE: std::sync::Mutex<PinEntryState> = std::sync::Mutex::new(PinEnt
 static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
 #[cfg(windows)]
 static MOUSE_HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
-
-#[cfg(windows)]
-static CURTAIN_IMAGE: std::sync::LazyLock<Option<(u32, u32, Vec<u8>)>> = std::sync::LazyLock::new(|| {
-    let bytes = include_bytes!("../assets/curtain.png");
-    if let Ok(img) = image::load_from_memory(bytes) {
-        let rgba = img.to_rgba8();
-        let (w, h) = (rgba.width(), rgba.height());
-        // Convert to 32-bit BGRA (little-endian B, G, R, A) for high-speed GDI StretchDIBits
-        let mut bgra = vec![0u8; (w * h * 4) as usize];
-        let raw = rgba.as_raw();
-        for (src, dst) in raw.as_chunks::<4>().0.iter().zip(bgra.as_chunks_mut::<4>().0.iter_mut()) {
-            dst[0] = src[2]; // B
-            dst[1] = src[1]; // G
-            dst[2] = src[0]; // R
-            dst[3] = 255;    // A
-        }
-        Some((w, h, bgra))
-    } else {
-        None
-    }
-});
 
 pub struct PrivacyCurtain {
     is_active: Arc<AtomicBool>,
@@ -397,239 +376,185 @@ unsafe extern "system" fn curtain_wnd_proc(
                     }
                 };
 
-                // Pixel-perfect rendering of the user's uploaded privacy screen asset
-                if let Some((img_w, img_h, ref bgra)) = *CURTAIN_IMAGE {
-                    let bmi = BITMAPINFO {
-                        bmiHeader: BITMAPINFOHEADER {
-                            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                            biWidth: img_w as i32,
-                            biHeight: -(img_h as i32), // negative for top-down DIB
-                            biPlanes: 1,
-                            biBitCount: 32,
-                            biCompression: BI_RGB.0,
-                            biSizeImage: 0,
-                            biXPelsPerMeter: 0,
-                            biYPelsPerMeter: 0,
-                            biClrUsed: 0,
-                            biClrImportant: 0,
-                        },
-                        bmiColors: [windows::Win32::Graphics::Gdi::RGBQUAD::default()],
+                let null_pen = CreatePen(PS_NULL, 0, COLORREF(0));
+                let old_pen = SelectObject(hdc, null_pen);
+
+                // High-DPI ClearType Typography: razor-sharp, crystal clear rendering
+                let title_font_normal = CreateFontW(
+                    34, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 5, 0,
+                    w!("Segoe UI"),
+                );
+                let title_font_bold = CreateFontW(
+                    34, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0, 1, 0, 0, 5, 0,
+                    w!("Segoe UI"),
+                );
+                let matrix_font = CreateFontW(
+                    18, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 5, 0,
+                    w!("Consolas"),
+                );
+
+                // Soft Bokeh Background Brushes (atmospheric cyber circles)
+                let bokeh_brush_1 = CreateSolidBrush(COLORREF(0x00131316)); // Soft dark charcoal
+                let bokeh_brush_2 = CreateSolidBrush(COLORREF(0x001E1E24)); // Subtle mid glow
+                let bokeh_brush_3 = CreateSolidBrush(COLORREF(0x00282832)); // Distinct soft bokeh
+                let bokeh_brush_4 = CreateSolidBrush(COLORREF(0x003A3A46)); // Ambient blurred bokeh
+
+                // Laptop Vector Graphics Brushes (razor-sharp pure vector)
+                let laptop_white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF)); // Solid Pure White Bezel & Base
+                let laptop_screen_brush = CreateSolidBrush(COLORREF(0x00000000)); // Pitch Black Glass #000000
+                let laptop_notch_pen = CreatePen(PS_SOLID, 3, COLORREF(0x00000000)); // Dark Trackpad Notch
+
+                // Render the unified cyber matrix privacy screen centered on EACH active monitor
+                for &(ml, mt, mr, mb) in &mon_list {
+                    let mw = mr - ml;
+                    let mh = mb - mt;
+                    if mw <= 0 || mh <= 0 {
+                        continue;
+                    }
+
+                    let cx = (ml + mr) / 2;
+                    let cy = (mt + mb) / 2 - 25;
+
+                    // 1. Soft Out-of-Focus Bokeh Circles
+                    let bokeh_spots = [
+                        (-440, -190, 34, bokeh_brush_1),
+                        (-320, 220, 44, bokeh_brush_2),
+                        (-250, -130, 22, bokeh_brush_3),
+                        (-160, 270, 30, bokeh_brush_1),
+                        (180, -230, 26, bokeh_brush_2),
+                        (260, 170, 40, bokeh_brush_1),
+                        (340, -150, 46, bokeh_brush_3),
+                        (430, 200, 24, bokeh_brush_2),
+                        (510, -90, 38, bokeh_brush_1),
+                        (-510, 90, 28, bokeh_brush_2),
+                        (130, 290, 22, bokeh_brush_4),
+                        (-140, -280, 24, bokeh_brush_2),
+                        (410, -260, 18, bokeh_brush_3),
+                        (-380, 70, 20, bokeh_brush_4),
+                    ];
+
+                    for &(bx_off, by_off, r, brush) in &bokeh_spots {
+                        let bx = cx + bx_off;
+                        let by = cy + by_off;
+                        if bx - r >= ml && bx + r <= mr && by - r >= mt && by + r <= mb {
+                            SelectObject(hdc, brush);
+                            let _ = Ellipse(hdc, bx - r, by - r, bx + r, by + r);
+                        }
+                    }
+
+                    // 2. Monochrome Digital Binary Stream Columns (Cyber Rain)
+                    SelectObject(hdc, matrix_font);
+                    let col_spacing = 44;
+                    let start_col = ml + 28;
+                    let mut col_x = start_col;
+                    let mut seed: u32 = 0x5A17C0DE ^ (ml as u32);
+
+                    while col_x < mr - 28 {
+                        // Keep center area around laptop and text clean for pristine readability
+                        if (col_x - cx).abs() > 210 {
+                            let mut row_y = mt + 18 + ((seed % 9) as i32) * 10;
+                            while row_y < mb - 28 {
+                                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                                let bit = if (seed & 1) == 0 { '0' } else { '1' };
+                                let brightness = (seed >> 8) & 0xFF;
+
+                                let color = match brightness {
+                                    0..=100 => COLORREF(0x001A1A1E),   // Soft dim background digit
+                                    101..=180 => COLORREF(0x003E3E48), // Mid-level
+                                    181..=230 => COLORREF(0x00787884), // Distinct
+                                    231..=248 => COLORREF(0x00B0B0BA), // Glowing
+                                    _ => COLORREF(0x00FFFFFF),         // Bright white stream head
+                                };
+
+                                SetTextColor(hdc, color);
+                                let char_u16 = [bit as u16];
+                                let _ = TextOutW(hdc, col_x, row_y, &char_u16);
+
+                                row_y += 26;
+                            }
+                        }
+                        col_x += col_spacing;
+                    }
+
+                    // 3. Freestanding Stark Pure White Laptop Emblem (Center)
+                    let icon_w = 170;
+                    let lx = cx - icon_w / 2;
+                    let ly = cy - 80;
+
+                    // Laptop Screen Bezel (Pure White Rounded Rectangle)
+                    SelectObject(hdc, null_pen);
+                    SelectObject(hdc, laptop_white_brush);
+                    let _ = RoundRect(hdc, lx + 12, ly, lx + icon_w - 12, ly + 88, 16, 16);
+
+                    // Laptop Screen Glass (Deep Contrast Pitch Black Cutout)
+                    SelectObject(hdc, laptop_screen_brush);
+                    let _ = RoundRect(hdc, lx + 20, ly + 8, lx + icon_w - 20, ly + 80, 8, 8);
+
+                    // Laptop Base (Pure White Trapezoid with Rounded Bottom Corners)
+                    SelectObject(hdc, laptop_white_brush);
+                    let base_pts = [
+                        POINT { x: lx + 8, y: ly + 92 },
+                        POINT { x: lx + icon_w - 8, y: ly + 92 },
+                        POINT { x: lx + icon_w + 4, y: ly + 105 },
+                        POINT { x: lx - 4, y: ly + 105 },
+                    ];
+                    let _ = Polygon(hdc, &base_pts);
+                    let _ = RoundRect(hdc, lx - 4, ly + 97, lx + icon_w + 4, ly + 106, 6, 6);
+
+                    // Trackpad Opening Notch (Dark Cutout in Base)
+                    SelectObject(hdc, laptop_notch_pen);
+                    let _ = MoveToEx(hdc, cx - 20, ly + 94, None);
+                    let _ = LineTo(hdc, cx + 20, ly + 94);
+
+                    // 4. Centered Clean Typography Directly Below Laptop
+                    // Line 1: "Your system is being controlled"
+                    SelectObject(hdc, title_font_normal);
+                    SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Solid Pure White
+                    let mut line1_rect = RECT {
+                        left: ml + 10,
+                        top: ly + 134,
+                        right: mr - 10,
+                        bottom: ly + 172,
                     };
+                    let mut line1_text: Vec<u16> = "Your system is being controlled\0".encode_utf16().collect();
+                    DrawTextW(hdc, &mut line1_text, &mut line1_rect, DT_CENTER | DT_NOPREFIX);
 
-                    for &(ml, mt, mr, mb) in &mon_list {
-                        let mw = mr - ml;
-                        let mh = mb - mt;
-                        if mw <= 0 || mh <= 0 {
-                            continue;
-                        }
+                    // Line 2: "remotely using Sway." (with "Sway." in bold)
+                    let part1_utf16: Vec<u16> = "remotely using \0".encode_utf16().collect();
+                    let part2_utf16: Vec<u16> = "Sway.\0".encode_utf16().collect();
 
-                        // Fit 16:9 aspect ratio into monitor
-                        let (draw_w, draw_h) = if (mw as i64 * img_h as i64) > (mh as i64 * img_w as i64) {
-                            ((mh * img_w as i32) / img_h as i32, mh)
-                        } else {
-                            (mw, (mw * img_h as i32) / img_w as i32)
-                        };
-                        let draw_x = ml + (mw - draw_w) / 2;
-                        let draw_y = mt + (mh - draw_h) / 2;
+                    SelectObject(hdc, title_font_normal);
+                    let mut sz1 = SIZE::default();
+                    let _ = GetTextExtentPoint32W(hdc, &part1_utf16[..part1_utf16.len() - 1], &mut sz1);
 
-                        SetStretchBltMode(hdc, HALFTONE);
-                        let _ = StretchDIBits(
-                            hdc,
-                            draw_x,
-                            draw_y,
-                            draw_w,
-                            draw_h,
-                            0,
-                            0,
-                            img_w as i32,
-                            img_h as i32,
-                            Some(bgra.as_ptr() as *const _),
-                            &bmi,
-                            DIB_RGB_COLORS,
-                            SRCCOPY,
-                        );
-                    }
-                } else {
-                    let null_pen = CreatePen(PS_NULL, 0, COLORREF(0));
-                    let old_pen = SelectObject(hdc, null_pen);
+                    SelectObject(hdc, title_font_bold);
+                    let mut sz2 = SIZE::default();
+                    let _ = GetTextExtentPoint32W(hdc, &part2_utf16[..part2_utf16.len() - 1], &mut sz2);
 
-                    // Typography for Privacy Screen: "Your system is being controlled" / "remotely using Sway."
-                    let title_font_normal = CreateFontW(
-                        32, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
-                        w!("Segoe UI"),
-                    );
-                    let title_font_bold = CreateFontW(
-                        32, 0, 0, 0, FW_BOLD.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
-                        w!("Segoe UI"),
-                    );
-                    let matrix_font = CreateFontW(
-                        17, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, 1, 0, 0, 0, 0,
-                        w!("Consolas"),
-                    );
+                    let total_w = sz1.cx + sz2.cx;
+                    let start_x = cx - total_w / 2;
+                    let line2_y = ly + 176;
 
-                    // Soft Bokeh Background Brushes (Out-of-focus atmospheric cyber circles)
-                    let bokeh_brush_1 = CreateSolidBrush(COLORREF(0x00131316)); // Soft dark charcoal
-                    let bokeh_brush_2 = CreateSolidBrush(COLORREF(0x001E1E24)); // Subtle mid glow
-                    let bokeh_brush_3 = CreateSolidBrush(COLORREF(0x00282832)); // Distinct soft bokeh
-                    let bokeh_brush_4 = CreateSolidBrush(COLORREF(0x003A3A46)); // Ambient blurred bokeh
+                    SelectObject(hdc, title_font_normal);
+                    let _ = TextOutW(hdc, start_x, line2_y, &part1_utf16[..part1_utf16.len() - 1]);
 
-                    // Laptop Vector Graphics Brushes
-                    let laptop_white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF)); // Solid Pure White Bezel & Base
-                    let laptop_screen_brush = CreateSolidBrush(COLORREF(0x00000000)); // Pitch Black Glass #000000
-                    let laptop_notch_pen = CreatePen(PS_SOLID, 3, COLORREF(0x00000000)); // Dark Trackpad Notch
-
-                    // Render the unified cyber matrix privacy screen centered on EACH active monitor
-                    for &(ml, mt, mr, mb) in &mon_list {
-                        let mw = mr - ml;
-                        let mh = mb - mt;
-                        if mw <= 0 || mh <= 0 {
-                            continue;
-                        }
-
-                        let cx = (ml + mr) / 2;
-                        let cy = (mt + mb) / 2 - 25;
-
-                        // 1. Soft Out-of-Focus Bokeh Circles
-                        let bokeh_spots = [
-                            (-440, -190, 34, bokeh_brush_1),
-                            (-320, 220, 44, bokeh_brush_2),
-                            (-250, -130, 22, bokeh_brush_3),
-                            (-160, 270, 30, bokeh_brush_1),
-                            (180, -230, 26, bokeh_brush_2),
-                            (260, 170, 40, bokeh_brush_1),
-                            (340, -150, 46, bokeh_brush_3),
-                            (430, 200, 24, bokeh_brush_2),
-                            (510, -90, 38, bokeh_brush_1),
-                            (-510, 90, 28, bokeh_brush_2),
-                            (130, 290, 22, bokeh_brush_4),
-                            (-140, -280, 24, bokeh_brush_2),
-                            (410, -260, 18, bokeh_brush_3),
-                            (-380, 70, 20, bokeh_brush_4),
-                        ];
-
-                        for &(bx_off, by_off, r, brush) in &bokeh_spots {
-                            let bx = cx + bx_off;
-                            let by = cy + by_off;
-                            if bx - r >= ml && bx + r <= mr && by - r >= mt && by + r <= mb {
-                                SelectObject(hdc, brush);
-                                let _ = Ellipse(hdc, bx - r, by - r, bx + r, by + r);
-                            }
-                        }
-
-                        // 2. Monochrome Digital Binary Stream Columns (Cyber Rain)
-                        SelectObject(hdc, matrix_font);
-                        let col_spacing = 44;
-                        let start_col = ml + 28;
-                        let mut col_x = start_col;
-                        let mut seed: u32 = 0x5A17C0DE ^ (ml as u32);
-
-                        while col_x < mr - 28 {
-                            // Keep center area around laptop and text clean for pristine readability
-                            if (col_x - cx).abs() > 210 {
-                                let mut row_y = mt + 18 + ((seed % 9) as i32) * 10;
-                                while row_y < mb - 28 {
-                                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                                    let bit = if (seed & 1) == 0 { '0' } else { '1' };
-                                    let brightness = (seed >> 8) & 0xFF;
-
-                                    let color = match brightness {
-                                        0..=100 => COLORREF(0x001A1A1E),   // Soft dim background digit
-                                        101..=180 => COLORREF(0x003E3E48), // Mid-level
-                                        181..=230 => COLORREF(0x00787884), // Distinct
-                                        231..=248 => COLORREF(0x00B0B0BA), // Glowing
-                                        _ => COLORREF(0x00FFFFFF),         // Bright white stream head
-                                    };
-
-                                    SetTextColor(hdc, color);
-                                    let char_u16 = [bit as u16];
-                                    let _ = TextOutW(hdc, col_x, row_y, &char_u16);
-
-                                    row_y += 26;
-                                }
-                            }
-                            col_x += col_spacing;
-                        }
-
-                        // 3. Freestanding Stark Pure White Laptop Emblem (Center)
-                        let icon_w = 164;
-                        let lx = cx - icon_w / 2;
-                        let ly = cy - 75;
-
-                        // Laptop Screen Bezel (Pure White Rounded Rectangle)
-                        SelectObject(hdc, null_pen);
-                        SelectObject(hdc, laptop_white_brush);
-                        let _ = RoundRect(hdc, lx + 12, ly, lx + icon_w - 12, ly + 84, 16, 16);
-
-                        // Laptop Screen Glass (Deep Contrast Pitch Black Cutout)
-                        SelectObject(hdc, laptop_screen_brush);
-                        let _ = RoundRect(hdc, lx + 20, ly + 8, lx + icon_w - 20, ly + 76, 8, 8);
-
-                        // Laptop Base (Pure White Trapezoid with Rounded Bottom Corners)
-                        SelectObject(hdc, laptop_white_brush);
-                        let base_pts = [
-                            POINT { x: lx + 8, y: ly + 88 },
-                            POINT { x: lx + icon_w - 8, y: ly + 88 },
-                            POINT { x: lx + icon_w + 4, y: ly + 101 },
-                            POINT { x: lx - 4, y: ly + 101 },
-                        ];
-                        let _ = Polygon(hdc, &base_pts);
-                        let _ = RoundRect(hdc, lx - 4, ly + 93, lx + icon_w + 4, ly + 102, 6, 6);
-
-                        // Trackpad Opening Notch (Dark Cutout in Base)
-                        SelectObject(hdc, laptop_notch_pen);
-                        let _ = MoveToEx(hdc, cx - 20, ly + 90, None);
-                        let _ = LineTo(hdc, cx + 20, ly + 90);
-
-                        // 4. Centered Clean Typography Directly Below Laptop
-                        // Line 1: "Your system is being controlled"
-                        SelectObject(hdc, title_font_normal);
-                        SetTextColor(hdc, COLORREF(0x00FFFFFF)); // Solid Pure White
-                        let mut line1_rect = RECT {
-                            left: ml + 10,
-                            top: ly + 128,
-                            right: mr - 10,
-                            bottom: ly + 166,
-                        };
-                        let mut line1_text: Vec<u16> = "Your system is being controlled\0".encode_utf16().collect();
-                        DrawTextW(hdc, &mut line1_text, &mut line1_rect, DT_CENTER | DT_NOPREFIX);
-
-                        // Line 2: "remotely using Sway." (with "Sway." in bold)
-                        let part1_utf16: Vec<u16> = "remotely using \0".encode_utf16().collect();
-                        let part2_utf16: Vec<u16> = "Sway.\0".encode_utf16().collect();
-
-                        SelectObject(hdc, title_font_normal);
-                        let mut sz1 = SIZE::default();
-                        let _ = GetTextExtentPoint32W(hdc, &part1_utf16[..part1_utf16.len() - 1], &mut sz1);
-
-                        SelectObject(hdc, title_font_bold);
-                        let mut sz2 = SIZE::default();
-                        let _ = GetTextExtentPoint32W(hdc, &part2_utf16[..part2_utf16.len() - 1], &mut sz2);
-
-                        let total_w = sz1.cx + sz2.cx;
-                        let start_x = cx - total_w / 2;
-                        let line2_y = ly + 168;
-
-                        SelectObject(hdc, title_font_normal);
-                        let _ = TextOutW(hdc, start_x, line2_y, &part1_utf16[..part1_utf16.len() - 1]);
-
-                        SelectObject(hdc, title_font_bold);
-                        let _ = TextOutW(hdc, start_x + sz1.cx, line2_y, &part2_utf16[..part2_utf16.len() - 1]);
-                    }
-
-                    // Clean up GDI resources
-                    SelectObject(hdc, old_pen);
-                    let _ = DeleteObject(null_pen);
-                    let _ = DeleteObject(title_font_normal);
-                    let _ = DeleteObject(title_font_bold);
-                    let _ = DeleteObject(matrix_font);
-                    let _ = DeleteObject(bokeh_brush_1);
-                    let _ = DeleteObject(bokeh_brush_2);
-                    let _ = DeleteObject(bokeh_brush_3);
-                    let _ = DeleteObject(bokeh_brush_4);
-                    let _ = DeleteObject(laptop_white_brush);
-                    let _ = DeleteObject(laptop_screen_brush);
-                    let _ = DeleteObject(laptop_notch_pen);
+                    SelectObject(hdc, title_font_bold);
+                    let _ = TextOutW(hdc, start_x + sz1.cx, line2_y, &part2_utf16[..part2_utf16.len() - 1]);
                 }
+
+                // Clean up GDI resources
+                SelectObject(hdc, old_pen);
+                let _ = DeleteObject(null_pen);
+                let _ = DeleteObject(title_font_normal);
+                let _ = DeleteObject(title_font_bold);
+                let _ = DeleteObject(matrix_font);
+                let _ = DeleteObject(bokeh_brush_1);
+                let _ = DeleteObject(bokeh_brush_2);
+                let _ = DeleteObject(bokeh_brush_3);
+                let _ = DeleteObject(bokeh_brush_4);
+                let _ = DeleteObject(laptop_white_brush);
+                let _ = DeleteObject(laptop_screen_brush);
+                let _ = DeleteObject(laptop_notch_pen);
 
                 let _ = windows::Win32::Graphics::Gdi::EndPaint(hwnd, &ps);
             }
