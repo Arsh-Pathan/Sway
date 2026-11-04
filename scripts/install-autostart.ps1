@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$SignalingUrl = "127.0.0.1:8080",
+    [string]$SignalingUrl = "51.79.249.143:8080",
     [string]$DeviceId = "",
     [string]$Token = ""
 )

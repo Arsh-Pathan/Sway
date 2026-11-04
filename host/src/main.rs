@@ -81,7 +81,7 @@ impl HostConfig {
 
     fn default_config() -> Self {
         Self {
-            signaling_url: "127.0.0.1:8080".to_string(),
+            signaling_url: "51.79.249.143:8080".to_string(),
             device_id: format!("sway-laptop-{}", &Uuid::new_v4().to_string()[..8]),
             token: Uuid::new_v4().to_string()[..12].to_string(),
             local_port: 8089,

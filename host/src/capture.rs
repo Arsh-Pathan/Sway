@@ -497,12 +497,14 @@ impl ScreenCapture {
         };
 
         // Adaptive resolution scaling:
-        // Turbo 60 FPS smooth (quality <= 50) scales to 960 (960x540) for 8ms encode and ultra-low decode latency.
-        // Balanced HD (51-70) scales to 1280 (720p).
+        // Turbo 60 FPS smooth (quality <= 40) scales to 854 (480p) for ultra-lightweight ~16KB frames and 60 FPS over 4G/WAN.
+        // Quality 41-55 scales to 960 (540p).
+        // Balanced HD (56-70) scales to 1280 (720p).
         // High fidelity uses full 1080p / 1920.
         let max_dim = match quality {
-            0..=50 => 960,
-            51..=70 => 1280,
+            0..=40 => 854,
+            41..=55 => 960,
+            56..=70 => 1280,
             _ => 1920,
         };
 

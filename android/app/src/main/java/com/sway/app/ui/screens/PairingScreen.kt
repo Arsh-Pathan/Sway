@@ -76,7 +76,7 @@ fun PairingScreen(
     val defaultUrl = "192.168.11.154:8089"
     val defaultDeviceId = "sway-laptop-b18602ec"
     val defaultToken = "50f0232b-ea9"
-    val cloudflareTunnelUrl = "https://framework-governments-introducing-pregnant.trycloudflare.com"
+    val defaultVpsUrl = "51.79.249.143:8080"
 
     val isCellular = remember {
         val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
@@ -85,13 +85,15 @@ fun PairingScreen(
             !(cap.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI))
     }
 
-    // Manual Form & Saved State: Auto-select Cloudflare tunnel if phone is on mobile cellular network
+    // Manual Form & Saved State: Auto-select VPS Relay if phone is on mobile cellular network
     var signalingUrl by remember {
         val saved = prefs.getString("saved_signaling_url", null)
-        val initial = if (isCellular && (saved == null || saved.contains("192.168.") || saved.contains("10.") || saved.contains("172.") || saved.contains("127.0.0.1"))) {
-            cloudflareTunnelUrl
+        val initial = if (isCellular && (saved == null || saved.contains("192.168.") || saved.contains("10.") || saved.contains("172.") || saved.contains("127.0.0.1") || saved.contains("trycloudflare"))) {
+            defaultVpsUrl
+        } else if (saved != null && saved.contains("trycloudflare")) {
+            defaultVpsUrl
         } else {
-            saved ?: defaultUrl
+            saved ?: defaultVpsUrl
         }
         mutableStateOf(initial)
     }
@@ -304,17 +306,17 @@ fun PairingScreen(
                             val scannedId = obj.getString("deviceId")
                             val scannedToken = obj.getString("token")
 
-                            // If on Mobile Data (Cellular), auto-route local Wi-Fi IPs to the live Cloudflare Remote Tunnel
+                            // If on Mobile Data (Cellular), auto-route local Wi-Fi IPs to the VPS Remote Relay
                             if (isCellular && (scannedUrl.contains("192.168.") || scannedUrl.contains("10.") || scannedUrl.contains("172.") || scannedUrl.contains("127.0.0.1"))) {
-                                scannedUrl = cloudflareTunnelUrl
-                                Toast.makeText(context, "Mobile Data detected: Connecting via Remote Tunnel", Toast.LENGTH_SHORT).show()
+                                scannedUrl = defaultVpsUrl
+                                Toast.makeText(context, "Mobile Data detected: Connecting via VPS Relay", Toast.LENGTH_SHORT).show()
                             }
                             connectAndSave(scannedUrl, scannedId, scannedToken)
                         } catch (e: Exception) {
                             // Raw format: deviceId:token
                             if (scannedJson.contains(":")) {
                                 val parts = scannedJson.split(":")
-                                val targetUrl = if (isCellular) cloudflareTunnelUrl else signalingUrl
+                                val targetUrl = if (isCellular) defaultVpsUrl else signalingUrl
                                 connectAndSave(targetUrl, parts[0], parts[1])
                             }
                         }
@@ -388,7 +390,7 @@ fun PairingScreen(
                                 deviceId = it.deviceId
                                 token = if (it.token.isNotEmpty()) it.token else token
                             } ?: run {
-                                signalingUrl = "192.168.11.229:8089"
+                                signalingUrl = defaultUrl
                             }
                         },
                         label = { Text("Local Wi-Fi", fontSize = 11.sp) },
@@ -399,24 +401,12 @@ fun PairingScreen(
                         )
                     )
                     FilterChip(
-                        selected = signalingUrl.contains("trycloudflare.com") || (!signalingUrl.contains("8089") && !signalingUrl.contains("8080") && signalingUrl.contains(".")),
+                        selected = signalingUrl.contains("51.79.249.143") || signalingUrl.contains("8080"),
                         onClick = {
-                            signalingUrl = "https://framework-governments-introducing-pregnant.trycloudflare.com"
+                            signalingUrl = defaultVpsUrl
                         },
-                        label = { Text("Mobile 4G/5G", fontSize = 11.sp) },
-                        modifier = Modifier.weight(1.1f),
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = androidx.compose.ui.graphics.Color.White,
-                            selectedLabelColor = androidx.compose.ui.graphics.Color.Black
-                        )
-                    )
-                    FilterChip(
-                        selected = signalingUrl.contains("8080"),
-                        onClick = {
-                            signalingUrl = "127.0.0.1:8080"
-                        },
-                        label = { Text("Relay", fontSize = 11.sp) },
-                        modifier = Modifier.weight(0.8f),
+                        label = { Text("VPS Relay (51.79.249.143)", fontSize = 11.sp) },
+                        modifier = Modifier.weight(1.5f),
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = androidx.compose.ui.graphics.Color.White,
                             selectedLabelColor = androidx.compose.ui.graphics.Color.Black
@@ -428,7 +418,7 @@ fun PairingScreen(
                     value = signalingUrl,
                     onValueChange = { signalingUrl = it },
                     label = { Text("Server / Host Address") },
-                    placeholder = { Text("192.168.x.x:8089 or vps:8080") },
+                    placeholder = { Text("192.168.x.x:8089 or 51.79.249.143:8080") },
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = AccentWhite,

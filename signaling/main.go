@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -13,8 +14,8 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  64 * 1024,
-	WriteBufferSize: 64 * 1024,
+	ReadBufferSize:  256 * 1024,
+	WriteBufferSize: 256 * 1024,
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
@@ -89,10 +90,16 @@ func main() {
 			return
 		}
 
+		if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+			_ = tcpConn.SetNoDelay(true)
+			_ = tcpConn.SetWriteBuffer(512 * 1024)
+			_ = tcpConn.SetReadBuffer(512 * 1024)
+		}
+
 		client := &Client{
 			hub:  hub,
 			conn: conn,
-			send: make(chan WSMessage, 4),
+			send: make(chan WSMessage, 2),
 		}
 
 		hub.register <- client

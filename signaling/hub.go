@@ -304,10 +304,19 @@ func (c *Client) sendSafe(msg WSMessage) {
 	defer func() {
 		_ = recover()
 	}()
-	select {
-	case c.send <- msg:
-	default:
-		// Send buffer full, drop frame (standard for live video)
+
+	for {
+		select {
+		case c.send <- msg:
+			return
+		default:
+			// Buffer full: drop the stale queued frame so the newest frame is always delivered!
+			select {
+			case <-c.send:
+			default:
+				return
+			}
+		}
 	}
 }
 

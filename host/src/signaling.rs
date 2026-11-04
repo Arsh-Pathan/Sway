@@ -127,13 +127,23 @@ impl HostSignaling {
         };
 
         info!("Connecting to signaling server at: {}", ws_url);
-        let (ws_stream, _) = connect_async(&ws_url).await?;
+        let (ws_stream, _) = if ws_url.starts_with("ws://") {
+            let addr = ws_url.trim_start_matches("ws://").trim_end_matches("/ws");
+            if let Ok(tcp_stream) = tokio::net::TcpStream::connect(addr).await {
+                let _ = tcp_stream.set_nodelay(true);
+                tokio_tungstenite::client_async(&ws_url, tokio_tungstenite::MaybeTlsStream::Plain(tcp_stream)).await?
+            } else {
+                connect_async(&ws_url).await?
+            }
+        } else {
+            connect_async(&ws_url).await?
+        };
         info!("Connected to signaling WebSocket!");
 
         let (mut write, mut read) = ws_stream.split();
         let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(32);
         let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(16);
-        let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(1);
+        let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(2);
 
         // Background WebSocket writer task prioritizing control messages and dropping stale frames
         let writer_handle = tokio::spawn(async move {
@@ -180,7 +190,7 @@ impl HostSignaling {
         let simulator = self.simulator.clone();
         let is_streaming = Arc::new(AtomicBool::new(false));
         let active_monitor = Arc::new(AtomicUsize::new(0));
-        let stream_quality = Arc::new(AtomicU8::new(45));
+        let stream_quality = Arc::new(AtomicU8::new(38)); // Default Turbo 38 for ~18KB frames and 60 FPS over 4G/WAN
         let is_audio_streaming = Arc::new(AtomicBool::new(false));
         let audio_handle: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(std::sync::Mutex::new(None));
 
@@ -205,8 +215,8 @@ impl HostSignaling {
                             let q = quality_flag.load(Ordering::Relaxed);
 
                             let target_interval = match q {
-                                1..=50 => std::time::Duration::from_millis(16),  // ~60 FPS Real-time
-                                51..=70 => std::time::Duration::from_millis(22), // ~45 FPS Balanced HD
+                                1..=45 => std::time::Duration::from_millis(16),  // ~60 FPS Real-time
+                                46..=65 => std::time::Duration::from_millis(22), // ~45 FPS Balanced HD
                                 _ => std::time::Duration::from_millis(33),       // ~30 FPS High Fidelity
                             };
 
@@ -278,11 +288,21 @@ impl HostSignaling {
                             }
                             InputPacket::SetQuality { mode } => {
                                 let q = match mode {
-                                    0 => 45, // Mobile 60 FPS smooth
-                                    1 => 65, // Balanced crisp HD
-                                    _ => 80, // High Fidelity
+                                    0 => 38, // Mobile 60 FPS Turbo smooth (sub-20KB frames!)
+                                    1 => 55, // Balanced HD
+                                    _ => 75, // High Fidelity
                                 };
                                 stream_quality.store(q, Ordering::SeqCst);
+                            }
+                            InputPacket::SetStreaming { enabled } => {
+                                info!("Remote client streaming state: {}", enabled);
+                                is_streaming.store(*enabled, Ordering::SeqCst);
+                            }
+                            InputPacket::TouchDirect { norm_x, norm_y, action } => {
+                                let is_text = simulator.touch_direct(*norm_x, *norm_y, *action);
+                                if is_text && (*action == 0 || *action == 2) {
+                                    let _ = ctrl_tx.try_send(Message::Text("{\"type\":\"text_focus\"}".to_string()));
+                                }
                             }
                             InputPacket::SetPrivacyCurtain { enabled } => {
                                 self.privacy.set_enabled(*enabled);
