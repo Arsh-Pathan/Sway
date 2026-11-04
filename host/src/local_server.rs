@@ -352,9 +352,8 @@ impl LocalServer {
                             let q = quality_flag.load(Ordering::Relaxed);
 
                             let target_interval = match q {
-                                1..=50 => std::time::Duration::from_millis(16),  // ~60 FPS Butter-smooth Real-time
-                                51..=70 => std::time::Duration::from_millis(22), // ~45 FPS Balanced HD
-                                _ => std::time::Duration::from_millis(33),       // ~30 FPS High Fidelity
+                                1..=70 => std::time::Duration::from_millis(16),  // ~60 FPS Butter-smooth Real-time
+                                _ => std::time::Duration::from_millis(22),       // ~45 FPS High Fidelity
                             };
 
                             if let Some(frame) = capture.capture_frame_jpeg(q) {

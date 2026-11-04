@@ -118,12 +118,10 @@ class SignalingClient(
 
     private var frameSeq = 0L
 
-    // High-performance double-buffered Bitmap pool to eliminate GC allocations during video streaming
-    private var bufferA: Bitmap? = null
-    private var bufferB: Bitmap? = null
-    private var useA = true
+    // Triple-buffered Bitmap pool to eliminate GC allocations and prevent race conditions with GPU draw calls
+    private val bitmapPool = arrayOfNulls<Bitmap>(3)
+    private var poolIndex = 0
 
-    private val ackByteString = okio.ByteString.of(0xAA.toByte())
     val audioPlayer = com.sway.app.audio.AudioPlayer()
 
     // Conflated decoding pipeline: zero race conditions, zero thread churn, zero buffer bloat
@@ -134,10 +132,12 @@ class SignalingClient(
             val decodeOpts = BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.ARGB_8888
                 inMutable = true
+                inSampleSize = 1
+                inPremultiplied = false // JPEGs have no alpha; avoids unnecessary premultiplication math
             }
 
             for (toDecode in decodeChannel) {
-                val candidate = if (useA) bufferA else bufferB
+                val candidate = bitmapPool[poolIndex]
                 if (candidate != null && !candidate.isRecycled) {
                     decodeOpts.inBitmap = candidate
                 } else {
@@ -160,12 +160,8 @@ class SignalingClient(
                 }
 
                 if (bmp != null) {
-                    if (useA) {
-                        bufferA = bmp
-                    } else {
-                        bufferB = bmp
-                    }
-                    useA = !useA
+                    bitmapPool[poolIndex] = bmp
+                    poolIndex = (poolIndex + 1) % 3
                     frameSeq++
                     _currentFrame.value = StreamFrame(bmp, frameSeq)
 
@@ -178,9 +174,6 @@ class SignalingClient(
                         lastFpsTimestamp = now
                     }
                 }
-
-                // Send 1-byte frame ACK back to host immediately upon render completion
-                webSocket?.send(ackByteString)
             }
         }
     }
@@ -307,10 +300,10 @@ class SignalingClient(
         webSocket?.close(1000, "User disconnected")
         webSocket = null
         _currentFrame.value = null
-        bufferA?.recycle()
-        bufferA = null
-        bufferB?.recycle()
-        bufferB = null
+        for (i in bitmapPool.indices) {
+            bitmapPool[i]?.recycle()
+            bitmapPool[i] = null
+        }
         _state.value = SignalingState.Disconnected
     }
 }

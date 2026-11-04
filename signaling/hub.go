@@ -305,16 +305,41 @@ func (c *Client) sendSafe(msg WSMessage) {
 		_ = recover()
 	}()
 
-	for {
+	// Distinguish video frames (> 1KB binary payload) from critical input events & signaling
+	isVideoFrame := msg.msgType == websocket.BinaryMessage && len(msg.data) > 1024
+
+	if isVideoFrame {
+		for {
+			select {
+			case c.send <- msg:
+				return
+			default:
+				// Buffer full: drop stale queued video frame to keep latency at zero
+				select {
+				case <-c.send:
+				default:
+					return
+				}
+			}
+		}
+	} else {
+		// Input & Control Messages: prioritize over stale video frames
 		select {
 		case c.send <- msg:
 			return
 		default:
-			// Buffer full: drop the stale queued frame so the newest frame is always delivered!
+			// Discard a stale video frame to make room for input/signaling
 			select {
 			case <-c.send:
 			default:
-				return
+			}
+			select {
+			case c.send <- msg:
+			default:
+				select {
+				case c.send <- msg:
+				case <-time.After(50 * time.Millisecond):
+				}
 			}
 		}
 	}

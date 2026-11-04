@@ -1,5 +1,4 @@
-use image::codecs::jpeg::JpegEncoder;
-use image::ColorType;
+use libjpeg_turbo_rs::{compress, PixelFormat, Subsampling};
 use tracing::info;
 use xcap::Monitor;
 
@@ -317,8 +316,7 @@ pub struct ScreenCapture {
     pub active_monitor: usize,
     pub monitors: Vec<MonitorInfo>,
     cached_monitors: Vec<Monitor>,
-    rgb_buffer: Vec<u8>,
-    jpeg_buffer: Vec<u8>,
+    scaled_rgba_buffer: Vec<u8>,
     last_frame_time: std::time::Instant,
     last_monitor_refresh: std::time::Instant,
     last_frame_hash: u64,
@@ -377,8 +375,7 @@ impl ScreenCapture {
             active_monitor: active_index,
             monitors,
             cached_monitors,
-            rgb_buffer: Vec::with_capacity(1920 * 1080 * 3),
-            jpeg_buffer: Vec::with_capacity(64 * 1024),
+            scaled_rgba_buffer: Vec::with_capacity(1920 * 1080 * 4),
             last_frame_time: std::time::Instant::now(),
             last_monitor_refresh: std::time::Instant::now(),
             last_frame_hash: 0,
@@ -522,54 +519,49 @@ impl ScreenCapture {
         let mut target_image = rgba_image;
         draw_real_cursor(&mut target_image, mon_x, mon_y, mon_w, mon_h);
 
-        let rgb_len = (target_w * target_h * 3) as usize;
-        if self.rgb_buffer.len() < rgb_len {
-            self.rgb_buffer.resize(rgb_len, 0);
-        }
-
         let raw_src = target_image.as_raw();
-        if target_w == width && target_h == height {
-            // Native resolution: vectorized fast-path
-            let dst = &mut self.rgb_buffer[..rgb_len];
-            for (src_chunk, dst_chunk) in raw_src.as_chunks::<4>().0.iter().zip(dst.as_chunks_mut::<3>().0.iter_mut()) {
-                dst_chunk[0] = src_chunk[0];
-                dst_chunk[1] = src_chunk[1];
-                dst_chunk[2] = src_chunk[2];
-            }
-        } else {
-            // High-speed single-pass nearest-neighbor downscale directly to RGB (0.6ms, 50x faster than generic resize)
-            let dst = &mut self.rgb_buffer[..rgb_len];
-            let mut dst_idx = 0;
-            for y in 0..target_h {
-                let src_y = (y * height) / target_h;
-                let src_row_start = (src_y * width * 4) as usize;
-                for x in 0..target_w {
-                    let src_x = (x * width) / target_w;
-                    let src_px = src_row_start + (src_x * 4) as usize;
-                    dst[dst_idx] = raw_src[src_px];
-                    dst[dst_idx + 1] = raw_src[src_px + 1];
-                    dst[dst_idx + 2] = raw_src[src_px + 2];
-                    dst_idx += 3;
-                }
-            }
-        }
-
         self.last_frame_time = std::time::Instant::now();
 
-        self.jpeg_buffer.clear();
-        let mut encoder = JpegEncoder::new_with_quality(&mut self.jpeg_buffer, quality);
-        if encoder
-            .encode(
-                &self.rgb_buffer[..rgb_len],
-                target_w,
-                target_h,
-                ColorType::Rgb8.into(),
-            )
-            .is_ok()
-        {
-            Some(self.jpeg_buffer.clone())
+        if target_w == width && target_h == height {
+            // Native resolution: zero-copy AVX2/SSE2 SIMD compression directly from captured buffer
+            compress(
+                raw_src,
+                width as usize,
+                height as usize,
+                PixelFormat::Rgba,
+                quality,
+                Subsampling::S420,
+            ).ok()
         } else {
-            None
+            // Ultra-fast 32-bit pixel word downsampling directly into reusable RGBA buffer
+            let dst_len = (target_w * target_h * 4) as usize;
+            if self.scaled_rgba_buffer.len() < dst_len {
+                self.scaled_rgba_buffer.resize(dst_len, 0);
+            }
+
+            let src_ptr = raw_src.as_ptr();
+            let dst_ptr = self.scaled_rgba_buffer.as_mut_ptr();
+            for y in 0..target_h {
+                let src_y = (y * height) / target_h;
+                let src_row = (src_y * width) as usize;
+                let dst_row = (y * target_w) as usize;
+                for x in 0..target_w {
+                    let src_x = (x * width) / target_w;
+                    unsafe {
+                        let px = (src_ptr as *const u32).add(src_row + src_x as usize).read();
+                        (dst_ptr as *mut u32).add(dst_row + x as usize).write(px);
+                    }
+                }
+            }
+
+            compress(
+                &self.scaled_rgba_buffer[..dst_len],
+                target_w as usize,
+                target_h as usize,
+                PixelFormat::Rgba,
+                quality,
+                Subsampling::S420,
+            ).ok()
         }
     }
 

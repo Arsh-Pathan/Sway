@@ -21,21 +21,30 @@ pub struct InputSimulator {
 impl InputSimulator {
     #[cfg(windows)]
     pub fn ensure_input_desktop() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_SWITCH_MS: AtomicU64 = AtomicU64::new(0);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let last = LAST_SWITCH_MS.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < 1000 {
+            return;
+        }
+        LAST_SWITCH_MS.store(now, Ordering::Relaxed);
+
         extern "system" {
             fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
             fn SetThreadDesktop(hDesktop: isize) -> i32;
+            fn CloseDesktop(hDesktop: isize) -> i32;
         }
         unsafe {
             let h_desk = OpenInputDesktop(0, 0, 0x01FF);
             if h_desk != 0 {
                 let _ = SetThreadDesktop(h_desk);
-            }
-            use windows::Win32::UI::HiDpi::{
-                SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
-            };
-            if SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).is_err() {
-                let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+                let _ = CloseDesktop(h_desk);
             }
         }
     }
@@ -187,7 +196,6 @@ impl InputSimulator {
     pub fn mouse_move(&self, dx: i16, dy: i16) {
         #[cfg(windows)]
         {
-            Self::ensure_input_desktop();
             self.send_mouse_input(MOUSEEVENTF_MOVE, dx as i32, dy as i32, 0);
         }
     }
@@ -294,7 +302,6 @@ impl InputSimulator {
     pub fn touch_direct(&self, norm_x: u16, norm_y: u16, action: u8) -> bool {
         #[cfg(windows)]
         {
-            Self::ensure_input_desktop();
             use windows::Win32::UI::WindowsAndMessaging::{
                 GetCursorInfo, GetSystemMetrics, LoadCursorW, SetCursorPos,
                 CURSORINFO, CURSOR_SHOWING, IDC_IBEAM, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,

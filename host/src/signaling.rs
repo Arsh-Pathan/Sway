@@ -215,9 +215,8 @@ impl HostSignaling {
                             let q = quality_flag.load(Ordering::Relaxed);
 
                             let target_interval = match q {
-                                1..=45 => std::time::Duration::from_millis(16),  // ~60 FPS Real-time
-                                46..=65 => std::time::Duration::from_millis(22), // ~45 FPS Balanced HD
-                                _ => std::time::Duration::from_millis(33),       // ~30 FPS High Fidelity
+                                1..=70 => std::time::Duration::from_millis(16),  // ~60 FPS Real-time (hardware SIMD accelerated)
+                                _ => std::time::Duration::from_millis(22),       // ~45 FPS Ultra High Fidelity
                             };
 
                             if let Some(frame) = capture.capture_frame_jpeg(q) {
