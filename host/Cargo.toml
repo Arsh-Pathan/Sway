@@ -1,6 +1,6 @@
 [package]
 name = "sway-host"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 authors = ["Arsh Pathan"]
 description = "High-performance low-latency Windows host daemon for Sway remote control"
@@ -37,9 +37,4 @@ features = [
     "Win32_UI_HiDpi"
 ]
 
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-strip = true
+

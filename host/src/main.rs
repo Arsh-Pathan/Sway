@@ -127,6 +127,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = config.token;
     let local_port = config.local_port;
 
+    // Prevent Windows laptop from sleeping when idle or display turns off
+    PowerManager::set_host_always_awake(true);
+
     // Initialize screen capture and detect monitors
     let capture = ScreenCapture::new();
     info!("Initialized capture for {} display(s)", capture.monitors.len());
@@ -159,15 +162,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         host_signaling.run_with_retry().await;
     });
 
-    // Wait for shutdown signal
-    match tokio::signal::ctrl_c().await {
-        Ok(()) => {
-            info!("Received shutdown signal (Ctrl+C). Restoring display settings and power policies...");
+    // Determine whether we are attached to an interactive console or running as a silent 24/7 background service
+    #[cfg(windows)]
+    extern "system" {
+        fn GetConsoleWindow() -> isize;
+    }
+    #[cfg(windows)]
+    let has_console = unsafe { GetConsoleWindow() != 0 };
+    #[cfg(not(windows))]
+    let has_console = true;
+
+    if has_console {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                info!("Received shutdown signal (Ctrl+C). Restoring display settings and power policies...");
+            }
+            Err(_) => {
+                std::future::pending::<()>().await;
+            }
         }
-        Err(e) => {
-            tracing::warn!("Ctrl+C handler unavailable (background daemon mode): {}. Keeping daemon alive.", e);
-            std::future::pending::<()>().await;
-        }
+    } else {
+        info!("Running as headless 24/7 background service. Keeping daemon alive permanently.");
+        std::future::pending::<()>().await;
     }
 
     signaling_handle.abort();

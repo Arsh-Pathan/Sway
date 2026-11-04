@@ -61,30 +61,41 @@ if (-not (Test-Path $ConfigPath)) {
     Write-Host "[+] Created configuration: $ConfigPath" -ForegroundColor Green
 }
 
-# Create the silent launcher VBS script
-$VbsContent = @"
-Set WshShell = CreateObject("WScript.Shell")
-WshShell.CurrentDirectory = "$AppDir"
-WshShell.Run """$TargetExe""", 0, False
-"@
-
-$TargetVbs = "$AppDir\run-sway-hidden.vbs"
-Set-Content -Path $TargetVbs -Value $VbsContent -Encoding ASCII
-Write-Host "[+] Created silent background launcher: $TargetVbs" -ForegroundColor Green
-
-# Register in Windows Run key (starts automatically on user logon)
+# 1. Register in Windows Registry Run key (starts automatically on user logon)
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$RegValue = "wscript.exe `"$TargetVbs`""
+$RegValue = "`"$TargetExe`""
 Set-ItemProperty -Path $RegKey -Name "SwayRemoteHost" -Value $RegValue
-Write-Host "[+] Registered in Windows Autostart: SwayRemoteHost -> $RegValue" -ForegroundColor Green
+Write-Host "[+] Registered in Windows Registry Autostart: SwayRemoteHost -> $TargetExe" -ForegroundColor Green
 
-# Launch right now if not already running
-$running = Get-Process -Name "sway-host" -ErrorAction SilentlyContinue
-if (-not $running) {
-    Write-Host "[*] Launching Sway Host now in background..." -ForegroundColor Yellow
-    Start-Process -FilePath "wscript.exe" -ArgumentList "`"$TargetVbs`""
-    Start-Sleep -Seconds 1
+# 2. Register in Windows Startup folder (shell:startup) for dual-layer boot persistence
+$StartupFolder = [System.Environment]::GetFolderPath('Startup')
+$ShortcutPath = "$StartupFolder\SwayHost.lnk"
+$WshShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut($ShortcutPath)
+$Shortcut.TargetPath = $TargetExe
+$Shortcut.WorkingDirectory = $AppDir
+$Shortcut.WindowStyle = 7 # Minimized/Hidden
+$Shortcut.Description = "Sway Remote Host 24/7 Background Service"
+$Shortcut.Save()
+Write-Host "[+] Registered in Windows Startup Folder: $ShortcutPath" -ForegroundColor Green
+
+# 3. Configure Windows Power Management so laptop never sleeps on AC power
+try {
+    powercfg /change standby-timeout-ac 0
+    powercfg /change hibernate-timeout-ac 0
+    Write-Host "[+] Configured Windows Power: Standby on AC = Never Sleep" -ForegroundColor Green
+} catch {
+    Write-Host "[!] Could not configure powercfg: $_" -ForegroundColor Yellow
 }
+
+# Stop any old instances before launching clean native background process
+Stop-Process -Name "sway-host" -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
+
+# Launch native background process silently
+Write-Host "[*] Launching Sway Host 24/7 silent background service..." -ForegroundColor Yellow
+Start-Process -FilePath $TargetExe -WorkingDirectory $AppDir -WindowStyle Hidden
+Start-Sleep -Seconds 2
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Sway Desktop Host Autostart Installed! " -ForegroundColor Green
