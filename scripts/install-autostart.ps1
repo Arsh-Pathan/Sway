@@ -61,13 +61,11 @@ if (-not (Test-Path $ConfigPath)) {
     Write-Host "[+] Created configuration: $ConfigPath" -ForegroundColor Green
 }
 
-# 1. Register in Windows Registry Run key (starts automatically on user logon)
+# 1. Clean up any redundant Registry Run key to avoid dual-launch and heuristic false-positives
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$RegValue = "`"$TargetExe`""
-Set-ItemProperty -Path $RegKey -Name "SwayRemoteHost" -Value $RegValue
-Write-Host "[+] Registered in Windows Registry Autostart: SwayRemoteHost -> $TargetExe" -ForegroundColor Green
+Remove-ItemProperty -Path $RegKey -Name "SwayRemoteHost" -ErrorAction SilentlyContinue
 
-# 2. Register in Windows Startup folder (shell:startup) for dual-layer boot persistence
+# 2. Register in Windows Startup folder (shell:startup) for persistent boot autostart
 $StartupFolder = [System.Environment]::GetFolderPath('Startup')
 $ShortcutPath = "$StartupFolder\SwayHost.lnk"
 $WshShell = New-Object -ComObject WScript.Shell
@@ -92,9 +90,12 @@ try {
 Stop-Process -Name "sway-host" -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 
-# Launch native background process silently
+# Launch native background process detached via WMI Win32_Process
 Write-Host "[*] Launching Sway Host 24/7 silent background service..." -ForegroundColor Yellow
-Start-Process -FilePath $TargetExe -WorkingDirectory $AppDir -WindowStyle Hidden
+$launchRes = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+    CommandLine = "`"$TargetExe`""
+    CurrentDirectory = $AppDir
+}
 Start-Sleep -Seconds 2
 
 Write-Host "========================================" -ForegroundColor Cyan

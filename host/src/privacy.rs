@@ -5,22 +5,24 @@ use tracing::info;
 #[cfg(windows)]
 use windows::core::w;
 #[cfg(windows)]
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{BOOL, COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
     CreateSolidBrush, DeleteObject, FillRect, SetBkMode, SetStretchBltMode,
     StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, SRCCOPY, TRANSPARENT,
 };
 #[cfg(windows)]
+use windows::Win32::UI::Input::KeyboardAndMouse::BlockInput;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetSystemMetrics, PostMessageW, PostQuitMessage, RegisterClassExW, SetWindowDisplayAffinity,
     ShowWindow, TranslateMessage, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, WINDOW_DISPLAY_AFFINITY, WM_CLOSE,
-    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
+    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
     WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_LAYERED,
     WS_POPUP, WS_VISIBLE, SetLayeredWindowAttributes, LWA_ALPHA,
-    SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, HHOOK, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT,
 };
 
 // WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Windows 10 2004+)
@@ -28,28 +30,6 @@ const WDA_EXCLUDEFROMCAPTURE: u32 = 0x00000011;
 
 #[cfg(windows)]
 static CURTAIN_MONITORS: std::sync::RwLock<Vec<(i32, i32, i32, i32)>> = std::sync::RwLock::new(Vec::new());
-
-#[derive(Default)]
-struct PinEntryState {
-    entered_pin: String,
-    expected_pin: String,
-    expected_token: String,
-    last_error: bool,
-    curtain_hwnd: isize,
-}
-
-static PIN_STATE: std::sync::Mutex<PinEntryState> = std::sync::Mutex::new(PinEntryState {
-    entered_pin: String::new(),
-    expected_pin: String::new(),
-    expected_token: String::new(),
-    last_error: false,
-    curtain_hwnd: 0,
-});
-
-#[cfg(windows)]
-static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
-#[cfg(windows)]
-static MOUSE_HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
 
 #[cfg(windows)]
 static CURTAIN_IMAGE: std::sync::LazyLock<Option<(u32, u32, Vec<u8>)>> = std::sync::LazyLock::new(|| {
@@ -75,17 +55,13 @@ static CURTAIN_IMAGE: std::sync::LazyLock<Option<(u32, u32, Vec<u8>)>> = std::sy
 pub struct PrivacyCurtain {
     is_active: Arc<AtomicBool>,
     hwnd_val: Arc<AtomicIsize>,
-    pin: Arc<std::sync::RwLock<String>>,
-    token: Arc<std::sync::RwLock<String>>,
 }
 
 impl PrivacyCurtain {
-    pub fn new(pin: String, token: String) -> Self {
+    pub fn new(_pin: String, _token: String) -> Self {
         Self {
             is_active: Arc::new(AtomicBool::new(false)),
             hwnd_val: Arc::new(AtomicIsize::new(0)),
-            pin: Arc::new(std::sync::RwLock::new(pin)),
-            token: Arc::new(std::sync::RwLock::new(token)),
         }
     }
 
@@ -100,9 +76,6 @@ impl PrivacyCurtain {
                 let is_active = self.is_active.clone();
                 let hwnd_store = self.hwnd_val.clone();
 
-                let cur_pin = self.pin.read().map(|p| p.clone()).unwrap_or_else(|_| "1234".to_string());
-                let cur_token = self.token.read().map(|t| t.clone()).unwrap_or_default();
-
                 std::thread::spawn(move || {
                     unsafe {
                         extern "system" {
@@ -115,14 +88,8 @@ impl PrivacyCurtain {
                             let _ = SetThreadDesktop(h_desk);
                         }
 
-                        // Initialize PIN State
-                        if let Ok(mut state) = PIN_STATE.lock() {
-                            state.entered_pin.clear();
-                            state.expected_pin = cur_pin;
-                            state.expected_token = cur_token;
-                            state.last_error = false;
-                            state.curtain_hwnd = 0;
-                        }
+                        // Block physical keyboard and mouse inputs on the host PC
+                        let _ = BlockInput(BOOL(1));
 
                         // Hide hardware mouse cursor globally on physical laptop display
                         set_system_cursor_hidden(true);
@@ -184,9 +151,6 @@ impl PrivacyCurtain {
 
                         if let Ok(h) = hwnd {
                             hwnd_store.store(h.0 as isize, Ordering::SeqCst);
-                            if let Ok(mut state) = PIN_STATE.lock() {
-                                state.curtain_hwnd = h.0 as isize;
-                            }
 
                             // Layered attributes (100% opaque black surface)
                             let _ = SetLayeredWindowAttributes(h, COLORREF(0), 255, LWA_ALPHA);
@@ -207,28 +171,6 @@ impl PrivacyCurtain {
                                 windows::Win32::UI::WindowsAndMessaging::SWP_SHOWWINDOW,
                             );
 
-                            // Install Low-Level Keyboard and Mouse Hooks to lock physical controls completely
-                            let hinst = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
-                            let khook: Result<HHOOK, _> = SetWindowsHookExW(
-                                WH_KEYBOARD_LL,
-                                Some(ll_keyboard_hook),
-                                hinst,
-                                0,
-                            );
-                            if let Ok(khk) = khook {
-                                HOOK_HANDLE.store(khk.0 as isize, Ordering::SeqCst);
-                            }
-
-                            let mhook: Result<HHOOK, _> = SetWindowsHookExW(
-                                WH_MOUSE_LL,
-                                Some(ll_mouse_hook),
-                                hinst,
-                                0,
-                            );
-                            if let Ok(mhk) = mhook {
-                                MOUSE_HOOK_HANDLE.store(mhk.0 as isize, Ordering::SeqCst);
-                            }
-
                             let mut msg = MSG::default();
                             while is_active.load(Ordering::SeqCst) && GetMessageW(&mut msg, None, 0, 0).as_bool() {
                                 if msg.message == WM_CLOSE || msg.message == WM_DESTROY {
@@ -238,21 +180,12 @@ impl PrivacyCurtain {
                                 DispatchMessageW(&msg);
                             }
 
-                            // Remove Low-Level Hooks
-                            let khk_val = HOOK_HANDLE.swap(0, Ordering::SeqCst);
-                            if khk_val != 0 {
-                                let _ = UnhookWindowsHookEx(HHOOK(khk_val as *mut _));
-                            }
-                            let mhk_val = MOUSE_HOOK_HANDLE.swap(0, Ordering::SeqCst);
-                            if mhk_val != 0 {
-                                let _ = UnhookWindowsHookEx(HHOOK(mhk_val as *mut _));
-                            }
-
                             let _ = DestroyWindow(h);
                             let _ = DeleteObject(black_brush);
                         }
 
-                        // Restore hardware cursor visibility across system
+                        // Restore physical inputs and hardware cursor visibility
+                        let _ = BlockInput(BOOL(0));
                         set_system_cursor_hidden(false);
 
                         if h_desk != 0 {
@@ -271,6 +204,7 @@ impl PrivacyCurtain {
                 let hwnd = self.hwnd_val.swap(0, Ordering::SeqCst);
                 if hwnd != 0 {
                     unsafe {
+                        let _ = BlockInput(BOOL(0));
                         let _ = PostMessageW(HWND(hwnd as *mut _), WM_CLOSE, WPARAM(0), LPARAM(0));
                     }
                 }
@@ -315,41 +249,6 @@ fn set_system_cursor_hidden(hidden: bool) {
 }
 
 #[cfg(windows)]
-unsafe extern "system" fn ll_keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 {
-        let kbd = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-        // If LLKHF_INJECTED (0x10) is set, keystroke was generated by remote SendInput (from phone)
-        // Pass it through immediately so remote typing from phone works untouched!
-        if (kbd.flags.0 & 0x10) != 0 {
-            return CallNextHookEx(None, code, wparam, lparam);
-        }
-
-        // Physical laptop keyboard: BLOCK ALL INPUT completely!
-        // No local keyboard controls work on the PC while Privacy Curtain is active.
-        return LRESULT(1);
-    }
-
-    CallNextHookEx(None, code, wparam, lparam)
-}
-
-#[cfg(windows)]
-unsafe extern "system" fn ll_mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 {
-        let ms = &*(lparam.0 as *const MSLLHOOKSTRUCT);
-        // If LLMHF_INJECTED (0x01) is set, mouse event was generated by remote SendInput (from phone)
-        // Pass it through immediately so remote touch and mouse control work untouched!
-        if (ms.flags & 0x01) != 0 {
-            return CallNextHookEx(None, code, wparam, lparam);
-        }
-
-        // Physical mouse/trackpad interaction on the laptop: BLOCK ALL INPUT completely!
-        return LRESULT(1);
-    }
-
-    CallNextHookEx(None, code, wparam, lparam)
-}
-
-#[cfg(windows)]
 unsafe extern "system" fn curtain_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -370,7 +269,10 @@ unsafe extern "system" fn curtain_wnd_proc(
             // Suppress default background erasing to prevent any screen flicker
             LRESULT(1)
         }
-        WM_KEYDOWN => LRESULT(0),
+        WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
+            // Absorb any keystrokes sent to curtain window
+            LRESULT(0)
+        }
         WM_PAINT => {
             let mut ps = windows::Win32::Graphics::Gdi::PAINTSTRUCT::default();
             let hdc = windows::Win32::Graphics::Gdi::BeginPaint(hwnd, &mut ps);
