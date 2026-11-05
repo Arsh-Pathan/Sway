@@ -92,14 +92,14 @@ func main() {
 
 		if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
 			_ = tcpConn.SetNoDelay(true)
-			_ = tcpConn.SetWriteBuffer(512 * 1024)
-			_ = tcpConn.SetReadBuffer(512 * 1024)
+			_ = tcpConn.SetWriteBuffer(1024 * 1024)
+			_ = tcpConn.SetReadBuffer(1024 * 1024)
 		}
 
 		client := &Client{
 			hub:  hub,
 			conn: conn,
-			send: make(chan WSMessage, 2),
+			send: make(chan WSMessage, 1),
 		}
 
 		hub.register <- client

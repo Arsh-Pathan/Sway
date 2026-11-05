@@ -131,7 +131,18 @@ impl HostSignaling {
             let addr = ws_url.trim_start_matches("ws://").trim_end_matches("/ws");
             if let Ok(tcp_stream) = tokio::net::TcpStream::connect(addr).await {
                 let _ = tcp_stream.set_nodelay(true);
-                tokio_tungstenite::client_async(&ws_url, tokio_tungstenite::MaybeTlsStream::Plain(tcp_stream)).await?
+                if let Ok(std_stream) = tcp_stream.into_std() {
+                    let sock = socket2::SockRef::from(&std_stream);
+                    let _ = sock.set_send_buffer_size(1024 * 1024);
+                    let _ = sock.set_recv_buffer_size(1024 * 1024);
+                    if let Ok(tcp_stream) = tokio::net::TcpStream::from_std(std_stream) {
+                        tokio_tungstenite::client_async(&ws_url, tokio_tungstenite::MaybeTlsStream::Plain(tcp_stream)).await?
+                    } else {
+                        connect_async(&ws_url).await?
+                    }
+                } else {
+                    connect_async(&ws_url).await?
+                }
             } else {
                 connect_async(&ws_url).await?
             }
@@ -143,7 +154,7 @@ impl HostSignaling {
         let (mut write, mut read) = ws_stream.split();
         let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(32);
         let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(16);
-        let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(2);
+        let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(1);
 
         // Background WebSocket writer task prioritizing control messages and dropping stale frames
         let writer_handle = tokio::spawn(async move {
@@ -190,7 +201,7 @@ impl HostSignaling {
         let simulator = self.simulator.clone();
         let is_streaming = Arc::new(AtomicBool::new(false));
         let active_monitor = Arc::new(AtomicUsize::new(0));
-        let stream_quality = Arc::new(AtomicU8::new(38)); // Default Turbo 38 for ~18KB frames and 60 FPS over 4G/WAN
+        let stream_quality = Arc::new(AtomicU8::new(35)); // Default Turbo 35 for ~18KB frames and 60 FPS over 4G/WAN
         let is_audio_streaming = Arc::new(AtomicBool::new(false));
         let audio_handle: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(std::sync::Mutex::new(None));
 
@@ -287,9 +298,9 @@ impl HostSignaling {
                             }
                             InputPacket::SetQuality { mode } => {
                                 let q = match mode {
-                                    0 => 38, // Mobile 60 FPS Turbo smooth (sub-20KB frames!)
-                                    1 => 55, // Balanced HD
-                                    _ => 75, // High Fidelity
+                                    0 => 35, // Mobile 60 FPS Turbo smooth (sub-20KB frames!)
+                                    1 => 50, // Balanced HD (sub-40KB frames!)
+                                    _ => 70, // High Fidelity
                                 };
                                 stream_quality.store(q, Ordering::SeqCst);
                             }

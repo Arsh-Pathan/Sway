@@ -130,10 +130,10 @@ class SignalingClient(
     init {
         scope.launch(Dispatchers.Default) {
             val decodeOpts = BitmapFactory.Options().apply {
-                inPreferredConfig = Bitmap.Config.ARGB_8888
+                inPreferredConfig = Bitmap.Config.RGB_565
                 inMutable = true
                 inSampleSize = 1
-                inPremultiplied = false // JPEGs have no alpha; avoids unnecessary premultiplication math
+                inPremultiplied = false // JPEGs have no alpha; RGB_565 cuts memory & GPU upload bandwidth by 50%
             }
 
             for (toDecode in decodeChannel) {

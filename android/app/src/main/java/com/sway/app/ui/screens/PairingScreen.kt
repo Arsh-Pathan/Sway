@@ -73,7 +73,7 @@ fun PairingScreen(
     }
 
     // Default to the current live laptop credentials if not saved yet
-    val defaultUrl = "192.168.11.154:8089"
+    val defaultUrl = "192.168.11.93:8089"
     val defaultDeviceId = "sway-laptop-b18602ec"
     val defaultToken = "50f0232b-ea9"
     val defaultVpsUrl = "51.79.249.143:8080"

@@ -12,7 +12,7 @@ pub struct MonitorInfo {
 }
 
 #[cfg(windows)]
-fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u32, mon_h: u32) {
+fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i32, mon_w: u32, mon_h: u32) {
     use std::sync::atomic::{AtomicIsize, AtomicI32, Ordering};
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject,
@@ -97,10 +97,8 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
             return;
         }
 
-        let img_w = img.width() as f64;
-        let img_h = img.height() as f64;
-        let scale_x = img_w / (mon_w as f64).max(1.0);
-        let scale_y = img_h / (mon_h as f64).max(1.0);
+        let scale_x = img_w as f64 / (mon_w as f64).max(1.0);
+        let scale_y = img_h as f64 / (mon_h as f64).max(1.0);
 
         let target_cur_x = ((local_x as f64) * scale_x).round() as i32;
         let target_cur_y = ((local_y as f64) * scale_y).round() as i32;
@@ -182,7 +180,7 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
             let _ = DeleteDC(hdc_mem);
         }
 
-        // Composite the cached cursor bitmap onto the frame
+        // Composite the cached cursor bitmap onto the frame using ultra-fast integer fixed-point alpha blending
         let drew_cursor = CURSOR_CACHE.with(|cache| {
             let cache_ref = cache.borrow();
             if let Some(ref cached) = *cache_ref {
@@ -195,10 +193,10 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
                 for cy in 0..cached.height {
                     for cx in 0..cached.width {
                         let idx = ((cy * cached.width + cx) * 4) as usize;
-                        let b = cached.rgba_data[idx];
-                        let g = cached.rgba_data[idx + 1];
-                        let r = cached.rgba_data[idx + 2];
-                        let a = cached.rgba_data[idx + 3];
+                        let b = cached.rgba_data[idx] as u32;
+                        let g = cached.rgba_data[idx + 1] as u32;
+                        let r = cached.rgba_data[idx + 2] as u32;
+                        let a = cached.rgba_data[idx + 3] as u32;
 
                         if a == 0 && r == 0 && g == 0 && b == 0 {
                             continue;
@@ -207,14 +205,18 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
                         let px = draw_origin_x + cx;
                         let py = draw_origin_y + cy;
 
-                        if px >= 0 && px < img.width() as i32 && py >= 0 && py < img.height() as i32 {
-                            let alpha = if a > 0 { a } else { 255 } as f32 / 255.0;
-                            let dest = img.get_pixel(px as u32, py as u32);
-                            let out_r = (r as f32 * alpha + dest[0] as f32 * (1.0 - alpha)) as u8;
-                            let out_g = (g as f32 * alpha + dest[1] as f32 * (1.0 - alpha)) as u8;
-                            let out_b = (b as f32 * alpha + dest[2] as f32 * (1.0 - alpha)) as u8;
-                            img.put_pixel(px as u32, py as u32, image::Rgba([out_r, out_g, out_b, 255]));
-                            drawn_any = true;
+                        if px >= 0 && px < img_w as i32 && py >= 0 && py < img_h as i32 {
+                            let alpha = if a > 0 { a } else { 255 };
+                            let inv_alpha = 255 - alpha;
+                            let offset = ((py as usize * img_w as usize + px as usize) * 4) as usize;
+                            if offset + 4 <= raw.len() {
+                                let dest = &mut raw[offset..offset + 4];
+                                dest[0] = ((r * alpha + dest[0] as u32 * inv_alpha) / 255) as u8;
+                                dest[1] = ((g * alpha + dest[1] as u32 * inv_alpha) / 255) as u8;
+                                dest[2] = ((b * alpha + dest[2] as u32 * inv_alpha) / 255) as u8;
+                                dest[3] = 255;
+                                drawn_any = true;
+                            }
                         }
                     }
                 }
@@ -251,13 +253,16 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
                     }
                     let px = target_cur_x + dx as i32;
                     let py = target_cur_y + dy as i32;
-                    if px >= 0 && px < img.width() as i32 && py >= 0 && py < img.height() as i32 {
-                        let color = if val == 1 {
-                            image::Rgba([0, 0, 0, 255])
-                        } else {
-                            image::Rgba([255, 255, 255, 255])
-                        };
-                        img.put_pixel(px as u32, py as u32, color);
+                    if px >= 0 && px < img_w as i32 && py >= 0 && py < img_h as i32 {
+                        let offset = ((py as usize * img_w as usize + px as usize) * 4) as usize;
+                        if offset + 4 <= raw.len() {
+                            let dest = &mut raw[offset..offset + 4];
+                            let c = if val == 1 { 0 } else { 255 };
+                            dest[0] = c;
+                            dest[1] = c;
+                            dest[2] = c;
+                            dest[3] = 255;
+                        }
                     }
                 }
             }
@@ -266,7 +271,7 @@ fn draw_real_cursor(img: &mut image::RgbaImage, mon_x: i32, mon_y: i32, mon_w: u
 }
 
 #[cfg(not(windows))]
-fn draw_real_cursor(_img: &mut image::RgbaImage, _mon_x: i32, _mon_y: i32, _mon_w: u32, _mon_h: u32) {}
+fn draw_real_cursor(_raw: &mut [u8], _img_w: u32, _img_h: u32, _mon_x: i32, _mon_y: i32, _mon_w: u32, _mon_h: u32) {}
 
 #[cfg(windows)]
 fn get_current_cursor_state() -> (isize, i32, i32) {
@@ -317,6 +322,9 @@ pub struct ScreenCapture {
     pub monitors: Vec<MonitorInfo>,
     cached_monitors: Vec<Monitor>,
     scaled_rgba_buffer: Vec<u8>,
+    x_lut: Vec<usize>,
+    x_lut_target_w: u32,
+    x_lut_src_w: u32,
     last_frame_time: std::time::Instant,
     last_monitor_refresh: std::time::Instant,
     last_frame_hash: u64,
@@ -376,6 +384,9 @@ impl ScreenCapture {
             monitors,
             cached_monitors,
             scaled_rgba_buffer: Vec::with_capacity(1920 * 1080 * 4),
+            x_lut: Vec::with_capacity(1920),
+            x_lut_target_w: 0,
+            x_lut_src_w: 0,
             last_frame_time: std::time::Instant::now(),
             last_monitor_refresh: std::time::Instant::now(),
             last_frame_hash: 0,
@@ -494,13 +505,13 @@ impl ScreenCapture {
         };
 
         // Adaptive resolution scaling:
-        // Turbo 60 FPS smooth (quality <= 40) scales to 854 (480p) for ultra-lightweight ~16KB frames and 60 FPS over 4G/WAN.
-        // Quality 41-55 scales to 960 (540p).
+        // Turbo 60 FPS smooth (quality <= 38) scales to 854 (480p) for ultra-lightweight ~16KB frames and 60 FPS over 4G/WAN.
+        // Quality 39-55 scales to 960 (540p).
         // Balanced HD (56-70) scales to 1280 (720p).
         // High fidelity uses full 1080p / 1920.
         let max_dim = match quality {
-            0..=40 => 854,
-            41..=55 => 960,
+            0..=38 => 854,
+            39..=55 => 960,
             56..=70 => 1280,
             _ => 1920,
         };
@@ -515,54 +526,58 @@ impl ScreenCapture {
             (width, height)
         };
 
-        // Render real hardware mouse cursor overlay directly on the native frame before downscale
         let mut target_image = rgba_image;
-        draw_real_cursor(&mut target_image, mon_x, mon_y, mon_w, mon_h);
-
-        let raw_src = target_image.as_raw();
         self.last_frame_time = std::time::Instant::now();
 
-        if target_w == width && target_h == height {
-            // Native resolution: zero-copy AVX2/SSE2 SIMD compression directly from captured buffer
-            compress(
-                raw_src,
-                width as usize,
-                height as usize,
-                PixelFormat::Rgba,
-                quality,
-                Subsampling::S420,
-            ).ok()
+        let (final_slice, final_w, final_h) = if target_w == width && target_h == height {
+            let raw = target_image.as_mut();
+            draw_real_cursor(raw, width, height, mon_x, mon_y, mon_w, mon_h);
+            (raw as &[u8], width, height)
         } else {
-            // Ultra-fast 32-bit pixel word downsampling directly into reusable RGBA buffer
+            // Precompute or update LUT for downsampling (eliminates millions of integer divisions)
+            if self.x_lut_target_w != target_w || self.x_lut_src_w != width {
+                self.x_lut = (0..target_w)
+                    .map(|x| (x as usize * width as usize) / target_w as usize)
+                    .collect();
+                self.x_lut_target_w = target_w;
+                self.x_lut_src_w = width;
+            }
+            let x_lut = &self.x_lut;
+
             let dst_len = (target_w * target_h * 4) as usize;
             if self.scaled_rgba_buffer.len() < dst_len {
                 self.scaled_rgba_buffer.resize(dst_len, 0);
             }
 
-            let src_ptr = raw_src.as_ptr();
-            let dst_ptr = self.scaled_rgba_buffer.as_mut_ptr();
+            let src_ptr = target_image.as_raw().as_ptr() as *const u32;
+            let dst_ptr = self.scaled_rgba_buffer.as_mut_ptr() as *mut u32;
+
             for y in 0..target_h {
-                let src_y = (y * height) / target_h;
-                let src_row = (src_y * width) as usize;
-                let dst_row = (y * target_w) as usize;
-                for x in 0..target_w {
-                    let src_x = (x * width) / target_w;
-                    unsafe {
-                        let px = (src_ptr as *const u32).add(src_row + src_x as usize).read();
-                        (dst_ptr as *mut u32).add(dst_row + x as usize).write(px);
+                let src_y = (y as usize * height as usize) / target_h as usize;
+                let src_row = src_y * width as usize;
+                let dst_row = y as usize * target_w as usize;
+                unsafe {
+                    let src_row_ptr = src_ptr.add(src_row);
+                    let dst_row_ptr = dst_ptr.add(dst_row);
+                    for x in 0..target_w as usize {
+                        *dst_row_ptr.add(x) = *src_row_ptr.add(x_lut[x]);
                     }
                 }
             }
 
-            compress(
-                &self.scaled_rgba_buffer[..dst_len],
-                target_w as usize,
-                target_h as usize,
-                PixelFormat::Rgba,
-                quality,
-                Subsampling::S420,
-            ).ok()
-        }
+            // Draw crisp cursor directly on scaled buffer
+            draw_real_cursor(&mut self.scaled_rgba_buffer[..dst_len], target_w, target_h, mon_x, mon_y, mon_w, mon_h);
+            (&self.scaled_rgba_buffer[..dst_len], target_w, target_h)
+        };
+
+        compress(
+            final_slice,
+            final_w as usize,
+            final_h as usize,
+            PixelFormat::Rgba,
+            quality,
+            Subsampling::S420,
+        ).ok()
     }
 
     #[cfg(windows)]
@@ -661,8 +676,11 @@ mod tests {
             }
         }
         let mut success = 0;
-        for _ in 0..5 {
-            if let Some(frame) = capture.capture_frame_jpeg(45) {
+        for q in [30, 45, 60, 75] {
+            let t0 = std::time::Instant::now();
+            if let Some(frame) = capture.capture_frame_jpeg(q) {
+                let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                println!("Quality {}: size = {} KB, time = {:.2} ms", q, frame.len() / 1024, ms);
                 if !frame.is_empty() {
                     success += 1;
                 }

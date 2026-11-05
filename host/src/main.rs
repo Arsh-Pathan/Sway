@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod audio;
 mod capture;
 mod discovery;
@@ -94,6 +96,13 @@ impl HostConfig {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
     unsafe {
+        // If launched from an interactive terminal (CMD / PowerShell), attach to its console for logging.
+        // If launched by Windows Autostart or desktop shortcut, AttachConsole returns 0 and NO console window is created.
+        extern "system" {
+            fn AttachConsole(dwProcessId: u32) -> i32;
+        }
+        let _ = AttachConsole(0xFFFFFFFF);
+
         use windows::Win32::UI::HiDpi::{
             SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
