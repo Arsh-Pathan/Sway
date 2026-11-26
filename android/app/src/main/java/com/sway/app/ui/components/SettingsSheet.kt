@@ -56,7 +56,7 @@ fun SettingsSheet(
                 ) {
                     Text(text = "Cursor Sensitivity", style = Typography.bodyLarge)
                     Text(
-                        text = "%.1fx".format(sensitivity),
+                        text = String.format(java.util.Locale.US, "%.1fx", sensitivity),
                         style = Typography.bodyLarge,
                         color = AccentIndigoBright
                     )
@@ -80,7 +80,7 @@ fun SettingsSheet(
                 ) {
                     Text(text = "Scroll Speed", style = Typography.bodyLarge)
                     Text(
-                        text = "%.1fx".format(scrollSpeed),
+                        text = String.format(java.util.Locale.US, "%.1fx", scrollSpeed),
                         style = Typography.bodyLarge,
                         color = AccentIndigoBright
                     )
@@ -130,19 +130,30 @@ fun SettingsSheet(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     QualityOption(
-                        label = "Data Saver\n720p @ 30fps",
+                        label = "Data Saver\n480p · Low BW",
                         isSelected = currentQuality == InputEvent.SetQuality.DATA_SAVER,
                         modifier = Modifier.weight(1f),
                         onClick = { onQualityChange(InputEvent.SetQuality.DATA_SAVER) }
                     )
                     QualityOption(
-                        label = "Balanced\n1080p @ 60fps",
+                        label = "Turbo\n60fps Motion",
+                        isSelected = currentQuality == InputEvent.SetQuality.TURBO,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onQualityChange(InputEvent.SetQuality.TURBO) }
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    QualityOption(
+                        label = "Balanced\n720p/1080p",
                         isSelected = currentQuality == InputEvent.SetQuality.BALANCED,
                         modifier = Modifier.weight(1f),
                         onClick = { onQualityChange(InputEvent.SetQuality.BALANCED) }
                     )
                     QualityOption(
-                        label = "Native\nLossless Bitrate",
+                        label = "Native HD\nCrisp Text",
                         isSelected = currentQuality == InputEvent.SetQuality.NATIVE,
                         modifier = Modifier.weight(1f),
                         onClick = { onQualityChange(InputEvent.SetQuality.NATIVE) }
@@ -164,7 +175,7 @@ fun SettingsSheet(
                 Text(
                     text = "End Remote Session",
                     fontWeight = FontWeight.Bold,
-                    color = TextPrimary
+                    color = androidx.compose.ui.graphics.Color.Black
                 )
             }
         }

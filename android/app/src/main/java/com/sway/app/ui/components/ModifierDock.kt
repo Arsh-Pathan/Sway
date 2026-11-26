@@ -28,39 +28,29 @@ const val VK_BACK: Short = 0x08
 const val VK_TAB: Short = 0x09
 const val VK_RETURN: Short = 0x0D
 const val VK_ESCAPE: Short = 0x1B
-const val VK_SPACE: Short = 0x20
 const val VK_LEFT: Short = 0x25
 const val VK_UP: Short = 0x26
 const val VK_RIGHT: Short = 0x27
 const val VK_DOWN: Short = 0x28
-const val VK_VOLUME_MUTE: Short = 0xAD
-const val VK_VOLUME_DOWN: Short = 0xAE
-const val VK_VOLUME_UP: Short = 0xAF
-const val VK_MEDIA_PLAY_PAUSE: Short = 0xB3
 
 @Composable
 fun ModifierDock(
     modifier: Modifier = Modifier,
+    ctrlActive: Boolean = false,
+    altActive: Boolean = false,
+    shiftActive: Boolean = false,
+    winActive: Boolean = false,
+    onToggleCtrl: () -> Unit = {},
+    onToggleAlt: () -> Unit = {},
+    onToggleShift: () -> Unit = {},
+    onToggleWin: () -> Unit = {},
+    onClearModifiers: () -> Unit = {},
     onInputEvent: (InputEvent) -> Unit,
     onToggleKeyboard: () -> Unit,
     onOpenSettings: () -> Unit,
     onSwitchMonitor: () -> Unit,
     onOpenQuickActions: () -> Unit = {}
 ) {
-    var ctrlActive by remember { mutableStateOf(false) }
-    var altActive by remember { mutableStateOf(false) }
-    var shiftActive by remember { mutableStateOf(false) }
-    var winActive by remember { mutableStateOf(false) }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            if (ctrlActive) onInputEvent(InputEvent.KeyUp(0x11))
-            if (altActive) onInputEvent(InputEvent.KeyUp(0x12))
-            if (shiftActive) onInputEvent(InputEvent.KeyUp(0x10))
-            if (winActive) onInputEvent(InputEvent.KeyUp(0x5B))
-        }
-    }
-
     fun calculateModifierMask(): Byte {
         var mask = 0
         if (ctrlActive) mask = mask or 0x01
@@ -74,6 +64,9 @@ fun ModifierDock(
         val mask = calculateModifierMask()
         onInputEvent(InputEvent.KeyDown(vkey, mask))
         onInputEvent(InputEvent.KeyUp(vkey))
+        if (mask.toInt() != 0) {
+            onClearModifiers()
+        }
     }
 
     Column(
@@ -94,37 +87,25 @@ fun ModifierDock(
                 label = "CTRL",
                 isActive = ctrlActive,
                 modifier = Modifier.weight(1f),
-                onClick = {
-                    ctrlActive = !ctrlActive
-                    if (ctrlActive) onInputEvent(InputEvent.KeyDown(0x11, 0)) else onInputEvent(InputEvent.KeyUp(0x11))
-                }
+                onClick = onToggleCtrl
             )
             ModifierKeyButton(
                 label = "ALT",
                 isActive = altActive,
                 modifier = Modifier.weight(1f),
-                onClick = {
-                    altActive = !altActive
-                    if (altActive) onInputEvent(InputEvent.KeyDown(0x12, 0)) else onInputEvent(InputEvent.KeyUp(0x12))
-                }
+                onClick = onToggleAlt
             )
             ModifierKeyButton(
                 label = "SHIFT",
                 isActive = shiftActive,
                 modifier = Modifier.weight(1f),
-                onClick = {
-                    shiftActive = !shiftActive
-                    if (shiftActive) onInputEvent(InputEvent.KeyDown(0x10, 0)) else onInputEvent(InputEvent.KeyUp(0x10))
-                }
+                onClick = onToggleShift
             )
             ModifierKeyButton(
                 label = "WIN",
                 isActive = winActive,
                 modifier = Modifier.weight(1f),
-                onClick = {
-                    winActive = !winActive
-                    if (winActive) onInputEvent(InputEvent.KeyDown(0x5B, 0)) else onInputEvent(InputEvent.KeyUp(0x5B))
-                }
+                onClick = onToggleWin
             )
             ActionKeyButton(
                 label = "ESC",

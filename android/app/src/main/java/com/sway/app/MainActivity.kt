@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
@@ -21,13 +22,16 @@ import com.sway.app.ui.screens.SessionScreen
 import com.sway.app.ui.theme.BackgroundDark
 import com.sway.app.ui.theme.SwayTheme
 import com.sway.app.util.NotificationHelper
+import com.sway.app.webrtc.RtcConnectionState
 import com.sway.app.webrtc.WebRtcManager
-import org.webrtc.PeerConnection
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
     private var signalingClient: SignalingClient? = null
     private var webRtcManager: WebRtcManager? = null
+    private var sessionObserverJob: Job? = null
     private var currentHostName: String = "Desktop"
 
     private val inSessionState = mutableStateOf(false)
@@ -37,10 +41,10 @@ class MainActivity : ComponentActivity() {
     ) { _ -> }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Request notification permission for Android 13+ (API 33)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -61,8 +65,8 @@ class MainActivity : ComponentActivity() {
                         SessionScreen(
                             webRtcManager = webRtcManager!!,
                             onDisconnect = {
-                                cleanupSession()
                                 inSessionState.value = false
+                                cleanupSession()
                             }
                         )
                     } else {
@@ -99,32 +103,42 @@ class MainActivity : ComponentActivity() {
         currentHostName = deviceId
         cleanupSession()
 
-        // Sway host streams optimized frames and binary input directly over WebSocket for both local Wi-Fi and cloud tunnels
+        // Sway host streams optimized frames and binary input directly over WebSocket for both local Wi-Fi and VPS relay
         val isDirectLocal = true
 
         val client = SignalingClient(
             serverUrl = serverUrl,
             deviceId = deviceId,
             token = token,
-            scope = lifecycleScope
+            parentScope = lifecycleScope
         )
         this.signalingClient = client
 
         val rtc = WebRtcManager(
             context = applicationContext,
-            scope = lifecycleScope,
+            parentScope = lifecycleScope,
             signalingClient = client,
             isDirectLocal = isDirectLocal
         )
         this.webRtcManager = rtc
 
-        // Connect WebSocket and initialize session
-        client.connect()
+        // Post active notification only once actually paired/authenticated
+        sessionObserverJob = lifecycleScope.launch {
+            var notified = false
+            rtc.connectionState.collect { st ->
+                if (st is RtcConnectionState.Connected && !notified) {
+                    notified = true
+                    NotificationHelper.notifySessionConnected(this@MainActivity, deviceId)
+                }
+            }
+        }
 
-        NotificationHelper.notifySessionConnected(this, deviceId)
+        client.connect()
     }
 
     private fun cleanupSession() {
+        sessionObserverJob?.cancel()
+        sessionObserverJob = null
         webRtcManager?.release()
         webRtcManager = null
         signalingClient?.disconnect()

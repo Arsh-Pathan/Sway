@@ -16,6 +16,7 @@ const (
 	TypePong      MessageType = "pong"      // Heartbeat pong
 	TypeError     MessageType = "error"     // Error response
 	TypeBye       MessageType = "bye"       // Session teardown
+	TypeTextFocus MessageType = "text_focus" // Host hint: a text field is focused, show keyboard
 )
 
 // SignalingMessage represents the standard JSON envelope exchanged over WebSocket.

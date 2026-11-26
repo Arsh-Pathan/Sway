@@ -1,4 +1,5 @@
 use libjpeg_turbo_rs::{compress, PixelFormat, Subsampling};
+use std::sync::atomic::Ordering;
 use tracing::info;
 use xcap::Monitor;
 
@@ -6,6 +7,8 @@ use xcap::Monitor;
 pub struct MonitorInfo {
     pub index: usize,
     pub name: String,
+    pub x: i32,
+    pub y: i32,
     pub width: i32,
     pub height: i32,
     pub is_primary: bool,
@@ -13,7 +16,6 @@ pub struct MonitorInfo {
 
 #[cfg(windows)]
 fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i32, mon_w: u32, mon_h: u32) {
-    use std::sync::atomic::{AtomicIsize, AtomicI32, Ordering};
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject,
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC,
@@ -22,12 +24,6 @@ fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i
         DrawIconEx, GetCursorInfo, GetIconInfo, GetSystemMetrics, CURSORINFO, CURSOR_SHOWING, DI_NORMAL,
         SM_CXCURSOR, SM_CYCURSOR,
     };
-
-    // Cache the last cursor handle + position to skip redundant redraws when cursor hasn't changed.
-    // This eliminates visible flicker during typing (rapid I-beam ↔ arrow shape transitions).
-    static LAST_CURSOR_HANDLE: AtomicIsize = AtomicIsize::new(0);
-    static LAST_CURSOR_X: AtomicI32 = AtomicI32::new(i32::MIN);
-    static LAST_CURSOR_Y: AtomicI32 = AtomicI32::new(i32::MIN);
 
     let mut ci = CURSORINFO {
         cbSize: std::mem::size_of::<CURSORINFO>() as u32,
@@ -42,52 +38,7 @@ fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i
             return;
         }
 
-        // Fast-path: if cursor handle AND position are identical to last frame, skip full redraw.
-        // Only the handle matters for shape flicker; position check avoids missing movement.
         let cur_handle = ci.hCursor.0 as isize;
-        let prev_handle = LAST_CURSOR_HANDLE.load(Ordering::Relaxed);
-        let prev_x = LAST_CURSOR_X.load(Ordering::Relaxed);
-        let prev_y = LAST_CURSOR_Y.load(Ordering::Relaxed);
-        let _same_cursor = cur_handle == prev_handle
-            && ci.ptScreenPos.x == prev_x
-            && ci.ptScreenPos.y == prev_y;
-
-        // Update cache for next frame
-        LAST_CURSOR_HANDLE.store(cur_handle, Ordering::Relaxed);
-        LAST_CURSOR_X.store(ci.ptScreenPos.x, Ordering::Relaxed);
-        LAST_CURSOR_Y.store(ci.ptScreenPos.y, Ordering::Relaxed);
-
-        // Use a thread-local cursor bitmap cache to avoid expensive GDI DrawIconEx calls
-        // when the cursor shape (handle) hasn't changed between frames. This eliminates
-        // visible flicker during keyboard input where the cursor rapidly switches shapes.
-        use std::cell::RefCell;
-        struct CachedCursor {
-            handle: isize,
-            width: i32,
-            height: i32,
-            hotspot_x: i32,
-            hotspot_y: i32,
-            rgba_data: Vec<u8>, // Pre-rendered BGRA pixel data
-        }
-        thread_local! {
-            static CURSOR_CACHE: RefCell<Option<CachedCursor>> = const { RefCell::new(None) };
-        }
-
-        let mut ii = windows::Win32::UI::WindowsAndMessaging::ICONINFO::default();
-        if GetIconInfo(ci.hCursor, &mut ii).is_err() {
-            return;
-        }
-
-        let hotspot_x = ii.xHotspot as i32;
-        let hotspot_y = ii.yHotspot as i32;
-
-        if !ii.hbmMask.is_invalid() {
-            let _ = DeleteObject(ii.hbmMask);
-        }
-        if !ii.hbmColor.is_invalid() {
-            let _ = DeleteObject(ii.hbmColor);
-        }
-
         let cur_x = ci.ptScreenPos.x;
         let cur_y = ci.ptScreenPos.y;
 
@@ -108,7 +59,20 @@ fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i
         let scaled_cur_w = ((cur_w as f64) * scale_x).round().clamp(16.0, 128.0) as i32;
         let scaled_cur_h = ((cur_h as f64) * scale_y).round().clamp(16.0, 128.0) as i32;
 
-        // Check if we can reuse the cached cursor bitmap (same handle = same shape)
+        use std::cell::RefCell;
+        struct CachedCursor {
+            handle: isize,
+            width: i32,
+            height: i32,
+            hotspot_x: i32,
+            hotspot_y: i32,
+            rgba_data: Vec<u8>,
+        }
+        thread_local! {
+            static CURSOR_CACHE: RefCell<Option<CachedCursor>> = const { RefCell::new(None) };
+        }
+
+        // Check cursor cache BEFORE calling GetIconInfo so we don't allocate/delete 2 GDI bitmaps per frame.
         let cache_hit = CURSOR_CACHE.with(|cache| {
             let cache_ref = cache.borrow();
             if let Some(ref cached) = *cache_ref {
@@ -121,7 +85,19 @@ fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i
         });
 
         if !cache_hit {
-            // Cursor shape changed — re-render via GDI and cache the result
+            let mut ii = windows::Win32::UI::WindowsAndMessaging::ICONINFO::default();
+            if GetIconInfo(ci.hCursor, &mut ii).is_err() {
+                return;
+            }
+            let hotspot_x = ii.xHotspot as i32;
+            let hotspot_y = ii.yHotspot as i32;
+            if !ii.hbmMask.is_invalid() {
+                let _ = DeleteObject(ii.hbmMask);
+            }
+            if !ii.hbmColor.is_invalid() {
+                let _ = DeleteObject(ii.hbmColor);
+            }
+
             let hdc_mem = CreateCompatibleDC(HDC::default());
             if hdc_mem.is_invalid() {
                 return;
@@ -156,7 +132,8 @@ fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i
                         0,
                         None,
                         DI_NORMAL,
-                    ).is_ok();
+                    )
+                    .is_ok();
 
                     SelectObject(hdc_mem, old_bm);
 
@@ -180,7 +157,8 @@ fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i
             let _ = DeleteDC(hdc_mem);
         }
 
-        // Composite the cached cursor bitmap onto the frame using ultra-fast integer fixed-point alpha blending
+        // Composite the cached cursor bitmap onto the frame.
+        // DrawIconEx into a zeroed 32-bit DIB outputs premultiplied BGRA (or a=0 for 1-bit masked cursors).
         let drew_cursor = CURSOR_CACHE.with(|cache| {
             let cache_ref = cache.borrow();
             if let Some(ref cached) = *cache_ref {
@@ -191,6 +169,10 @@ fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i
                 let mut drawn_any = false;
 
                 for cy in 0..cached.height {
+                    let py = draw_origin_y + cy;
+                    if py < 0 || py >= img_h as i32 {
+                        continue;
+                    }
                     for cx in 0..cached.width {
                         let idx = ((cy * cached.width + cx) * 4) as usize;
                         let b = cached.rgba_data[idx] as u32;
@@ -203,17 +185,20 @@ fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i
                         }
 
                         let px = draw_origin_x + cx;
-                        let py = draw_origin_y + cy;
-
-                        if px >= 0 && px < img_w as i32 && py >= 0 && py < img_h as i32 {
-                            let alpha = if a > 0 { a } else { 255 };
-                            let inv_alpha = 255 - alpha;
-                            let offset = ((py as usize * img_w as usize + px as usize) * 4) as usize;
+                        if px >= 0 && px < img_w as i32 {
+                            let offset = (py as usize * img_w as usize + px as usize) * 4;
                             if offset + 4 <= raw.len() {
                                 let dest = &mut raw[offset..offset + 4];
-                                dest[0] = ((r * alpha + dest[0] as u32 * inv_alpha) / 255) as u8;
-                                dest[1] = ((g * alpha + dest[1] as u32 * inv_alpha) / 255) as u8;
-                                dest[2] = ((b * alpha + dest[2] as u32 * inv_alpha) / 255) as u8;
+                                if a > 0 {
+                                    let inv_alpha = 255 - a.min(255);
+                                    dest[0] = (r + (dest[0] as u32 * inv_alpha) / 255).min(255) as u8;
+                                    dest[1] = (g + (dest[1] as u32 * inv_alpha) / 255).min(255) as u8;
+                                    dest[2] = (b + (dest[2] as u32 * inv_alpha) / 255).min(255) as u8;
+                                } else {
+                                    dest[0] = r as u8;
+                                    dest[1] = g as u8;
+                                    dest[2] = b as u8;
+                                }
                                 dest[3] = 255;
                                 drawn_any = true;
                             }
@@ -226,7 +211,7 @@ fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i
             }
         });
 
-        // Fallback: If system cursor is hidden/blanked (Privacy Mode), draw crisp standard arrow pointer on phone stream!
+        // Fallback: If system cursor is hidden/blanked (Privacy Mode), draw crisp standard arrow pointer on phone stream.
         if !drew_cursor {
             const ARROW: [[u8; 12]; 16] = [
                 [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -254,7 +239,7 @@ fn draw_real_cursor(raw: &mut [u8], img_w: u32, img_h: u32, mon_x: i32, mon_y: i
                     let px = target_cur_x + dx as i32;
                     let py = target_cur_y + dy as i32;
                     if px >= 0 && px < img_w as i32 && py >= 0 && py < img_h as i32 {
-                        let offset = ((py as usize * img_w as usize + px as usize) * 4) as usize;
+                        let offset = (py as usize * img_w as usize + px as usize) * 4;
                         if offset + 4 <= raw.len() {
                             let dest = &mut raw[offset..offset + 4];
                             let c = if val == 1 { 0 } else { 255 };
@@ -300,9 +285,8 @@ fn compute_sample_hash(data: &[u8]) -> u64 {
     if len < 8 {
         return 0;
     }
-    // High-sensitivity screen sampling: sample every 256 bytes (32,000+ points across 1080p)
-    // Runs in sub-millisecond time via 64-bit chunk reads while catching small UI changes, typing, and clicks
-    let step = (len / 4096).clamp(8, 256);
+    // Tightened pixel-aligned stride (~16K sample points across 1080p) catches thin 1px carets while taking <0.2ms
+    let step = (len / 16384).clamp(8, 64) & !3;
     let mut h: u64 = 0xcbf29ce484222325;
     let mut i = 0;
     while i + 8 <= len {
@@ -327,39 +311,57 @@ pub struct ScreenCapture {
     x_lut_src_w: u32,
     last_frame_time: std::time::Instant,
     last_monitor_refresh: std::time::Instant,
+    last_display_gen: usize,
     last_frame_hash: u64,
     last_cursor_state: (isize, i32, i32),
     last_encoded_time: std::time::Instant,
 }
 
 impl ScreenCapture {
+    fn build_monitor_info(all: &[Monitor]) -> Vec<MonitorInfo> {
+        if all.is_empty() {
+            return vec![MonitorInfo {
+                index: 0,
+                name: "Primary Display".to_string(),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                is_primary: true,
+            }];
+        }
+        all.iter()
+            .enumerate()
+            .map(|(i, m)| MonitorInfo {
+                index: i,
+                name: m.name().unwrap_or_else(|_| format!("Display #{}", i)),
+                x: m.x().unwrap_or(0),
+                y: m.y().unwrap_or(0),
+                width: m.width().unwrap_or(1920).max(1) as i32,
+                height: m.height().unwrap_or(1080).max(1) as i32,
+                is_primary: m.is_primary().unwrap_or(false),
+            })
+            .collect()
+    }
+
     pub fn new() -> Self {
         #[cfg(windows)]
         {
-            extern "system" {
-                fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
-                fn SetThreadDesktop(hDesktop: isize) -> i32;
-                fn CloseDesktop(hDesktop: isize) -> i32;
-            }
+            crate::input::InputSimulator::ensure_input_desktop();
             unsafe {
                 use windows::Win32::UI::HiDpi::{
-                    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+                    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
                 };
                 if SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).is_err() {
                     let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
                 }
-
-                let h_desk = OpenInputDesktop(0, 0, 0x01FF);
-                if h_desk != 0 {
-                    let _ = SetThreadDesktop(h_desk);
-                    let _ = CloseDesktop(h_desk);
-                }
             }
         }
 
-        let monitors = Self::detect_monitors();
+        // Single Monitor::all() query instead of enumerating twice on startup
         let cached_monitors = Monitor::all().unwrap_or_default();
+        let monitors = Self::build_monitor_info(&cached_monitors);
         let mut active_index = 0;
 
         // Auto-detect which display actually has active desktop content (ignoring alpha channel)
@@ -383,59 +385,43 @@ impl ScreenCapture {
             active_monitor: active_index,
             monitors,
             cached_monitors,
-            scaled_rgba_buffer: Vec::with_capacity(1920 * 1080 * 4),
-            x_lut: Vec::with_capacity(1920),
+            scaled_rgba_buffer: Vec::new(), // Lazy allocation only if downsampling is needed
+            x_lut: Vec::new(),
             x_lut_target_w: 0,
             x_lut_src_w: 0,
             last_frame_time: std::time::Instant::now(),
             last_monitor_refresh: std::time::Instant::now(),
+            last_display_gen: crate::input::DISPLAY_GENERATION.load(Ordering::Relaxed),
             last_frame_hash: 0,
             last_cursor_state: (0, 0, 0),
-            last_encoded_time: std::time::Instant::now().checked_sub(std::time::Duration::from_secs(10)).unwrap_or_else(std::time::Instant::now),
+            last_encoded_time: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap_or_else(std::time::Instant::now),
         }
     }
 
     pub fn detect_monitors() -> Vec<MonitorInfo> {
-        if let Ok(all) = Monitor::all() {
-            if !all.is_empty() {
-                return all
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, m)| {
-                        let name = m.name().unwrap_or_else(|_| format!("Display #{}", i));
-                        let width = m.width().unwrap_or(1920) as i32;
-                        let height = m.height().unwrap_or(1080) as i32;
-                        let is_primary = m.is_primary().unwrap_or(false);
-                        MonitorInfo {
-                            index: i,
-                            name,
-                            width,
-                            height,
-                            is_primary,
-                        }
-                    })
-                    .collect();
-            }
-        }
+        let all = Monitor::all().unwrap_or_default();
+        Self::build_monitor_info(&all)
+    }
 
-        vec![MonitorInfo {
-            index: 0,
-            name: "Primary Display".to_string(),
-            width: 1920,
-            height: 1080,
-            is_primary: true,
-        }]
+    fn refresh_monitors_cache(&mut self) {
+        if let Ok(all) = Monitor::all() {
+            self.monitors = Self::build_monitor_info(&all);
+            self.cached_monitors = all;
+            self.last_monitor_refresh = std::time::Instant::now();
+            self.last_frame_hash = 0;
+        }
     }
 
     pub fn capture_frame_jpeg(&mut self, quality: u8) -> Option<Vec<u8>> {
         #[cfg(windows)]
         crate::input::InputSimulator::ensure_input_desktop();
 
-        if self.cached_monitors.is_empty() {
-            if let Ok(all) = Monitor::all() {
-                self.cached_monitors = all;
-                self.last_monitor_refresh = std::time::Instant::now();
-            }
+        let cur_gen = crate::input::DISPLAY_GENERATION.load(Ordering::Relaxed);
+        if self.cached_monitors.is_empty() || cur_gen != self.last_display_gen {
+            self.refresh_monitors_cache();
+            self.last_display_gen = cur_gen;
         }
 
         let monitor_idx = if self.active_monitor < self.cached_monitors.len() {
@@ -449,16 +435,10 @@ impl ScreenCapture {
         let rgba_image = match rgba_result {
             Some(img) => img,
             None => {
-                // If capture failed (e.g. resolution change, desktop switch, or DXGI reset),
-                // refresh monitors if at least 250ms have passed
+                // If capture failed (e.g. resolution change, desktop switch, or DXGI reset), refresh after 250ms
                 if self.last_monitor_refresh.elapsed() >= std::time::Duration::from_millis(250) {
-                    if let Ok(all) = Monitor::all() {
-                        self.cached_monitors = all;
-                        self.last_monitor_refresh = std::time::Instant::now();
-                        self.cached_monitors.get(monitor_idx).and_then(|m| m.capture_image().ok())
-                    } else {
-                        None
-                    }
+                    self.refresh_monitors_cache();
+                    self.cached_monitors.get(monitor_idx).and_then(|m| m.capture_image().ok())
                 } else {
                     None
                 }
@@ -477,15 +457,25 @@ impl ScreenCapture {
 
         let width = rgba_image.width();
         let height = rgba_image.height();
+        if width == 0 || height == 0 {
+            return None;
+        }
+
+        // Check if cached monitor bounds went stale (e.g. external Windows resolution change)
+        if let Some(info) = self.monitors.get(monitor_idx) {
+            if info.width != width as i32 || info.height != height as i32 {
+                self.refresh_monitors_cache();
+            }
+        }
 
         // Real-Time Screen Change Detection:
-        // On static screens, maintain a 30 FPS floor (33ms) so phone battery and CPU are conserved.
-        // On ANY screen change (cursor motion, typing, window redraw), stream immediately at 60 FPS!
+        // On identical static screens, send a 4 FPS (250ms) keepalive instead of wasting 30 JPEG encodes/sec.
+        // On ANY screen or cursor change, encode & stream immediately at up to 60 FPS!
         let cur_cursor = get_current_cursor_state();
         let frame_hash = compute_sample_hash(rgba_image.as_raw());
         let is_identical = frame_hash == self.last_frame_hash && cur_cursor == self.last_cursor_state;
 
-        if is_identical && self.last_encoded_time.elapsed() < std::time::Duration::from_millis(33) {
+        if is_identical && self.last_encoded_time.elapsed() < std::time::Duration::from_millis(250) {
             return None;
         }
 
@@ -493,34 +483,25 @@ impl ScreenCapture {
         self.last_cursor_state = cur_cursor;
         self.last_encoded_time = std::time::Instant::now();
 
-        let (mon_x, mon_y, mon_w, mon_h) = if let Some(m) = self.cached_monitors.get(monitor_idx) {
-            (
-                m.x().unwrap_or(0),
-                m.y().unwrap_or(0),
-                m.width().unwrap_or(width).max(1),
-                m.height().unwrap_or(height).max(1),
-            )
+        let (mon_x, mon_y, mon_w, mon_h) = if let Some(info) = self.monitors.get(monitor_idx) {
+            (info.x, info.y, (info.width as u32).max(1), (info.height as u32).max(1))
         } else {
-            (0, 0, width.max(1), height.max(1))
+            (0, 0, width, height)
         };
 
-        // Adaptive resolution scaling:
-        // Turbo 60 FPS smooth (quality <= 38) scales to 854 (480p) for ultra-lightweight ~16KB frames and 60 FPS over 4G/WAN.
-        // Quality 39-55 scales to 960 (540p).
-        // Balanced HD (56-70) scales to 1280 (720p).
-        // High fidelity uses full 1080p / 1920.
+        // Adaptive resolution scaling mapped to quality ranges across LAN and WAN
         let max_dim = match quality {
-            0..=38 => 854,
-            39..=55 => 960,
-            56..=70 => 1280,
+            0..=36 => 854,
+            37..=52 => 960,
+            53..=68 => 1280,
             _ => 1920,
         };
 
         let (target_w, target_h) = if width > max_dim || height > max_dim {
             if width >= height {
-                (max_dim, (height * max_dim) / width)
+                (max_dim, ((height * max_dim) / width).max(1))
             } else {
-                ((width * max_dim) / height, max_dim)
+                (((width * max_dim) / height).max(1), max_dim)
             }
         } else {
             (width, height)
@@ -534,10 +515,9 @@ impl ScreenCapture {
             draw_real_cursor(raw, width, height, mon_x, mon_y, mon_w, mon_h);
             (raw as &[u8], width, height)
         } else {
-            // Precompute or update LUT for downsampling (eliminates millions of integer divisions)
             if self.x_lut_target_w != target_w || self.x_lut_src_w != width {
                 self.x_lut = (0..target_w)
-                    .map(|x| (x as usize * width as usize) / target_w as usize)
+                    .map(|x| ((x as usize * width as usize) / target_w as usize).min(width as usize - 1))
                     .collect();
                 self.x_lut_target_w = target_w;
                 self.x_lut_src_w = width;
@@ -549,23 +529,20 @@ impl ScreenCapture {
                 self.scaled_rgba_buffer.resize(dst_len, 0);
             }
 
-            let src_ptr = target_image.as_raw().as_ptr() as *const u32;
-            let dst_ptr = self.scaled_rgba_buffer.as_mut_ptr() as *mut u32;
+            // Safe, UB-free aligned [u8; 4] slice downsampler (zero raw pointer casts)
+            let src_pixels = target_image.as_raw().as_chunks::<4>().0;
+            let dst_pixels = self.scaled_rgba_buffer[..dst_len].as_chunks_mut::<4>().0;
+            let src_w = width as usize;
+            let dst_w = target_w as usize;
 
-            for y in 0..target_h {
-                let src_y = (y as usize * height as usize) / target_h as usize;
-                let src_row = src_y * width as usize;
-                let dst_row = y as usize * target_w as usize;
-                unsafe {
-                    let src_row_ptr = src_ptr.add(src_row);
-                    let dst_row_ptr = dst_ptr.add(dst_row);
-                    for x in 0..target_w as usize {
-                        *dst_row_ptr.add(x) = *src_row_ptr.add(x_lut[x]);
-                    }
+            for (y, dst_row) in dst_pixels.chunks_exact_mut(dst_w).enumerate() {
+                let src_y = ((y * height as usize) / target_h as usize).min(height as usize - 1);
+                let src_row = &src_pixels[src_y * src_w..(src_y + 1) * src_w];
+                for (x, dst_px) in dst_row.iter_mut().enumerate() {
+                    *dst_px = src_row[x_lut[x]];
                 }
             }
 
-            // Draw crisp cursor directly on scaled buffer
             draw_real_cursor(&mut self.scaled_rgba_buffer[..dst_len], target_w, target_h, mon_x, mon_y, mon_w, mon_h);
             (&self.scaled_rgba_buffer[..dst_len], target_w, target_h)
         };
@@ -577,7 +554,8 @@ impl ScreenCapture {
             PixelFormat::Rgba,
             quality,
             Subsampling::S420,
-        ).ok()
+        )
+        .ok()
     }
 
     #[cfg(windows)]
@@ -598,9 +576,19 @@ impl ScreenCapture {
             }
 
             let hdc_mem = CreateCompatibleDC(hdc_screen);
-            let hbm = CreateCompatibleBitmap(hdc_screen, w, h);
-            let old_bm = SelectObject(hdc_mem, hbm);
+            if hdc_mem.is_invalid() {
+                ReleaseDC(None, hdc_screen);
+                return None;
+            }
 
+            let hbm = CreateCompatibleBitmap(hdc_screen, w, h);
+            if hbm.is_invalid() {
+                let _ = DeleteDC(hdc_mem);
+                ReleaseDC(None, hdc_screen);
+                return None;
+            }
+
+            let old_bm = SelectObject(hdc_mem, hbm);
             let success = BitBlt(hdc_mem, 0, 0, w, h, hdc_screen, 0, 0, SRCCOPY).is_ok();
             SelectObject(hdc_mem, old_bm);
 
@@ -643,7 +631,6 @@ impl ScreenCapture {
                 return None;
             }
 
-            // Convert BGRA to RGBA
             for chunk in raw_pixels.as_chunks_mut::<4>().0 {
                 let b = chunk[0];
                 let r = chunk[2];
@@ -664,19 +651,12 @@ mod tests {
     #[test]
     fn test_capture_screen() {
         let mut capture = ScreenCapture::new();
-        if let Ok(monitors) = Monitor::all() {
-            for (i, m) in monitors.iter().enumerate() {
-                println!("Monitor {}: x={}, y={}, w={}, h={}", 
-                    i, 
-                    m.x().unwrap_or(0), 
-                    m.y().unwrap_or(0), 
-                    m.width().unwrap_or(0), 
-                    m.height().unwrap_or(0)
-                );
-            }
+        for m in &capture.monitors {
+            println!("Monitor {}: x={}, y={}, w={}, h={}", m.index, m.x, m.y, m.width, m.height);
         }
         let mut success = 0;
         for q in [30, 45, 60, 75] {
+            capture.last_frame_hash = 0; // force encode across all qualities
             let t0 = std::time::Instant::now();
             if let Some(frame) = capture.capture_frame_jpeg(q) {
                 let ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -693,8 +673,8 @@ mod tests {
     fn test_dpi_cursor_coordinates() {
         #[cfg(windows)]
         unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::{GetCursorInfo, GetSystemMetrics, CURSORINFO, SM_CXSCREEN, SM_CYSCREEN};
             use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+            use windows::Win32::UI::WindowsAndMessaging::{GetCursorInfo, GetSystemMetrics, CURSORINFO, SM_CXSCREEN, SM_CYSCREEN};
 
             let before_w = GetSystemMetrics(SM_CXSCREEN);
             let before_h = GetSystemMetrics(SM_CYSCREEN);

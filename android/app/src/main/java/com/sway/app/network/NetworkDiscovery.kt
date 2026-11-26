@@ -27,8 +27,11 @@ class NetworkDiscovery {
     private val _discoveredHost = MutableStateFlow<DiscoveredHost?>(null)
     val discoveredHost = _discoveredHost.asStateFlow()
 
+    private var missedScans = 0
+
     suspend fun discover() = withContext(Dispatchers.IO) {
         var socket: DatagramSocket? = null
+        var received = false
         try {
             socket = DatagramSocket().apply {
                 broadcast = true
@@ -94,11 +97,19 @@ class NetworkDiscovery {
                     port = host.port,
                     ipAddress = ip
                 )
+                missedScans = 0
+                received = true
             }
         } catch (e: Exception) {
             Log.d(tag, "UDP discovery completed/timeout: ${e.message}")
         } finally {
             socket?.close()
+            if (!received) {
+                missedScans++
+                if (missedScans >= 2) {
+                    _discoveredHost.value = null
+                }
+            }
         }
     }
 }

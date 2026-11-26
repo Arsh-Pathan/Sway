@@ -62,6 +62,7 @@ fun ControlCenterSheet(
     onToggleSpeakerAudio: (Boolean) -> Unit,
     onToggleMicAudio: (Boolean) -> Unit,
     onSendInput: (InputEvent) -> Unit,
+    onOpenResolution: () -> Unit = {},
     onDismiss: () -> Unit,
     onDisconnect: () -> Unit
 ) {
@@ -127,23 +128,23 @@ fun ControlCenterSheet(
             ) {
                 PresetCard(
                     title = "Productivity",
-                    subtitle = "1080p · Trackpad",
+                    subtitle = "Balanced · Trackpad",
                     icon = Icons.Default.Work,
-                    isSelected = controlMode != ControlMode.DECK && !isSpeakerAudioEnabled,
+                    isSelected = currentQuality == InputEvent.SetQuality.BALANCED.toInt() && controlMode != ControlMode.DECK && !isSpeakerAudioEnabled,
                     onClick = { onApplyPreset(QuickPreset.PRODUCTIVITY) }
                 )
                 PresetCard(
                     title = "Media Cinema",
-                    subtitle = "Audio ON · 1080p",
+                    subtitle = "Audio ON · Native",
                     icon = Icons.Default.Movie,
-                    isSelected = isSpeakerAudioEnabled,
+                    isSelected = isSpeakerAudioEnabled && controlMode != ControlMode.DECK,
                     onClick = { onApplyPreset(QuickPreset.CINEMA_MEDIA) }
                 )
                 PresetCard(
                     title = "Turbo Gaming",
                     subtitle = "60 FPS · Fast Sens",
                     icon = Icons.Default.Gamepad,
-                    isSelected = currentQuality == 0,
+                    isSelected = currentQuality == InputEvent.SetQuality.TURBO.toInt() && controlMode != ControlMode.DECK,
                     onClick = { onApplyPreset(QuickPreset.TURBO_GAMING) }
                 )
                 PresetCard(
@@ -157,14 +158,14 @@ fun ControlCenterSheet(
                     title = "Code & Reading",
                     subtitle = "Crisp Text · Native HD",
                     icon = Icons.Default.MenuBook,
-                    isSelected = currentQuality == 2 && controlMode != ControlMode.DECK,
+                    isSelected = currentQuality == InputEvent.SetQuality.NATIVE.toInt() && controlMode != ControlMode.DECK,
                     onClick = { onApplyPreset(QuickPreset.CODE_REVIEW) }
                 )
                 PresetCard(
                     title = "Battery Saver",
-                    subtitle = "720p · Data Saver",
+                    subtitle = "480p · Data Saver",
                     icon = Icons.Default.BatteryChargingFull,
-                    isSelected = currentQuality == 0 && !isSpeakerAudioEnabled && controlMode != ControlMode.DECK,
+                    isSelected = currentQuality == InputEvent.SetQuality.DATA_SAVER.toInt() && !isSpeakerAudioEnabled && controlMode != ControlMode.DECK,
                     onClick = { onApplyPreset(QuickPreset.POWER_SAVER) }
                 )
                 PresetCard(
@@ -246,6 +247,10 @@ fun ControlCenterSheet(
                 }
             }
 
+            ToolChip("PC Resolution & Display Scaling", Icons.Default.DisplaySettings, Modifier.fillMaxWidth()) {
+                onOpenResolution()
+            }
+
             // ==================== 4. QUALITY & SENSITIVITY SLIDERS ====================
             SectionLabel("TUNING & SLIDERS")
             Column(
@@ -264,7 +269,7 @@ fun ControlCenterSheet(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text("Trackpad Pointer Sensitivity", fontSize = 12.sp, color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                        Text(String.format("%.1fx", sensitivity), fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        Text(String.format(java.util.Locale.US, "%.1fx", sensitivity), fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
                     }
                     Slider(
                         value = sensitivity,
@@ -285,7 +290,7 @@ fun ControlCenterSheet(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text("Two-Finger Scroll Speed", fontSize = 12.sp, color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                        Text(String.format("%.1fx", scrollSpeed), fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        Text(String.format(java.util.Locale.US, "%.1fx", scrollSpeed), fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
                     }
                     Slider(
                         value = scrollSpeed,
@@ -306,10 +311,11 @@ fun ControlCenterSheet(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Stream Quality", fontSize = 12.sp, color = TextPrimary, fontWeight = FontWeight.SemiBold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        QualityChip("Turbo", currentQuality == 0) { onChangeQuality(0) }
-                        QualityChip("Balanced", currentQuality == 1) { onChangeQuality(1) }
-                        QualityChip("High", currentQuality == 2) { onChangeQuality(2) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        QualityChip("Saver", currentQuality == InputEvent.SetQuality.DATA_SAVER.toInt()) { onChangeQuality(InputEvent.SetQuality.DATA_SAVER.toInt()) }
+                        QualityChip("Turbo", currentQuality == InputEvent.SetQuality.TURBO.toInt()) { onChangeQuality(InputEvent.SetQuality.TURBO.toInt()) }
+                        QualityChip("Bal", currentQuality == InputEvent.SetQuality.BALANCED.toInt()) { onChangeQuality(InputEvent.SetQuality.BALANCED.toInt()) }
+                        QualityChip("HD", currentQuality == InputEvent.SetQuality.NATIVE.toInt()) { onChangeQuality(InputEvent.SetQuality.NATIVE.toInt()) }
                     }
                 }
             }

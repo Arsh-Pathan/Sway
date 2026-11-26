@@ -281,21 +281,55 @@
 
   <script>
     let privacyActive = false;
+    const boot = window.SWAY_BOOT || { nonce: '', deviceId: 'sway-host' };
+    let authToken = boot.nonce || '';
+    if (boot.deviceId) {
+      document.getElementById('deviceBadge').innerText = `Device: ${boot.deviceId}`;
+    }
+    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    document.getElementById('localWsUrl').innerText = `${wsProto}//${location.host}/ws`;
 
     // Connect WebSocket for live screen preview in web dashboard
     const liveImg = document.getElementById('liveImg');
     const fpsBadge = document.getElementById('fpsBadge');
     let frames = 0;
     let lastTime = performance.now();
+    let currentObjUrl = null;
+
+    liveImg.onload = liveImg.onerror = () => {
+      if (liveImg.dataset.prevUrl) {
+        URL.revokeObjectURL(liveImg.dataset.prevUrl);
+        liveImg.dataset.prevUrl = '';
+      }
+    };
 
     function connectPreview() {
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${proto}//${location.host}/ws`);
-      ws.binaryType = 'blob';
+      const ws = new WebSocket(`${wsProto}//${location.host}/ws`);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        if (!authToken) {
+          fpsBadge.innerText = 'Localhost preview only (use phone app on LAN)';
+          ws.close();
+          return;
+        }
+        ws.send(JSON.stringify({
+          type: 'join',
+          role: 'preview',
+          deviceId: boot.deviceId || '',
+          token: authToken
+        }));
+      };
 
       ws.onmessage = (event) => {
-        if (event.data instanceof Blob) {
-          const url = URL.createObjectURL(event.data);
+        if (event.data instanceof ArrayBuffer) {
+          const view = new Uint8Array(event.data);
+          // Only render valid JPEG frames (0xFF 0xD8); skip SWAU audio or non-video packets
+          if (view.length < 2 || view[0] !== 0xFF || view[1] !== 0xD8) return;
+          const prev = currentObjUrl;
+          const url = URL.createObjectURL(new Blob([view], { type: 'image/jpeg' }));
+          currentObjUrl = url;
+          if (prev) liveImg.dataset.prevUrl = prev;
           liveImg.src = url;
           frames++;
           const now = performance.now();
@@ -308,10 +342,32 @@
       };
 
       ws.onclose = () => {
-        setTimeout(connectPreview, 2000);
+        if (authToken) setTimeout(connectPreview, 2000);
       };
     }
     connectPreview();
+
+    async function apiPost(path, payload) {
+      if (!authToken) {
+        const entered = prompt('Enter Sway pairing token for this host:');
+        if (!entered) return false;
+        authToken = entered.trim();
+      }
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Sway-Token': authToken
+        },
+        body: JSON.stringify(payload)
+      });
+      if (res.status === 401) {
+        authToken = '';
+        alert('Invalid token.');
+        return false;
+      }
+      return res.ok;
+    }
 
     async function togglePrivacy() {
       privacyActive = !privacyActive;
@@ -323,48 +379,29 @@
         btn.classList.remove('active');
         btn.innerText = 'Enable Privacy Shield';
       }
-      await fetch('/api/privacy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enable: privacyActive })
-      });
+      await apiPost('/api/privacy', { enable: privacyActive });
     }
 
     async function setOrientation(vertical) {
-      await fetch('/api/orientation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vertical: vertical })
-      });
+      await apiPost('/api/orientation', { vertical: vertical });
     }
 
     async function setResolution(mode) {
-      await fetch('/api/resolution', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: mode })
-      });
+      await apiPost('/api/resolution', { mode: mode });
     }
 
     async function sendSystemCommand(action) {
-      await fetch('/api/system', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: action })
-      });
+      await apiPost('/api/system', { action: action });
     }
 
     async function sendClipboard() {
       const input = document.getElementById('clipText');
       const text = input.value;
       if (!text) return;
-      await fetch('/api/clipboard', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text })
-      });
-      input.value = '';
-      alert('Text sent to Windows clipboard!');
+      if (await apiPost('/api/clipboard', { text: text })) {
+        input.value = '';
+        alert('Text sent to Windows clipboard!');
+      }
     }
   </script>
 </body>

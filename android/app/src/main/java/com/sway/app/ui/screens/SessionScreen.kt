@@ -35,13 +35,18 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
@@ -74,14 +79,183 @@ enum class ViewFitMode {
     ROTATE_90
 }
 
+private data class StreamPlacement(val padX: Float, val padY: Float, val fitW: Float, val fitH: Float)
+
+private fun computeStreamPlacement(
+    canvasWidth: Float,
+    canvasHeight: Float,
+    imgW: Float,
+    imgH: Float,
+    fitMode: ViewFitMode
+): StreamPlacement {
+    if (canvasWidth <= 0f || canvasHeight <= 0f || imgW <= 0f || imgH <= 0f) {
+        return StreamPlacement(0f, 0f, canvasWidth.coerceAtLeast(1f), canvasHeight.coerceAtLeast(1f))
+    }
+    val streamAspect = imgW / imgH
+    val canvasAspect = canvasWidth / canvasHeight
+    return when (fitMode) {
+        ViewFitMode.FILL -> StreamPlacement(0f, 0f, canvasWidth, canvasHeight)
+        ViewFitMode.ROTATE_90 -> {
+            val rotFitW: Float
+            val rotFitH: Float
+            if (canvasHeight / canvasWidth.coerceAtLeast(1f) > streamAspect) {
+                rotFitH = canvasWidth
+                rotFitW = rotFitH * streamAspect
+            } else {
+                rotFitW = canvasHeight
+                rotFitH = rotFitW / streamAspect
+            }
+            StreamPlacement((canvasWidth - rotFitW) / 2f, (canvasHeight - rotFitH) / 2f, rotFitW, rotFitH)
+        }
+        ViewFitMode.FIT -> {
+            val fitW: Float
+            val fitH: Float
+            val padX: Float
+            val padY: Float
+            if (canvasAspect > streamAspect) {
+                fitH = canvasHeight
+                fitW = fitH * streamAspect
+                padX = (canvasWidth - fitW) / 2f
+                padY = 0f
+            } else {
+                fitW = canvasWidth
+                fitH = fitW / streamAspect
+                padX = 0f
+                padY = (canvasHeight - fitH) / 2f
+            }
+            StreamPlacement(padX, padY, fitW, fitH)
+        }
+    }
+}
+
+private fun charToWindowsVKey(ch: Char): Short? {
+    val upper = ch.uppercaseChar()
+    return when (upper) {
+        in 'A'..'Z' -> upper.code.toShort()
+        in '0'..'9' -> upper.code.toShort()
+        ' ' -> 0x20.toShort()
+        '\n', '\r' -> 0x0D.toShort()
+        '\t' -> 0x09.toShort()
+        '-', '_' -> 0xBD.toShort()
+        '=', '+' -> 0xBB.toShort()
+        '[', '{' -> 0xDB.toShort()
+        ']', '}' -> 0xDD.toShort()
+        '\\', '|' -> 0xDC.toShort()
+        ';', ':' -> 0xBA.toShort()
+        '\'', '"' -> 0xDE.toShort()
+        ',', '<' -> 0xBC.toShort()
+        '.', '>' -> 0xBE.toShort()
+        '/', '?' -> 0xBF.toShort()
+        '`', '~' -> 0xC0.toShort()
+        else -> null
+    }
+}
+
+@Composable
+private fun PerformanceHud(
+    fpsFlow: kotlinx.coroutines.flow.StateFlow<Int>,
+    rttFlow: kotlinx.coroutines.flow.StateFlow<Int>,
+    isDeckMode: Boolean
+) {
+    val liveFps by fpsFlow.collectAsState()
+    val liveRtt by rttFlow.collectAsState()
+
+    Surface(
+        color = SurfaceDark,
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(Color.White)
+            )
+            Text(
+                text = if (isDeckMode) "DECK 1ms" else "$liveFps FPS · ${liveRtt}ms",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.ConnectionOverlayCard(
+    rtcState: RtcConnectionState,
+    onReconnect: () -> Unit,
+    onDisconnect: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .align(Alignment.Center)
+            .padding(16.dp),
+        color = SurfaceDark.copy(alpha = 0.95f),
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            val statusMsg = when (rtcState) {
+                is RtcConnectionState.Failed -> {
+                    val r = rtcState.reason
+                    if (r.contains("192.168.") || r.contains("10.") || r.contains("172.")) {
+                        "Local Wi-Fi IP unreachable on Mobile Data.\nPlease tap 'Exit' and select 'Mobile 4G/5G'."
+                    } else {
+                        "Connection failed:\n$r"
+                    }
+                }
+                is RtcConnectionState.Disconnected -> "Connection dropped. Tap Retry to reconnect."
+                is RtcConnectionState.Connected -> "Waiting for desktop video..."
+                else -> "Connecting to desktop..."
+            }
+            Text(
+                text = statusMsg,
+                style = Typography.bodyMedium,
+                color = Color.White,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            if (rtcState is RtcConnectionState.Failed || rtcState is RtcConnectionState.Disconnected) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = onReconnect,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Retry", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                    OutlinedButton(
+                        onClick = onDisconnect,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Exit", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun DesktopStreamCanvas(
     currentFrameFlow: kotlinx.coroutines.flow.StateFlow<com.sway.app.network.StreamFrame?>,
     rtcState: RtcConnectionState,
     fitMode: ViewFitMode = ViewFitMode.FIT,
+    onReconnect: () -> Unit = {},
+    onDisconnect: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val frameState = currentFrameFlow.collectAsState()
+    val hasFrame by remember { derivedStateOf { frameState.value != null } }
     val paint = remember {
         android.graphics.Paint().apply {
             isFilterBitmap = true
@@ -94,53 +268,24 @@ private fun DesktopStreamCanvas(
         androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
             val frameWrapper = frameState.value ?: return@Canvas
             val frame = frameWrapper.bitmap
+            if (frame.isRecycled) return@Canvas
             val canvasWidth = size.width
             val canvasHeight = size.height
 
-            val imgW = frame.width.toFloat()
-            val imgH = frame.height.toFloat()
-            val streamAspect = imgW / imgH
-            val canvasAspect = canvasWidth / canvasHeight
+            val placement = computeStreamPlacement(
+                canvasWidth = canvasWidth,
+                canvasHeight = canvasHeight,
+                imgW = frame.width.toFloat(),
+                imgH = frame.height.toFloat(),
+                fitMode = fitMode
+            )
 
-            val fitW: Float
-            val fitH: Float
-            val padX: Float
-            val padY: Float
-
-            if (fitMode == ViewFitMode.FILL) {
-                fitW = canvasWidth
-                fitH = canvasHeight
-                padX = 0f
-                padY = 0f
-            } else if (fitMode == ViewFitMode.ROTATE_90) {
-                val rotFitW: Float
-                val rotFitH: Float
-                if (canvasHeight / canvasWidth.coerceAtLeast(1f) > streamAspect) {
-                    rotFitH = canvasWidth
-                    rotFitW = rotFitH * streamAspect
-                } else {
-                    rotFitW = canvasHeight
-                    rotFitH = rotFitW / streamAspect
-                }
-                fitW = rotFitW
-                fitH = rotFitH
-                padX = (canvasWidth - fitW) / 2f
-                padY = (canvasHeight - fitH) / 2f
-            } else {
-                if (canvasAspect > streamAspect) {
-                    fitH = canvasHeight
-                    fitW = fitH * streamAspect
-                    padX = (canvasWidth - fitW) / 2f
-                    padY = 0f
-                } else {
-                    fitW = canvasWidth
-                    fitH = fitW / streamAspect
-                    padX = 0f
-                    padY = (canvasHeight - fitH) / 2f
-                }
-            }
-
-            dstRect.set(padX.toInt(), padY.toInt(), (padX + fitW).toInt(), (padY + fitH).toInt())
+            dstRect.set(
+                placement.padX.toInt(),
+                placement.padY.toInt(),
+                (placement.padX + placement.fitW).toInt(),
+                (placement.padY + placement.fitH).toInt()
+            )
 
             drawIntoCanvas { canvas ->
                 val nativeCanvas = canvas.nativeCanvas
@@ -155,36 +300,12 @@ private fun DesktopStreamCanvas(
             }
         }
 
-        if (frameState.value == null) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(16.dp),
-                color = SurfaceDark.copy(alpha = 0.95f),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                        val r = (rtcState as RtcConnectionState.Failed).reason
-                        if (r.contains("192.168.") || r.contains("10.") || r.contains("172.")) {
-                            "Local Wi-Fi IP unreachable on Mobile Data.\nPlease tap 'Back' and select 'Mobile 4G/5G'."
-                        } else {
-                            "Connection failed:\n$r"
-                        }
-                    } else {
-                        "Connecting to desktop..."
-                    }
-                    Text(
-                        text = statusMsg,
-                        style = Typography.bodyMedium,
-                        color = Color.White
-                    )
-                }
-            }
+        if (!hasFrame || rtcState !is RtcConnectionState.Connected) {
+            ConnectionOverlayCard(
+                rtcState = rtcState,
+                onReconnect = onReconnect,
+                onDisconnect = onDisconnect
+            )
         }
     }
 }
@@ -197,32 +318,77 @@ private fun DesktopStreamView(
     zoomScale: Float,
     zoomOffsetX: Float,
     zoomOffsetY: Float,
-    isVerticalPc: Boolean,
+    enableDirectTap: Boolean = true,
     onZoomChange: (Float, Float, Float) -> Unit,
+    onInputEvent: (InputEvent) -> Unit = {},
+    onReconnect: () -> Unit = {},
+    onDisconnect: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val latestScale by rememberUpdatedState(zoomScale)
+    val latestOffsetX by rememberUpdatedState(zoomOffsetX)
+    val latestOffsetY by rememberUpdatedState(zoomOffsetY)
+    val latestEnableDirectTap by rememberUpdatedState(enableDirectTap)
+    val latestOnZoomChange by rememberUpdatedState(onZoomChange)
+    val latestOnInputEvent by rememberUpdatedState(onInputEvent)
+
     Box(
         modifier = modifier
             .fillMaxSize()
-            .pointerInput(zoomScale, zoomOffsetX, zoomOffsetY, isVerticalPc, fitMode) {
+            .pointerInput(fitMode) {
+                val tapSlopPx = 10f * density.coerceAtLeast(1f)
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position
+                    val downTime = System.currentTimeMillis()
                     var prevPointers = listOf(down)
-                    var currentScale = zoomScale
-                    var currentOffsetX = zoomOffsetX
-                    var currentOffsetY = zoomOffsetY
+                    var currentScale = latestScale
+                    var currentOffsetX = latestOffsetX
+                    var currentOffsetY = latestOffsetY
+                    var maxPointers = 1
+                    var maxMovePx = 0f
+                    var lastPos = downPos
 
                     while (true) {
                         val event = awaitPointerEvent()
                         val pressedPointers = event.changes.filter { it.pressed }
+                        if (pressedPointers.size > maxPointers) {
+                            maxPointers = pressedPointers.size
+                        }
 
                         if (pressedPointers.isEmpty()) {
+                            if (latestEnableDirectTap &&
+                                currentScale <= 1.05f &&
+                                maxPointers == 1 &&
+                                maxMovePx < tapSlopPx &&
+                                (System.currentTimeMillis() - downTime) < 280
+                            ) {
+                                val bmp = webRtcManager.currentFrame.value?.bitmap
+                                val imgW = (bmp?.width ?: 1920).toFloat()
+                                val imgH = (bmp?.height ?: 1080).toFloat()
+                                val cw = size.width.toFloat().coerceAtLeast(1f)
+                                val ch = size.height.toFloat().coerceAtLeast(1f)
+                                val placement = computeStreamPlacement(cw, ch, imgW, imgH, fitMode)
+                                val (ux, uy) = if (fitMode == ViewFitMode.ROTATE_90) {
+                                    val cx = cw / 2f
+                                    val cy = ch / 2f
+                                    val rx = lastPos.x - cx
+                                    val ry = lastPos.y - cy
+                                    (cx + ry) to (cy - rx)
+                                } else {
+                                    lastPos.x to lastPos.y
+                                }
+                                val u = ((ux - placement.padX) / placement.fitW.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                val v = ((uy - placement.padY) / placement.fitH.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                val nx = (u * 65535f).roundToInt().coerceIn(0, 65535)
+                                val ny = (v * 65535f).roundToInt().coerceIn(0, 65535)
+                                latestOnInputEvent(InputEvent.TouchDirect(nx, ny, InputEvent.TouchDirect.ACTION_DOWN))
+                                latestOnInputEvent(InputEvent.TouchDirect(nx, ny, InputEvent.TouchDirect.ACTION_UP))
+                            }
                             break
                         }
 
                         if (pressedPointers.size >= 2) {
-                            // Multi-touch pinch-to-zoom and two-finger pan
                             val p0 = pressedPointers[0]
                             val p1 = pressedPointers[1]
                             val prev0 = prevPointers.firstOrNull { it.id == p0.id } ?: p0
@@ -238,24 +404,30 @@ private fun DesktopStreamView(
 
                             currentScale = (currentScale * zoomFactor).coerceIn(1.0f, 5.0f)
                             if (currentScale > 1.05f) {
-                                currentOffsetX += pan.x
-                                currentOffsetY += pan.y
+                                val maxOffX = size.width * (currentScale - 1f) / 2f
+                                val maxOffY = size.height * (currentScale - 1f) / 2f
+                                currentOffsetX = (currentOffsetX + pan.x).coerceIn(-maxOffX, maxOffX)
+                                currentOffsetY = (currentOffsetY + pan.y).coerceIn(-maxOffY, maxOffY)
                             } else {
                                 currentOffsetX = 0f
                                 currentOffsetY = 0f
                             }
-                            onZoomChange(currentScale, currentOffsetX, currentOffsetY)
+                            latestOnZoomChange(currentScale, currentOffsetX, currentOffsetY)
                             for (p in pressedPointers) p.consume()
                         } else if (pressedPointers.size == 1) {
                             val current = pressedPointers[0]
+                            lastPos = current.position
+                            val moveDist = (current.position - downPos).getDistance()
+                            if (moveDist > maxMovePx) maxMovePx = moveDist
 
-                            if (zoomScale > 1.05f) {
-                                // Viewport panning when zoomed in
+                            if (currentScale > 1.05f) {
                                 val prev = prevPointers.firstOrNull { it.id == current.id } ?: current
                                 val pan = current.position - prev.position
-                                currentOffsetX += pan.x
-                                currentOffsetY += pan.y
-                                onZoomChange(currentScale, currentOffsetX, currentOffsetY)
+                                val maxOffX = size.width * (currentScale - 1f) / 2f
+                                val maxOffY = size.height * (currentScale - 1f) / 2f
+                                currentOffsetX = (currentOffsetX + pan.x).coerceIn(-maxOffX, maxOffX)
+                                currentOffsetY = (currentOffsetY + pan.y).coerceIn(-maxOffY, maxOffY)
+                                latestOnZoomChange(currentScale, currentOffsetX, currentOffsetY)
                                 current.consume()
                             }
                         }
@@ -267,17 +439,19 @@ private fun DesktopStreamView(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer(
-                    scaleX = zoomScale,
-                    scaleY = zoomScale,
-                    translationX = zoomOffsetX,
+                .graphicsLayer {
+                    scaleX = zoomScale
+                    scaleY = zoomScale
+                    translationX = zoomOffsetX
                     translationY = zoomOffsetY
-                )
+                }
         ) {
             DesktopStreamCanvas(
                 currentFrameFlow = webRtcManager.currentFrame,
                 rtcState = rtcState,
-                fitMode = fitMode
+                fitMode = fitMode,
+                onReconnect = onReconnect,
+                onDisconnect = onDisconnect
             )
         }
     }
@@ -318,6 +492,42 @@ fun SessionScreen(
     var showResolutionSheet by remember { mutableStateOf(false) }
     var viewFitMode by remember { mutableStateOf(ViewFitMode.FIT) }
     var currentResMode by remember { mutableStateOf(InputEvent.ChangeResolution.DEFAULT) }
+    var isTrackpadDragLocked by remember { mutableStateOf(false) }
+
+    var ctrlActive by remember { mutableStateOf(false) }
+    var altActive by remember { mutableStateOf(false) }
+    var shiftActive by remember { mutableStateOf(false) }
+    var winActive by remember { mutableStateOf(false) }
+
+    val cleanedUp = remember { AtomicBoolean(false) }
+
+    fun activeModifierMask(): Byte {
+        var mask = 0
+        if (ctrlActive) mask = mask or 0x01
+        if (shiftActive) mask = mask or 0x02
+        if (altActive) mask = mask or 0x04
+        if (winActive) mask = mask or 0x08
+        return mask.toByte()
+    }
+
+    fun clearModifiers() {
+        if (ctrlActive) {
+            ctrlActive = false
+            webRtcManager.sendInput(InputEvent.KeyUp(0x11))
+        }
+        if (altActive) {
+            altActive = false
+            webRtcManager.sendInput(InputEvent.KeyUp(0x12))
+        }
+        if (shiftActive) {
+            shiftActive = false
+            webRtcManager.sendInput(InputEvent.KeyUp(0x10))
+        }
+        if (winActive) {
+            winActive = false
+            webRtcManager.sendInput(InputEvent.KeyUp(0x5B))
+        }
+    }
 
     LaunchedEffect(controlMode) {
         if (controlMode == ControlMode.DECK) {
@@ -327,14 +537,28 @@ fun SessionScreen(
         }
     }
 
-    val liveFps by webRtcManager.fps.collectAsState()
-    val liveRtt by webRtcManager.rttMs.collectAsState()
+    DisposableEffect(controlMode, isLandscape) {
+        onDispose {
+            if (isTrackpadDragLocked) {
+                isTrackpadDragLocked = false
+                webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+            }
+        }
+    }
 
-    // Soft Keyboard state
+    val monitorCount by webRtcManager.monitorCount.collectAsState()
+
+    // Soft Keyboard state synced with IME visibility
     val baseBuffer = "  "
     var keyboardInput by remember { mutableStateOf(TextFieldValue(baseBuffer, androidx.compose.ui.text.TextRange(baseBuffer.length))) }
     val focusRequester = remember { FocusRequester() }
+    val density = LocalDensity.current
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
     var isKeyboardOpen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(imeVisible) {
+        isKeyboardOpen = imeVisible
+    }
 
     // Auto-open software keyboard when text field receives focus or text focus signal arrives
     LaunchedEffect(Unit) {
@@ -347,7 +571,8 @@ fun SessionScreen(
     var currentMonitor by remember { mutableIntStateOf(0) }
 
     fun switchMonitor() {
-        currentMonitor = (currentMonitor + 1) % 2
+        val count = monitorCount.coerceAtLeast(1)
+        currentMonitor = (currentMonitor + 1) % count
         webRtcManager.sendInput(InputEvent.SwitchMonitor(currentMonitor.toByte()))
         Toast.makeText(context, "Switched to Display #${currentMonitor + 1}", Toast.LENGTH_SHORT).show()
     }
@@ -427,6 +652,7 @@ fun SessionScreen(
                 scrollSpeed = 1.0f
                 isSpeakerAudioEnabled = false
                 isMicAudioEnabled = false
+                webRtcManager.signalingClient.audioPlayer.stop()
                 webRtcManager.sendInput(InputEvent.SetAudioConfig(false, false))
                 viewFitMode = ViewFitMode.FIT
                 Toast.makeText(context, "Preset: Productivity Active", Toast.LENGTH_SHORT).show()
@@ -465,6 +691,7 @@ fun SessionScreen(
                 webRtcManager.sendInput(InputEvent.SetQuality(currentQuality))
                 isSpeakerAudioEnabled = false
                 isMicAudioEnabled = false
+                webRtcManager.signalingClient.audioPlayer.stop()
                 webRtcManager.sendInput(InputEvent.SetAudioConfig(false, false))
                 Toast.makeText(context, "Preset: Battery Saver (Low Bandwidth)", Toast.LENGTH_SHORT).show()
             }
@@ -474,6 +701,7 @@ fun SessionScreen(
                 webRtcManager.sendInput(InputEvent.SetPrivacyCurtain(true))
                 isSpeakerAudioEnabled = false
                 isMicAudioEnabled = false
+                webRtcManager.signalingClient.audioPlayer.stop()
                 webRtcManager.sendInput(InputEvent.SetAudioConfig(false, false))
                 Toast.makeText(context, "Preset: Stealth Meeting (PC Screen Black)", Toast.LENGTH_SHORT).show()
             }
@@ -481,11 +709,22 @@ fun SessionScreen(
         showControlCenter = false
     }
 
-    fun handleDisconnect() {
+    fun cleanupAndRestore() {
+        if (!cleanedUp.compareAndSet(false, true)) return
+        if (isTrackpadDragLocked) {
+            isTrackpadDragLocked = false
+            webRtcManager.sendInput(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+        }
+        clearModifiers()
+        webRtcManager.signalingClient.audioPlayer.stop()
         // Automatically restore physical screen, rotation & resolution upon disconnect
         webRtcManager.sendInput(InputEvent.SetPrivacyCurtain(false))
         webRtcManager.sendInput(InputEvent.ChangeOrientation(false))
         webRtcManager.sendInput(InputEvent.ChangeResolution(InputEvent.ChangeResolution.DEFAULT))
+    }
+
+    fun handleDisconnect() {
+        cleanupAndRestore()
         onDisconnect()
     }
 
@@ -495,9 +734,7 @@ fun SessionScreen(
 
     DisposableEffect(Unit) {
         onDispose {
-            webRtcManager.sendInput(InputEvent.SetPrivacyCurtain(false))
-            webRtcManager.sendInput(InputEvent.ChangeOrientation(false))
-            webRtcManager.sendInput(InputEvent.ChangeResolution(InputEvent.ChangeResolution.DEFAULT))
+            cleanupAndRestore()
         }
     }
 
@@ -533,12 +770,15 @@ fun SessionScreen(
                         zoomScale = zoomScale,
                         zoomOffsetX = zoomOffsetX,
                         zoomOffsetY = zoomOffsetY,
-                        isVerticalPc = isVerticalPcMode,
+                        enableDirectTap = controlMode != ControlMode.TRACKPAD,
                         onZoomChange = { z, ox, oy ->
                             zoomScale = z
                             zoomOffsetX = ox
                             zoomOffsetY = oy
-                        }
+                        },
+                        onInputEvent = { webRtcManager.sendInput(it) },
+                        onReconnect = { webRtcManager.reconnect() },
+                        onDisconnect = { handleDisconnect() }
                     )
                 } else if (rtcState is RtcConnectionState.Connected) {
                     AndroidView(
@@ -548,48 +788,15 @@ fun SessionScreen(
                                 webRtcManager.attachRenderer(this)
                             }
                         },
+                        onRelease = { webRtcManager.detachRenderer(it) },
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Surface(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(16.dp),
-                        color = SurfaceDark.copy(alpha = 0.95f),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                val r = (rtcState as RtcConnectionState.Failed).reason
-                                if (r.contains("192.168.") || r.contains("10.") || r.contains("172.")) {
-                                    "Local Wi-Fi IP unreachable on Mobile Data.\nPlease tap 'Back' and select 'Mobile 4G/5G'."
-                                } else {
-                                    "Connection failed:\n$r"
-                                }
-                            } else {
-                                "Connecting to desktop..."
-                            }
-                            Text(
-                                text = statusMsg,
-                                style = Typography.bodyMedium,
-                                color = Color.White,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                            )
-                            if (rtcState is RtcConnectionState.Failed) {
-                                Button(
-                                    onClick = onDisconnect,
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("Back to Pairing", color = Color.Black, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
+                    ConnectionOverlayCard(
+                        rtcState = rtcState,
+                        onReconnect = { webRtcManager.reconnect() },
+                        onDisconnect = { handleDisconnect() }
+                    )
                 }
 
                 // ==================== HORIZONTAL CLEAN MODE ====================
@@ -601,6 +808,9 @@ fun SessionScreen(
                         scrollSpeed = scrollSpeed,
                         hapticsEnabled = hapticsEnabled,
                         isInvisible = true,
+                        isDragLocked = isTrackpadDragLocked,
+                        rotationQuarterTurns = if (viewFitMode == ViewFitMode.ROTATE_90) 1 else 0,
+                        onUnlockDrag = { isTrackpadDragLocked = false },
                         onInputEvent = { webRtcManager.sendInput(it) }
                     )
                 }
@@ -611,6 +821,7 @@ fun SessionScreen(
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
+                        .systemBarsPadding()
                         .padding(16.dp)
                 ) {
                     Surface(
@@ -657,6 +868,21 @@ fun SessionScreen(
                                 ) {
                                     Icon(Icons.Default.AspectRatio, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                     Text(if (viewFitMode == ViewFitMode.FILL) "Letterbox (FIT)" else "Edge-to-Edge (FILL)", color = Color.White, fontSize = 13.sp)
+                                }
+
+                                // Zoom Cycle
+                                Row(
+                                    modifier = Modifier
+                                        .clickable {
+                                            cycleZoom()
+                                            showLandscapeMenu = false
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Default.ZoomIn, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                    Text("Zoom (${String.format(Locale.US, "%.1fx", zoomScale)})", color = Color.White, fontSize = 13.sp)
                                 }
 
                                 // Rotate back to Portrait
@@ -737,12 +963,15 @@ fun SessionScreen(
                             zoomScale = zoomScale,
                             zoomOffsetX = zoomOffsetX,
                             zoomOffsetY = zoomOffsetY,
-                            isVerticalPc = isVerticalPcMode,
+                            enableDirectTap = controlMode != ControlMode.TRACKPAD,
                             onZoomChange = { z, ox, oy ->
                                 zoomScale = z
                                 zoomOffsetX = ox
                                 zoomOffsetY = oy
-                            }
+                            },
+                            onInputEvent = { webRtcManager.sendInput(it) },
+                            onReconnect = { webRtcManager.reconnect() },
+                            onDisconnect = { handleDisconnect() }
                         )
                     } else if (rtcState is RtcConnectionState.Connected) {
                         AndroidView(
@@ -752,47 +981,69 @@ fun SessionScreen(
                                     webRtcManager.attachRenderer(this)
                                 }
                             },
+                            onRelease = { webRtcManager.detachRenderer(it) },
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(8.dp),
-                            color = SurfaceDark.copy(alpha = 0.85f),
-                            shape = MaterialTheme.shapes.medium
-                        ) {
-                            val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
-                            } else {
-                                "Connecting to desktop..."
-                            }
-                            Text(
-                                text = statusMsg,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                style = Typography.bodyMedium,
-                                color = Color.White
-                            )
-                        }
+                        ConnectionOverlayCard(
+                            rtcState = rtcState,
+                            onReconnect = { webRtcManager.reconnect() },
+                            onDisconnect = { handleDisconnect() }
+                        )
                     }
 
-                    // Floating pill to unhide controls in portrait
-                    Surface(
-                        onClick = { isPanelHidden = false },
+                    if (controlMode == ControlMode.TRACKPAD && zoomScale <= 1.05f) {
+                        TrackpadSurface(
+                            modifier = Modifier.fillMaxSize(),
+                            sensitivity = sensitivity,
+                            scrollSpeed = scrollSpeed,
+                            hapticsEnabled = hapticsEnabled,
+                            isInvisible = true,
+                            isDragLocked = isTrackpadDragLocked,
+                            rotationQuarterTurns = if (viewFitMode == ViewFitMode.ROTATE_90) 1 else 0,
+                            onUnlockDrag = { isTrackpadDragLocked = false },
+                            onInputEvent = { webRtcManager.sendInput(it) }
+                        )
+                    }
+
+                    // Floating pills for Zoom and Show Controls in portrait fullscreen
+                    Row(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
+                            .systemBarsPadding()
                             .padding(16.dp),
-                        color = SurfaceDark.copy(alpha = 0.85f),
-                        shape = RoundedCornerShape(20.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        Surface(
+                            onClick = { cycleZoom() },
+                            color = SurfaceDark.copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(20.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
                         ) {
-                            Icon(Icons.Default.FullscreenExit, contentDescription = "Show Controls", tint = Color.White, modifier = Modifier.size(16.dp))
-                            Text("Controls", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Default.ZoomIn, contentDescription = "Zoom", tint = Color.White, modifier = Modifier.size(16.dp))
+                                Text(String.format(Locale.US, "%.1fx", zoomScale), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+
+                        Surface(
+                            onClick = { isPanelHidden = false },
+                            color = SurfaceDark.copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(20.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(Icons.Default.FullscreenExit, contentDescription = "Show Controls", tint = Color.White, modifier = Modifier.size(16.dp))
+                                Text("Controls", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
                         }
                     }
                 }
@@ -800,6 +1051,7 @@ fun SessionScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .systemBarsPadding()
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -809,31 +1061,11 @@ fun SessionScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Live Performance HUD
-                    Surface(
-                        color = SurfaceDark,
-                        shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White)
-                            )
-                            Text(
-                                text = if (controlMode == ControlMode.DECK) "DECK 1ms" else "${liveFps} FPS · ${liveRtt}ms",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                        }
-                    }
+                    PerformanceHud(
+                        fpsFlow = webRtcManager.fps,
+                        rttFlow = webRtcManager.rttMs,
+                        isDeckMode = controlMode == ControlMode.DECK
+                    )
 
                     // Mode Toggle Pill (Stream vs Deck)
                     Surface(
@@ -961,12 +1193,15 @@ fun SessionScreen(
                             zoomScale = zoomScale,
                             zoomOffsetX = zoomOffsetX,
                             zoomOffsetY = zoomOffsetY,
-                            isVerticalPc = isVerticalPcMode,
+                            enableDirectTap = true,
                             onZoomChange = { z, ox, oy ->
                                 zoomScale = z
                                 zoomOffsetX = ox
                                 zoomOffsetY = oy
-                            }
+                            },
+                            onInputEvent = { webRtcManager.sendInput(it) },
+                            onReconnect = { webRtcManager.reconnect() },
+                            onDisconnect = { handleDisconnect() }
                         )
                     } else if (rtcState is RtcConnectionState.Connected) {
                         AndroidView(
@@ -976,28 +1211,15 @@ fun SessionScreen(
                                     webRtcManager.attachRenderer(this)
                                 }
                             },
+                            onRelease = { webRtcManager.detachRenderer(it) },
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(8.dp),
-                            color = SurfaceDark.copy(alpha = 0.85f),
-                            shape = MaterialTheme.shapes.medium
-                        ) {
-                            val statusMsg = if (rtcState is RtcConnectionState.Failed) {
-                                "Connection failed: ${(rtcState as RtcConnectionState.Failed).reason}"
-                            } else {
-                                "Connecting to desktop..."
-                            }
-                            Text(
-                                text = statusMsg,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                style = Typography.bodyMedium,
-                                color = Color.White
-                            )
-                        }
+                        ConnectionOverlayCard(
+                            rtcState = rtcState,
+                            onReconnect = { webRtcManager.reconnect() },
+                            onDisconnect = { handleDisconnect() }
+                        )
                     }
 
                     // Zoom reset pill if zoomed in
@@ -1015,7 +1237,7 @@ fun SessionScreen(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
-                                    text = String.format("%.1fx", zoomScale),
+                                    text = String.format(Locale.US, "%.1fx", zoomScale),
                                     color = AccentIndigoBright,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
@@ -1044,10 +1266,12 @@ fun SessionScreen(
                         sensitivity = sensitivity,
                         scrollSpeed = scrollSpeed,
                         hapticsEnabled = hapticsEnabled,
+                        isDragLocked = isTrackpadDragLocked,
+                        rotationQuarterTurns = if (viewFitMode == ViewFitMode.ROTATE_90) 1 else 0,
+                        onUnlockDrag = { isTrackpadDragLocked = false },
                         onInputEvent = { webRtcManager.sendInput(it) }
                     )
 
-                    var isTrackpadDragLocked by remember { mutableStateOf(false) }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1113,14 +1337,34 @@ fun SessionScreen(
 
                 // Bottom: Sticky Modifier Dock
                 ModifierDock(
+                    ctrlActive = ctrlActive,
+                    altActive = altActive,
+                    shiftActive = shiftActive,
+                    winActive = winActive,
+                    onToggleCtrl = {
+                        ctrlActive = !ctrlActive
+                        webRtcManager.sendInput(if (ctrlActive) InputEvent.KeyDown(0x11, 0) else InputEvent.KeyUp(0x11))
+                    },
+                    onToggleAlt = {
+                        altActive = !altActive
+                        webRtcManager.sendInput(if (altActive) InputEvent.KeyDown(0x12, 0) else InputEvent.KeyUp(0x12))
+                    },
+                    onToggleShift = {
+                        shiftActive = !shiftActive
+                        webRtcManager.sendInput(if (shiftActive) InputEvent.KeyDown(0x10, 0) else InputEvent.KeyUp(0x10))
+                    },
+                    onToggleWin = {
+                        winActive = !winActive
+                        webRtcManager.sendInput(if (winActive) InputEvent.KeyDown(0x5B, 0) else InputEvent.KeyUp(0x5B))
+                    },
+                    onClearModifiers = { clearModifiers() },
                     onInputEvent = { webRtcManager.sendInput(it) },
                     onToggleKeyboard = {
-                        isKeyboardOpen = !isKeyboardOpen
-                        focusRequester.requestFocus()
-                        if (isKeyboardOpen) {
-                            keyboardController?.show()
-                        } else {
+                        if (imeVisible) {
                             keyboardController?.hide()
+                        } else {
+                            focusRequester.requestFocus()
+                            keyboardController?.show()
                         }
                     },
                     onOpenSettings = { showSettings = true },
@@ -1136,22 +1380,47 @@ fun SessionScreen(
             value = keyboardInput,
             onValueChange = { newValue ->
                 val newText = newValue.text
-                if (newText.length > baseBuffer.length) {
-                    val added = newText.substring(baseBuffer.length)
-                    webRtcManager.sendInput(InputEvent.TextInput(added))
-                } else if (newText.length < baseBuffer.length) {
-                    val diff = baseBuffer.length - newText.length
-                    for (i in 0 until diff) {
-                        webRtcManager.sendInput(InputEvent.KeyDown(0x08, 0))
-                        webRtcManager.sendInput(InputEvent.KeyUp(0x08))
+                var commonPrefix = 0
+                val minLen = minOf(baseBuffer.length, newText.length)
+                while (commonPrefix < minLen && baseBuffer[commonPrefix] == newText[commonPrefix]) {
+                    commonPrefix++
+                }
+                val deleted = baseBuffer.length - commonPrefix
+                val added = if (newText.length > commonPrefix) newText.substring(commonPrefix) else ""
+
+                for (i in 0 until deleted) {
+                    webRtcManager.sendInput(InputEvent.KeyDown(0x08, 0))
+                    webRtcManager.sendInput(InputEvent.KeyUp(0x08))
+                }
+                if (added.isNotEmpty()) {
+                    if (ctrlActive || altActive || winActive) {
+                        val mask = activeModifierMask()
+                        for (ch in added) {
+                            val vkey = charToWindowsVKey(ch)
+                            if (vkey != null) {
+                                webRtcManager.sendInput(InputEvent.KeyDown(vkey, mask))
+                                webRtcManager.sendInput(InputEvent.KeyUp(vkey))
+                            } else {
+                                webRtcManager.sendInput(InputEvent.TextInput(ch.toString()))
+                            }
+                        }
+                        clearModifiers()
+                    } else {
+                        webRtcManager.sendInput(InputEvent.TextInput(added))
                     }
                 }
                 keyboardInput = TextFieldValue(baseBuffer, androidx.compose.ui.text.TextRange(baseBuffer.length))
             },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardOptions = KeyboardOptions(
+                autoCorrectEnabled = false,
+                capitalization = KeyboardCapitalization.None,
+                imeAction = ImeAction.Send
+            ),
             keyboardActions = KeyboardActions(onSend = {
-                webRtcManager.sendInput(InputEvent.KeyDown(0x0D, 0))
+                val mask = activeModifierMask()
+                webRtcManager.sendInput(InputEvent.KeyDown(0x0D, mask))
                 webRtcManager.sendInput(InputEvent.KeyUp(0x0D))
+                if (mask.toInt() != 0) clearModifiers()
             }),
             modifier = Modifier
                 .size(1.dp)
@@ -1186,6 +1455,7 @@ fun SessionScreen(
                 onChangeScrollSpeed = { scrollSpeed = it },
                 onToggleSpeakerAudio = { enabled ->
                     isSpeakerAudioEnabled = enabled
+                    if (!enabled) webRtcManager.signalingClient.audioPlayer.stop()
                     webRtcManager.sendInput(InputEvent.SetAudioConfig(enabled, isMicAudioEnabled))
                     Toast.makeText(context, if (enabled) "PC Audio Streaming ON" else "PC Audio Muted", Toast.LENGTH_SHORT).show()
                 },
@@ -1195,6 +1465,10 @@ fun SessionScreen(
                     Toast.makeText(context, if (enabled) "Phone Mic to PC ON (Aux Driver Req)" else "Mic Muted", Toast.LENGTH_SHORT).show()
                 },
                 onSendInput = { webRtcManager.sendInput(it) },
+                onOpenResolution = {
+                    showControlCenter = false
+                    showResolutionSheet = true
+                },
                 onDismiss = { showControlCenter = false },
                 onDisconnect = { handleDisconnect() }
             )
@@ -1240,8 +1514,10 @@ fun SessionScreen(
                     viewFitMode = fit
                     showResolutionSheet = false
                 },
-                onToggleVerticalPc = {
-                    toggleVerticalPcMode()
+                onSetVerticalPc = { vertical ->
+                    if (vertical != isVerticalPcMode) {
+                        toggleVerticalPcMode()
+                    }
                 },
                 onDismiss = { showResolutionSheet = false }
             )

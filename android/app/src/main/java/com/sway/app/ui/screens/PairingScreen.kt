@@ -3,43 +3,78 @@ package com.sway.app.ui.screens
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
-import androidx.compose.ui.res.painterResource
 import com.sway.app.R
-import com.sway.app.model.PairedDevice
 import com.sway.app.network.NetworkDiscovery
 import com.sway.app.ui.theme.*
-import kotlinx.serialization.json.Json
 import org.json.JSONObject
+import java.net.InetAddress
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+
+internal fun isPrivateOrLocalEndpoint(endpoint: String): Boolean {
+    val clean = endpoint.trim()
+        .removePrefix("ws://")
+        .removePrefix("wss://")
+        .removePrefix("http://")
+        .removePrefix("https://")
+        .substringBefore("/")
+    val host = if (clean.startsWith("[")) {
+        clean.substringAfter("[").substringBefore("]")
+    } else {
+        clean.substringBeforeLast(":")
+    }
+    if (host.equals("localhost", ignoreCase = true) || host.endsWith(".local", ignoreCase = true)) {
+        return true
+    }
+    val parts = host.split(".")
+    if (parts.size == 4) {
+        val a = parts[0].toIntOrNull()
+        val b = parts[1].toIntOrNull()
+        if (a != null && b != null && parts[2].toIntOrNull() != null && parts[3].toIntOrNull() != null) {
+            return a == 10 ||
+                a == 127 ||
+                (a == 192 && b == 168) ||
+                (a == 172 && b in 16..31)
+        }
+    }
+    return try {
+        val addr = InetAddress.getByName(host)
+        addr.isLoopbackAddress || addr.isSiteLocalAddress || addr.isLinkLocalAddress
+    } catch (_: Exception) {
+        false
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,23 +107,25 @@ fun PairingScreen(
         }
     }
 
-    // Default to the current live laptop credentials if not saved yet
-    val defaultUrl = "192.168.11.93:8089"
-    val defaultDeviceId = "sway-laptop-b18602ec"
-    val defaultToken = "50f0232b-ea9"
     val defaultVpsUrl = "51.79.249.143:8080"
 
-    val isCellular = remember {
-        val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+    fun checkIsCellular(): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val cap = cm?.getNetworkCapabilities(cm.activeNetwork)
-        cap?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) == true &&
-            !(cap.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI))
+        return cap?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true &&
+            !(cap.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
     }
 
-    // Manual Form & Saved State: Auto-select VPS Relay if phone is on mobile cellular network
+    val isCellular = remember { checkIsCellular() }
+
+    val hasSavedCreds = remember {
+        !prefs.getString("saved_device_id", null).isNullOrBlank() &&
+            !prefs.getString("saved_token", null).isNullOrBlank()
+    }
+
     var signalingUrl by remember {
         val saved = prefs.getString("saved_signaling_url", null)
-        val initial = if (isCellular && (saved == null || saved.contains("192.168.") || saved.contains("10.") || saved.contains("172.") || saved.contains("127.0.0.1") || saved.contains("trycloudflare"))) {
+        val initial = if (isCellular && (saved == null || isPrivateOrLocalEndpoint(saved) || saved.contains("trycloudflare"))) {
             defaultVpsUrl
         } else if (saved != null && saved.contains("trycloudflare")) {
             defaultVpsUrl
@@ -98,10 +135,10 @@ fun PairingScreen(
         mutableStateOf(initial)
     }
     var deviceId by remember {
-        mutableStateOf(prefs.getString("saved_device_id", null) ?: defaultDeviceId)
+        mutableStateOf(prefs.getString("saved_device_id", "") ?: "")
     }
     var token by remember {
-        mutableStateOf(prefs.getString("saved_token", null) ?: defaultToken)
+        mutableStateOf(prefs.getString("saved_token", "") ?: "")
     }
 
     val connectAndSave = { url: String, devId: String, tok: String ->
@@ -113,7 +150,7 @@ fun PairingScreen(
         onConnect(url, devId, tok)
     }
 
-    // Auto-populate manual fields when a host is discovered on local Wi-Fi
+    // Auto-populate address & deviceId when a host is discovered on local Wi-Fi
     LaunchedEffect(discoveredHost) {
         discoveredHost?.let { host ->
             deviceId = host.deviceId
@@ -132,11 +169,12 @@ fun PairingScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(BackgroundDark)
+            .systemBarsPadding()
             .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         // App Header
         Row(
@@ -198,14 +236,26 @@ fun PairingScreen(
                     }
                     Button(
                         onClick = {
-                            val tokenToUse = if (host.token.isNotEmpty()) {
-                                host.token
-                            } else if (token.isNotEmpty()) {
-                                token
-                            } else {
-                                prefs.getString("saved_token", "") ?: ""
+                            val savedDev = prefs.getString("saved_device_id", null)
+                            val savedTok = prefs.getString("saved_token", null)
+                            val tokenToUse = when {
+                                host.token.isNotEmpty() -> host.token
+                                savedDev == host.deviceId && !savedTok.isNullOrBlank() -> savedTok
+                                token.isNotBlank() && deviceId == host.deviceId -> token
+                                else -> ""
                             }
-                            connectAndSave("${host.ipAddress}:${host.port}", host.deviceId, tokenToUse)
+                            if (tokenToUse.isBlank()) {
+                                signalingUrl = "${host.ipAddress}:${host.port}"
+                                deviceId = host.deviceId
+                                selectedTab = 1
+                                Toast.makeText(
+                                    context,
+                                    "Laptop found! Scan its QR code or enter its pairing token.",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                connectAndSave("${host.ipAddress}:${host.port}", host.deviceId, tokenToUse)
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = androidx.compose.ui.graphics.Color.White,
@@ -218,7 +268,7 @@ fun PairingScreen(
                 }
             }
         } ?: run {
-            if (deviceId.isNotBlank() && token.isNotBlank()) {
+            if (hasSavedCreds && deviceId.isNotBlank() && token.isNotBlank()) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = SurfaceCard,
@@ -251,9 +301,7 @@ fun PairingScreen(
                             )
                         }
                         Button(
-                            onClick = {
-                                connectAndSave(signalingUrl, deviceId, token)
-                            },
+                            onClick = { connectAndSave(signalingUrl, deviceId, token) },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = androidx.compose.ui.graphics.Color.White,
                                 contentColor = androidx.compose.ui.graphics.Color.Black
@@ -289,7 +337,6 @@ fun PairingScreen(
         }
 
         if (selectedTab == 0) {
-            // ==================== QR SCANNER TAB ====================
             if (hasCameraPermission) {
                 Box(
                     modifier = Modifier
@@ -306,23 +353,23 @@ fun PairingScreen(
                             val scannedId = obj.getString("deviceId")
                             val scannedToken = obj.getString("token")
 
-                            // If on Mobile Data (Cellular), auto-route local Wi-Fi IPs to the VPS Remote Relay
-                            if (isCellular && (scannedUrl.contains("192.168.") || scannedUrl.contains("10.") || scannedUrl.contains("172.") || scannedUrl.contains("127.0.0.1"))) {
+                            if (checkIsCellular() && isPrivateOrLocalEndpoint(scannedUrl)) {
                                 scannedUrl = defaultVpsUrl
                                 Toast.makeText(context, "Mobile Data detected: Connecting via VPS Relay", Toast.LENGTH_SHORT).show()
                             }
                             connectAndSave(scannedUrl, scannedId, scannedToken)
-                        } catch (e: Exception) {
-                            // Raw format: deviceId:token
-                            if (scannedJson.contains(":")) {
-                                val parts = scannedJson.split(":")
-                                val targetUrl = if (isCellular) defaultVpsUrl else signalingUrl
-                                connectAndSave(targetUrl, parts[0], parts[1])
+                        } catch (_: Exception) {
+                            // Raw format: deviceId:token (must NOT match URLs with ://)
+                            if (scannedJson.contains(":") && !scannedJson.contains("://")) {
+                                val parts = scannedJson.split(":", limit = 3)
+                                if (parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
+                                    val targetUrl = if (checkIsCellular()) defaultVpsUrl else signalingUrl
+                                    connectAndSave(targetUrl, parts[0].trim(), parts[1].trim())
+                                }
                             }
                         }
                     }
 
-                    // Target Overlay Frame
                     Box(
                         modifier = Modifier
                             .size(240.dp)
@@ -367,7 +414,6 @@ fun PairingScreen(
                 }
             }
         } else {
-            // ==================== MANUAL INPUT TAB ====================
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -377,7 +423,6 @@ fun PairingScreen(
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // Connection Mode Selector
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -388,9 +433,9 @@ fun PairingScreen(
                             discoveredHost?.let {
                                 signalingUrl = "${it.ipAddress}:${it.port}"
                                 deviceId = it.deviceId
-                                token = if (it.token.isNotEmpty()) it.token else token
+                                if (it.token.isNotEmpty()) token = it.token
                             } ?: run {
-                                signalingUrl = defaultUrl
+                                Toast.makeText(context, "Scanning Wi-Fi for laptop...", Toast.LENGTH_SHORT).show()
                             }
                         },
                         label = { Text("Local Wi-Fi", fontSize = 11.sp) },
@@ -402,9 +447,7 @@ fun PairingScreen(
                     )
                     FilterChip(
                         selected = signalingUrl.contains("51.79.249.143") || signalingUrl.contains("8080"),
-                        onClick = {
-                            signalingUrl = defaultVpsUrl
-                        },
+                        onClick = { signalingUrl = defaultVpsUrl },
                         label = { Text("VPS Relay (51.79.249.143)", fontSize = 11.sp) },
                         modifier = Modifier.weight(1.5f),
                         colors = FilterChipDefaults.filterChipColors(
@@ -464,7 +507,7 @@ fun PairingScreen(
                 Button(
                     onClick = {
                         if (deviceId.isNotBlank() && token.isNotBlank()) {
-                            connectAndSave(signalingUrl, deviceId.trim(), token.trim())
+                            connectAndSave(signalingUrl.trim(), deviceId.trim(), token.trim())
                         }
                     },
                     modifier = Modifier
@@ -489,12 +532,23 @@ fun PairingScreen(
 @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
 @Composable
 fun CameraQrScannerView(onQrCodeDetected: (String) -> Unit) {
-    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val barcodeScanner = remember { BarcodeScanning.getClient() }
+    val scanned = remember { AtomicBoolean(false) }
+    var boundProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
-    var hasScanned by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) {
+        onDispose {
+            try {
+                boundProvider?.unbindAll()
+            } catch (_: Exception) {}
+            try {
+                barcodeScanner.close()
+            } catch (_: Exception) {}
+            cameraExecutor.shutdownNow()
+        }
+    }
 
     AndroidView(
         factory = { ctx ->
@@ -502,7 +556,12 @@ fun CameraQrScannerView(onQrCodeDetected: (String) -> Unit) {
             val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
 
             cameraProviderFuture.addListener({
-                val cameraProvider = cameraProviderFuture.get()
+                val cameraProvider = try {
+                    cameraProviderFuture.get()
+                } catch (_: Exception) {
+                    return@addListener
+                }
+                boundProvider = cameraProvider
                 val preview = Preview.Builder().build().also {
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
@@ -513,13 +572,13 @@ fun CameraQrScannerView(onQrCodeDetected: (String) -> Unit) {
 
                 imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
                     val mediaImage = imageProxy.image
-                    if (mediaImage != null && !hasScanned) {
+                    if (mediaImage != null && !scanned.get()) {
                         val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
                         barcodeScanner.process(image)
                             .addOnSuccessListener { barcodes ->
                                 for (barcode in barcodes) {
-                                    barcode.rawValue?.let { raw ->
-                                        hasScanned = true
+                                    val raw = barcode.rawValue
+                                    if (!raw.isNullOrBlank() && scanned.compareAndSet(false, true)) {
                                         onQrCodeDetected(raw)
                                         return@addOnSuccessListener
                                     }

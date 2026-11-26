@@ -7,7 +7,7 @@ WORKDIR /app
 RUN apk add --no-cache git ca-certificates
 
 COPY go.mod go.sum* ./
-RUN go mod download || true
+RUN go mod download
 
 COPY . .
 
@@ -21,6 +21,8 @@ WORKDIR /app
 RUN apk --no-cache add ca-certificates tzdata
 
 COPY --from=builder /app/sway-signaling /app/sway-signaling
+RUN adduser -D -u 10001 sway
+USER sway
 
 EXPOSE 8080
 

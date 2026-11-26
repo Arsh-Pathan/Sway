@@ -1,6 +1,8 @@
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use futures_util::{SinkExt, StreamExt};
+use std::time::Duration;
+
+use futures_util::StreamExt;
 use qrcode::render::unicode;
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
@@ -8,11 +10,16 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{error, info, warn};
 
-use crate::capture::ScreenCapture;
 use crate::input::InputSimulator;
-use crate::power::PowerManager;
+use crate::power::SessionGuard;
 use crate::privacy::PrivacyCurtain;
 use crate::protocol::InputPacket;
+use crate::session::{
+    host_info_message, new_session_guard, spawn_capture_worker, spawn_writer, SessionCtx, StreamState,
+};
+
+/// A half-open NAT/Wi-Fi drop produces no FIN. The relay pings every 25s, so 55s of silence = dead.
+const READ_TIMEOUT: Duration = Duration::from_secs(55);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SignalingEnvelope {
@@ -36,6 +43,37 @@ pub struct HostSignaling {
     pub token: String,
     pub simulator: Arc<InputSimulator>,
     pub privacy: Arc<PrivacyCurtain>,
+}
+
+/// Extracts `status` from either `{"status":"x"}` or a bare `"x"` payload.
+fn status_of(payload: &Option<serde_json::Value>) -> String {
+    match payload {
+        Some(serde_json::Value::Object(o)) => o.get("status").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Normalizes any accepted server URL form to `ws(s)://host[:port]/ws`.
+pub fn build_ws_url(server_url: &str) -> String {
+    let trimmed = server_url.trim().trim_end_matches('/');
+    let trimmed = trimmed.strip_suffix("/ws").unwrap_or(trimmed);
+    let base = if let Some(rest) = trimmed.strip_prefix("http://") {
+        format!("ws://{}", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("https://") {
+        format!("wss://{}", rest)
+    } else if trimmed.starts_with("ws://") || trimmed.starts_with("wss://") {
+        trimmed.to_string()
+    } else {
+        format!("ws://{}", trimmed)
+    };
+    format!("{}/ws", base)
+}
+
+/// Session resources that exist only while a viewer is attached through the relay.
+struct CloudSession {
+    guard: Option<SessionGuard>,
+    capture: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl HostSignaling {
@@ -98,16 +136,21 @@ impl HostSignaling {
     pub async fn run_with_retry(&self) {
         let mut retry_secs = 2u64;
         loop {
+            let started = std::time::Instant::now();
             match self.run().await {
                 Ok(_) => {
-                    info!("Signaling session closed gracefully. Reconnecting in 2s...");
-                    retry_secs = 2;
+                    info!("Signaling session closed. Reconnecting in 2s...");
+                    // A long-lived session that ended resets the backoff; a flapping one does not.
+                    if started.elapsed() > Duration::from_secs(30) {
+                        retry_secs = 2;
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
                     drop(e);
-                    tracing::warn!("Signaling connection error ({}). Retrying in {}s...", err_msg, retry_secs);
-                    tokio::time::sleep(std::time::Duration::from_secs(retry_secs)).await;
+                    warn!("Signaling connection error ({}). Retrying in {}s...", err_msg, retry_secs);
+                    tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                     retry_secs = (retry_secs * 2).min(30);
                 }
             }
@@ -116,33 +159,17 @@ impl HostSignaling {
 
     /// Connects to the signaling server and maintains the session.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let ws_url = if self.server_url.starts_with("http://") {
-            format!("{}/ws", self.server_url.replace("http://", "ws://"))
-        } else if self.server_url.starts_with("https://") {
-            format!("{}/ws", self.server_url.replace("https://", "wss://"))
-        } else if !self.server_url.starts_with("ws://") && !self.server_url.starts_with("wss://") {
-            format!("ws://{}/ws", self.server_url)
-        } else {
-            format!("{}/ws", self.server_url)
-        };
-
+        let ws_url = build_ws_url(&self.server_url);
         info!("Connecting to signaling server at: {}", ws_url);
-        let (ws_stream, _) = if ws_url.starts_with("ws://") {
-            let addr = ws_url.trim_start_matches("ws://").trim_end_matches("/ws");
-            if let Ok(tcp_stream) = tokio::net::TcpStream::connect(addr).await {
-                let _ = tcp_stream.set_nodelay(true);
-                if let Ok(std_stream) = tcp_stream.into_std() {
-                    let sock = socket2::SockRef::from(&std_stream);
-                    let _ = sock.set_send_buffer_size(1024 * 1024);
-                    let _ = sock.set_recv_buffer_size(1024 * 1024);
-                    if let Ok(tcp_stream) = tokio::net::TcpStream::from_std(std_stream) {
-                        tokio_tungstenite::client_async(&ws_url, tokio_tungstenite::MaybeTlsStream::Plain(tcp_stream)).await?
-                    } else {
-                        connect_async(&ws_url).await?
-                    }
-                } else {
-                    connect_async(&ws_url).await?
-                }
+
+        let (ws_stream, _) = if let Some(rest) = ws_url.strip_prefix("ws://") {
+            let addr = rest.trim_end_matches("/ws");
+            if !addr.contains('/') {
+                let tcp = tokio::net::TcpStream::connect(addr).await?;
+                let _ = tcp.set_nodelay(true);
+                // Keep the send buffer small: a large one hides stale video frames inside the OS.
+                let _ = socket2::SockRef::from(&tcp).set_recv_buffer_size(256 * 1024);
+                tokio_tungstenite::client_async(&ws_url, tokio_tungstenite::MaybeTlsStream::Plain(tcp)).await?
             } else {
                 connect_async(&ws_url).await?
             }
@@ -151,40 +178,12 @@ impl HostSignaling {
         };
         info!("Connected to signaling WebSocket!");
 
-        let (mut write, mut read) = ws_stream.split();
-        let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(32);
-        let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(16);
-        let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(1);
+        let (write, mut read) = ws_stream.split();
+        let (ctrl_tx, ctrl_rx) = mpsc::channel::<Message>(64);
+        let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(16);
+        let (frame_tx, frame_rx) = mpsc::channel::<Message>(1);
+        let writer = spawn_writer(write, ctrl_rx, audio_rx, frame_rx);
 
-        // Background WebSocket writer task prioritizing control messages and dropping stale frames
-        let writer_handle = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    biased;
-                    Some(ctrl) = ctrl_rx.recv() => {
-                        if let Err(e) = write.send(ctrl).await {
-                            error!("WebSocket write error: {}", e);
-                            break;
-                        }
-                    }
-                    Some(audio) = audio_rx.recv() => {
-                        if let Err(e) = write.send(Message::Binary(audio)).await {
-                            error!("WebSocket audio write error: {}", e);
-                            break;
-                        }
-                    }
-                    Some(frame) = frame_rx.recv() => {
-                        if let Err(e) = write.send(frame).await {
-                            error!("WebSocket write error: {}", e);
-                            break;
-                        }
-                    }
-                    else => break,
-                }
-            }
-        });
-
-        // Send registration message
         let reg_msg = SignalingEnvelope {
             msg_type: "register".to_string(),
             role: Some("host".to_string()),
@@ -193,188 +192,117 @@ impl HostSignaling {
             payload: None,
             error: None,
         };
-
-        let raw = serde_json::to_string(&reg_msg)?;
-        let _ = ctrl_tx.send(Message::Text(raw)).await;
+        let _ = ctrl_tx.send(Message::Text(serde_json::to_string(&reg_msg)?)).await;
         info!("Registered host '{}' with signaling server", self.device_id);
 
-        let simulator = self.simulator.clone();
-        let is_streaming = Arc::new(AtomicBool::new(false));
-        let active_monitor = Arc::new(AtomicUsize::new(0));
-        let stream_quality = Arc::new(AtomicU8::new(35)); // Default Turbo 35 for ~18KB frames and 60 FPS over 4G/WAN
-        let is_audio_streaming = Arc::new(AtomicBool::new(false));
-        let audio_handle: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(std::sync::Mutex::new(None));
+        let state = StreamState::new(false);
+        let mut session = CloudSession { guard: None, capture: None };
+        let mut ctx = SessionCtx::new(
+            self.simulator.clone(),
+            self.privacy.clone(),
+            state.clone(),
+            ctrl_tx.clone(),
+            audio_tx,
+        );
 
-        let start_streaming = {
-            let is_streaming = is_streaming.clone();
-            let active_monitor = active_monitor.clone();
-            let stream_quality = stream_quality.clone();
-            let frame_tx = frame_tx.clone();
-            move || {
-                if !is_streaming.load(Ordering::SeqCst) {
-                    is_streaming.store(true, Ordering::SeqCst);
-                    let stream_flag = is_streaming.clone();
-                    let monitor_flag = active_monitor.clone();
-                    let quality_flag = stream_quality.clone();
-                    let frame_tx = frame_tx.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let mut capture = ScreenCapture::new();
-                        info!("Started screen capture & streaming loop (up to 60 FPS)");
-                        while stream_flag.load(Ordering::Relaxed) {
-                            let start = std::time::Instant::now();
-                            capture.active_monitor = monitor_flag.load(Ordering::Relaxed);
-                            let q = quality_flag.load(Ordering::Relaxed);
-
-                            let target_interval = match q {
-                                1..=70 => std::time::Duration::from_millis(16),  // ~60 FPS Real-time (hardware SIMD accelerated)
-                                _ => std::time::Duration::from_millis(22),       // ~45 FPS Ultra High Fidelity
-                            };
-
-                            if let Some(frame) = capture.capture_frame_jpeg(q) {
-                                // Non-blocking send: if the network writer is busy, drop frame immediately!
-                                // Never buffer video frames; guarantees near-zero latency.
-                                match frame_tx.try_send(Message::Binary(frame)) {
-                                    Ok(_) => {}
-                                    Err(mpsc::error::TrySendError::Full(_)) => {}
-                                    Err(mpsc::error::TrySendError::Closed(_)) => break,
-                                }
-                            }
-                            let elapsed = start.elapsed();
-                            if elapsed < target_interval {
-                                std::thread::sleep(target_interval - elapsed);
-                            }
-                        }
-                        info!("Screen capture loop stopped");
-                    });
-                }
+        // Creates the guard + capture worker once per attached viewer.
+        let ensure_session = |session: &mut CloudSession| {
+            if session.guard.is_none() {
+                info!("Viewer attached through relay");
+                state.stream_enabled.store(true, Ordering::SeqCst);
+                session.guard = Some(new_session_guard(self.privacy.clone(), self.simulator.clone()));
+            }
+            if session.capture.is_none() {
+                session.capture = Some(spawn_capture_worker(state.clone(), frame_tx.clone()));
             }
         };
 
-        while let Some(msg) = read.next().await {
+        let mut result: Result<(), Box<dyn std::error::Error + Send + Sync>> = Ok(());
+        loop {
+            let msg = match tokio::time::timeout(READ_TIMEOUT, read.next()).await {
+                Ok(Some(m)) => m,
+                Ok(None) => break,
+                Err(_) => {
+                    warn!("Signaling connection timed out (no traffic for {:?})", READ_TIMEOUT);
+                    break;
+                }
+            };
             match msg {
                 Ok(Message::Text(text)) => {
                     if let Ok(env) = serde_json::from_str::<SignalingEnvelope>(&text) {
                         match env.msg_type.as_str() {
-                            "status" => {
-                                if let Some(p) = env.payload {
-                                    let s = p.to_string();
-                                    if s.contains("client_joined") {
-                                        info!("Mobile client paired and connected!");
-                                        PowerManager::set_keep_awake(true);
-                                        start_streaming();
-                                    } else if s.contains("client_left") {
-                                        info!("Mobile client disconnected. Restoring host screen state...");
-                                        is_streaming.store(false, Ordering::SeqCst);
-                                        self.privacy.set_enabled(false);
-                                        InputSimulator::set_display_resolution(0);
-                                        InputSimulator::set_display_orientation(false);
-                                        PowerManager::set_keep_awake(false);
-                                    }
+                            "status" => match status_of(&env.payload).as_str() {
+                                "client_joined" => {
+                                    info!("Mobile client paired and connected!");
+                                    ensure_session(&mut session);
+                                    let _ = ctrl_tx.try_send(host_info_message(&self.simulator));
                                 }
-                            }
-                            "offer" => {
-                                info!("Received WebRTC offer from mobile client");
-                            }
-                            "answer" => {
-                                info!("Received WebRTC answer from mobile client");
-                            }
-                            "candidate" => {
-                                info!("Received remote ICE candidate");
-                            }
-                            "error" => {
-                                warn!("Signaling error: {:?}", env.error);
-                            }
+                                "client_left" => {
+                                    info!("Last mobile client disconnected. Restoring host screen state...");
+                                    state.stream_enabled.store(false, Ordering::SeqCst);
+                                    session.guard = None; // cleanup runs if no other session is active
+                                }
+                                _ => {}
+                            },
+                            "error" => warn!("Signaling error: {:?}", env.error),
                             _ => {}
                         }
                     }
                 }
                 Ok(Message::Binary(bin)) => {
-                    // Direct input packet forwarded over WebSocket or DataChannel
-                    start_streaming();
                     if let Ok(packet) = InputPacket::parse(&bin) {
-                        match &packet {
-                            InputPacket::SwitchMonitor { monitor_index } => {
-                                active_monitor.store(*monitor_index as usize, Ordering::SeqCst);
-                            }
-                            InputPacket::SetQuality { mode } => {
-                                let q = match mode {
-                                    0 => 35, // Mobile 60 FPS Turbo smooth (sub-20KB frames!)
-                                    1 => 50, // Balanced HD (sub-40KB frames!)
-                                    _ => 70, // High Fidelity
-                                };
-                                stream_quality.store(q, Ordering::SeqCst);
-                            }
-                            InputPacket::SetStreaming { enabled } => {
-                                info!("Remote client streaming state: {}", enabled);
-                                is_streaming.store(*enabled, Ordering::SeqCst);
-                            }
-                            InputPacket::TouchDirect { norm_x, norm_y, action } => {
-                                let is_text = simulator.touch_direct(*norm_x, *norm_y, *action);
-                                if is_text && (*action == 0 || *action == 2) {
-                                    let _ = ctrl_tx.try_send(Message::Text("{\"type\":\"text_focus\"}".to_string()));
-                                }
-                            }
-                            InputPacket::SetPrivacyCurtain { enabled } => {
-                                self.privacy.set_enabled(*enabled);
-                            }
-                            InputPacket::SetAudioConfig { speaker_enabled, mic_enabled } => {
-                                info!("Remote audio config updated: speaker={}, mic={}", speaker_enabled, mic_enabled);
-                                if *speaker_enabled {
-                                    if !is_audio_streaming.load(Ordering::Relaxed) {
-                                        is_audio_streaming.store(true, Ordering::SeqCst);
-                                        let atx = audio_tx.clone();
-                                        let flag = is_audio_streaming.clone();
-                                        let jh = crate::audio::AudioCapture::start_loopback(flag, atx);
-                                        if let Ok(mut g) = audio_handle.lock() {
-                                            *g = Some(jh);
-                                        }
-                                    }
-                                } else {
-                                    is_audio_streaming.store(false, Ordering::SeqCst);
-                                    if let Ok(mut g) = audio_handle.lock() {
-                                        let _ = g.take();
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                        simulator.dispatch(packet);
+                        // Older relays never announce the viewer; first valid input implies one.
+                        ensure_session(&mut session);
+                        ctx.handle(packet);
                     }
                 }
                 Ok(Message::Ping(p)) => {
-                    let _ = ctrl_tx.send(Message::Pong(p)).await;
+                    let _ = ctrl_tx.try_send(Message::Pong(p));
                 }
                 Ok(Message::Close(_)) => {
                     info!("Signaling connection closed by server");
-                    is_streaming.store(false, Ordering::SeqCst);
-                    self.privacy.set_enabled(false);
-                    InputSimulator::set_display_resolution(0);
-                    InputSimulator::set_display_orientation(false);
-                    PowerManager::set_keep_awake(false);
                     break;
                 }
                 Err(e) => {
                     error!("WebSocket stream error: {}", e);
-                    is_streaming.store(false, Ordering::SeqCst);
-                    self.privacy.set_enabled(false);
-                    InputSimulator::set_display_resolution(0);
-                    InputSimulator::set_display_orientation(false);
-                    PowerManager::set_keep_awake(false);
+                    result = Err(Box::new(e));
                     break;
                 }
                 _ => {}
             }
         }
 
-        is_streaming.store(false, Ordering::SeqCst);
-        is_audio_streaming.store(false, Ordering::SeqCst);
-        if let Ok(mut g) = audio_handle.lock() {
-            let _ = g.take();
+        // Only this connection's own session is torn down. If a local Wi-Fi session is active,
+        // SessionGuard keeps the privacy curtain / display state intact.
+        state.conn_alive.store(false, Ordering::SeqCst);
+        drop(ctx);
+        session.guard = None;
+        writer.abort();
+        if let Some(h) = session.capture.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
         }
-        self.privacy.set_enabled(false);
-        InputSimulator::set_display_resolution(0);
-        InputSimulator::set_display_orientation(false);
-        writer_handle.abort();
-        Ok(())
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ws_url_normalization() {
+        assert_eq!(build_ws_url("51.79.249.143:8080"), "ws://51.79.249.143:8080/ws");
+        assert_eq!(build_ws_url("51.79.249.143:8080/"), "ws://51.79.249.143:8080/ws");
+        assert_eq!(build_ws_url("ws://h:1/ws"), "ws://h:1/ws");
+        assert_eq!(build_ws_url("http://h"), "ws://h/ws");
+        assert_eq!(build_ws_url("https://h/"), "wss://h/ws");
+        assert_eq!(build_ws_url(" wss://h/ws/ "), "wss://h/ws");
+    }
+
+    #[test]
+    fn status_parsing_handles_object_and_string() {
+        assert_eq!(status_of(&Some(serde_json::json!({"status":"client_joined"}))), "client_joined");
+        assert_eq!(status_of(&Some(serde_json::json!("paired"))), "paired");
+        assert_eq!(status_of(&None), "");
     }
 }

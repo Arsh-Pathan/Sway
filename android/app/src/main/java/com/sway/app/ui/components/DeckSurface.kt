@@ -12,6 +12,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -45,15 +47,21 @@ fun DeckSurface(
     val context = LocalContext.current
     var selectedCategory by remember { mutableStateOf(0) }
     var isDragLocked by remember { mutableStateOf(false) }
-    var isLeftPressed by remember { mutableStateOf(false) }
-    var isRightPressed by remember { mutableStateOf(false) }
-    var isMidPressed by remember { mutableStateOf(false) }
     val categories = listOf("DEV TOOLS", "PARTY", "SYSTEM", "MEDIA", "BROWSER", "EDIT", "LAUNCH")
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (isDragLocked) {
+                onInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
+            }
+        }
+    }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(BackgroundDark)
+            .systemBarsPadding()
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -161,6 +169,8 @@ fun DeckSurface(
                 scrollSpeed = scrollSpeed,
                 hapticsEnabled = hapticsEnabled,
                 isDeckMode = true,
+                isDragLocked = isDragLocked,
+                onUnlockDrag = { isDragLocked = false },
                 onInputEvent = onInputEvent
             )
         }
@@ -421,10 +431,10 @@ fun DeckSurface(
                             DeckToolButton("Refresh", Icons.Default.Refresh) {
                                 onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.BROWSER_REFRESH))
                             }
-                            DeckToolButton("Back", Icons.Default.ArrowBack) {
+                            DeckToolButton("Back", Icons.AutoMirrored.Filled.ArrowBack) {
                                 onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.BROWSER_BACK))
                             }
-                            DeckToolButton("Forward", Icons.Default.ArrowForward) {
+                            DeckToolButton("Forward", Icons.AutoMirrored.Filled.ArrowForward) {
                                 onInputEvent(InputEvent.SystemCommand(InputEvent.SystemCommand.BROWSER_FORWARD))
                             }
                         }
@@ -557,12 +567,24 @@ fun MouseButton(
                     awaitFirstDown()
                     isPressed = true
                     onDown()
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        if (event.changes.none { it.pressed }) break
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            var anyPressed = false
+                            for (i in event.changes.indices) {
+                                if (event.changes[i].pressed) {
+                                    anyPressed = true
+                                    break
+                                }
+                            }
+                            if (!anyPressed) break
+                        }
+                    } finally {
+                        if (isPressed) {
+                            isPressed = false
+                            onUp()
+                        }
                     }
-                    isPressed = false
-                    onUp()
                 }
             }
             .padding(vertical = 12.dp),

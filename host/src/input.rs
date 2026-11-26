@@ -12,28 +12,40 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 use crate::protocol::InputPacket;
 
+/// Bumped whenever the host changes display resolution/orientation so capture can refresh monitors.
+pub static DISPLAY_GENERATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static RESOLUTION_MODIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ORIENTATION_MODIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub struct InputSimulator {
     active_modifiers: AtomicU8,
+    /// Bitmask of mouse buttons currently held down (1 = left, 2 = right, 4 = middle).
+    held_buttons: AtomicU8,
     active_monitor: AtomicUsize,
     monitor_bounds: std::sync::RwLock<Vec<(i32, i32, i32, i32)>>,
 }
 
 impl InputSimulator {
+    /// `SetThreadDesktop` only affects the calling thread, so the throttle must be per thread too.
+    /// (A process-wide timestamp let the 60 FPS capture thread starve input threads, which then
+    /// never followed the user onto the lock screen / UAC desktop.)
     #[cfg(windows)]
     pub fn ensure_input_desktop() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static LAST_SWITCH_MS: AtomicU64 = AtomicU64::new(0);
+        use std::cell::Cell;
+        thread_local! {
+            static LAST_SWITCH: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+        }
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
-        let last = LAST_SWITCH_MS.load(Ordering::Relaxed);
-        if now.saturating_sub(last) < 1000 {
+        let due = LAST_SWITCH.with(|c| match c.get() {
+            Some(t) if t.elapsed() < std::time::Duration::from_secs(1) => false,
+            _ => {
+                c.set(Some(std::time::Instant::now()));
+                true
+            }
+        });
+        if !due {
             return;
         }
-        LAST_SWITCH_MS.store(now, Ordering::Relaxed);
 
         extern "system" {
             fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
@@ -58,11 +70,59 @@ impl InputSimulator {
 
         let sim = Self {
             active_modifiers: AtomicU8::new(0),
+            held_buttons: AtomicU8::new(0),
             active_monitor: AtomicUsize::new(0),
             monitor_bounds: std::sync::RwLock::new(Vec::new()),
         };
         sim.refresh_monitors();
         sim
+    }
+
+    pub fn monitor_count(&self) -> usize {
+        self.monitor_bounds.read().map(|b| b.len()).unwrap_or(1).max(1)
+    }
+
+    /// Releases every mouse button and modifier we may still be holding down on the host.
+    /// Called when the last controller disconnects so a dropped link can never leave Windows
+    /// with a stuck click or Ctrl/Shift/Alt/Win key.
+    pub fn release_all(&self) {
+        #[cfg(windows)]
+        {
+            let held = self.held_buttons.swap(0, Ordering::SeqCst);
+            if held & 1 != 0 {
+                self.send_mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0);
+            }
+            if held & 2 != 0 {
+                self.send_mouse_input(MOUSEEVENTF_RIGHTUP, 0, 0, 0);
+            }
+            if held & 4 != 0 {
+                self.send_mouse_input(MOUSEEVENTF_MIDDLEUP, 0, 0, 0);
+            }
+            let mods = self.active_modifiers.swap(0, Ordering::SeqCst);
+            if mods & 0x01 != 0 {
+                self.send_key_input(VK_CONTROL.0, KEYEVENTF_KEYUP, 0);
+            }
+            if mods & 0x02 != 0 {
+                self.send_key_input(VK_SHIFT.0, KEYEVENTF_KEYUP, 0);
+            }
+            if mods & 0x04 != 0 {
+                self.send_key_input(VK_MENU.0, KEYEVENTF_KEYUP, 0);
+            }
+            if mods & 0x08 != 0 {
+                self.send_key_input(VK_LWIN.0, KEYEVENTF_KEYUP, 0);
+            }
+        }
+    }
+
+    /// Restores resolution/orientation only if this process actually changed them, so a normal
+    /// disconnect never flickers the monitor or resets DXGI duplication for nothing.
+    pub fn restore_display_if_changed() {
+        if RESOLUTION_MODIFIED.swap(false, Ordering::SeqCst) {
+            Self::set_display_resolution(0);
+        }
+        if ORIENTATION_MODIFIED.swap(false, Ordering::SeqCst) {
+            Self::set_display_orientation(false);
+        }
     }
 
     pub fn refresh_monitors(&self) {
@@ -102,7 +162,8 @@ impl InputSimulator {
             InputPacket::TextInput { text } => self.text_input(&text),
             InputPacket::SwitchMonitor { monitor_index } => {
                 info!("Monitor switch requested to display: #{}", monitor_index);
-                self.active_monitor.store(monitor_index as usize, Ordering::SeqCst);
+                let idx = (monitor_index as usize) % self.monitor_count();
+                self.active_monitor.store(idx, Ordering::SeqCst);
                 self.refresh_monitors();
             }
             InputPacket::SetQuality { mode } => {
@@ -157,7 +218,31 @@ impl InputSimulator {
 
     #[cfg(windows)]
     pub fn send_raw_key(vkey: u16, flags: KEYBD_EVENT_FLAGS, scan: u16) {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, KEYEVENTF_EXTENDEDKEY, MAPVK_VK_TO_VSC};
         Self::ensure_input_desktop();
+
+        let mut flags = flags;
+        let mut scan = scan;
+        // Real hardware always reports a scan code; games, VMs and remote-desktop clients rely on it.
+        // Navigation/Win/right-hand keys must also carry the EXTENDED flag.
+        if (flags.0 & KEYEVENTF_UNICODE.0) == 0 && vkey != 0 {
+            if scan == 0 {
+                scan = unsafe { MapVirtualKeyW(vkey as u32, MAPVK_VK_TO_VSC) } as u16;
+            }
+            let extended = matches!(
+                vkey,
+                0x21..=0x28 // PgUp, PgDn, End, Home, arrows
+                | 0x2D | 0x2E // Insert, Delete
+                | 0x5B | 0x5C | 0x5D // LWin, RWin, Apps
+                | 0xA3 | 0xA5 // RCtrl, RAlt
+                | 0x6F | 0x90 // Numpad divide, NumLock
+                | 0xAD..=0xB7 // media / volume keys
+            );
+            if extended {
+                flags = KEYBD_EVENT_FLAGS(flags.0 | KEYEVENTF_EXTENDEDKEY.0);
+            }
+        }
+
         unsafe {
             let input = INPUT {
                 r#type: INPUT_KEYBOARD,
@@ -203,12 +288,13 @@ impl InputSimulator {
     pub fn mouse_down(&self, button: u8) {
         #[cfg(windows)]
         {
-            let flags = match button {
-                1 => MOUSEEVENTF_LEFTDOWN,
-                2 => MOUSEEVENTF_RIGHTDOWN,
-                3 => MOUSEEVENTF_MIDDLEDOWN,
+            let (flags, bit) = match button {
+                1 => (MOUSEEVENTF_LEFTDOWN, 1u8),
+                2 => (MOUSEEVENTF_RIGHTDOWN, 2u8),
+                3 => (MOUSEEVENTF_MIDDLEDOWN, 4u8),
                 _ => return,
             };
+            self.held_buttons.fetch_or(bit, Ordering::SeqCst);
             self.send_mouse_input(flags, 0, 0, 0);
         }
     }
@@ -216,12 +302,13 @@ impl InputSimulator {
     pub fn mouse_up(&self, button: u8) {
         #[cfg(windows)]
         {
-            let flags = match button {
-                1 => MOUSEEVENTF_LEFTUP,
-                2 => MOUSEEVENTF_RIGHTUP,
-                3 => MOUSEEVENTF_MIDDLEUP,
+            let (flags, bit) = match button {
+                1 => (MOUSEEVENTF_LEFTUP, 1u8),
+                2 => (MOUSEEVENTF_RIGHTUP, 2u8),
+                3 => (MOUSEEVENTF_MIDDLEUP, 4u8),
                 _ => return,
             };
+            self.held_buttons.fetch_and(!bit, Ordering::SeqCst);
             self.send_mouse_input(flags, 0, 0, 0);
         }
     }
@@ -246,7 +333,8 @@ impl InputSimulator {
         #[cfg(windows)]
         {
             if modifiers != 0 {
-                self.active_modifiers.store(modifiers, Ordering::Relaxed);
+                // OR, never overwrite: a second chord must not forget modifiers still held from the first.
+                self.active_modifiers.fetch_or(modifiers, Ordering::Relaxed);
                 if modifiers & 0x01 != 0 {
                     self.send_key_input(VK_CONTROL.0, KEYBD_EVENT_FLAGS(0), 0);
                 }
@@ -339,7 +427,8 @@ impl InputSimulator {
                     unsafe {
                         let _ = SetCursorPos(target_x, target_y);
                     }
-                    self.send_mouse_input(abs_flags | MOUSEEVENTF_LEFTDOWN, abs_x, abs_y, 0);
+                    self.send_mouse_input(abs_flags | MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTDOWN, abs_x, abs_y, 0);
+                    self.held_buttons.fetch_or(1, Ordering::SeqCst);
                 }
                 1 => {
                     unsafe {
@@ -357,6 +446,7 @@ impl InputSimulator {
                         let _ = SetCursorPos(target_x, target_y);
                     }
                     self.send_mouse_input(abs_flags | MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTUP, abs_x, abs_y, 0);
+                    self.held_buttons.fetch_and(!1, Ordering::SeqCst);
                 }
                 _ => {}
             }
@@ -368,7 +458,7 @@ impl InputSimulator {
                     cbSize: std::mem::size_of::<CURSORINFO>() as u32,
                     ..Default::default()
                 };
-                if GetCursorInfo(&mut ci).is_ok() && ci.flags == CURSOR_SHOWING {
+                if GetCursorInfo(&mut ci).is_ok() && (ci.flags.0 & CURSOR_SHOWING.0) != 0 {
                     if let Ok(ibeam) = LoadCursorW(None, IDC_IBEAM) {
                         if ci.hCursor == ibeam {
                             is_text = true;
@@ -389,12 +479,14 @@ impl InputSimulator {
         {
             use windows::Win32::Graphics::Gdi::{
                 ChangeDisplaySettingsExW, EnumDisplaySettingsW, DEVMODEW,
-                DM_PELSHEIGHT, DM_PELSWIDTH, ENUM_CURRENT_SETTINGS, CDS_UPDATEREGISTRY,
+                DM_PELSHEIGHT, DM_PELSWIDTH, ENUM_CURRENT_SETTINGS, CDS_TYPE,
             };
 
             unsafe {
                 if mode == 0 {
                     let _ = ChangeDisplaySettingsExW(None, None, None, Default::default(), None);
+                    RESOLUTION_MODIFIED.store(false, Ordering::SeqCst);
+                    DISPLAY_GENERATION.fetch_add(1, Ordering::SeqCst);
                     info!("Restored default host display resolution");
                     return;
                 }
@@ -420,8 +512,12 @@ impl InputSimulator {
                     dm.dmPelsHeight = h;
                     dm.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
 
-                    let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_UPDATEREGISTRY, None);
+                    let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_TYPE(0), None);
                     info!("Set display resolution to {}x{}: res={:?}", w, h, res);
+                    if res.0 == 0 {
+                        RESOLUTION_MODIFIED.store(true, Ordering::SeqCst);
+                        DISPLAY_GENERATION.fetch_add(1, Ordering::SeqCst);
+                    }
                 }
             }
         }
@@ -438,7 +534,7 @@ impl InputSimulator {
             use windows::Win32::Graphics::Gdi::{
                 ChangeDisplaySettingsExW, EnumDisplaySettingsW, DEVMODEW,
                 DM_DISPLAYORIENTATION, DM_PELSHEIGHT, DM_PELSWIDTH,
-                DMDO_DEFAULT, DMDO_90, ENUM_CURRENT_SETTINGS, CDS_UPDATEREGISTRY,
+                DMDO_DEFAULT, DMDO_90, ENUM_CURRENT_SETTINGS, CDS_TYPE,
             };
 
             unsafe {
@@ -455,20 +551,24 @@ impl InputSimulator {
                         std::mem::swap(&mut dm.dmPelsWidth, &mut dm.dmPelsHeight);
                         dm.Anonymous1.Anonymous2.dmDisplayOrientation = DMDO_90;
                         dm.dmFields |= DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT;
-                        let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_UPDATEREGISTRY, None);
+                        let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_TYPE(0), None);
                         if res.0 != 0 {
                             let _ = ChangeDisplaySettingsExW(None, Some(&dm), None, Default::default(), None);
                         }
                         info!("Rotated display to vertical portrait");
+                        ORIENTATION_MODIFIED.store(true, Ordering::SeqCst);
+                        DISPLAY_GENERATION.fetch_add(1, Ordering::SeqCst);
                     } else if !vertical && is_already_vertical {
                         std::mem::swap(&mut dm.dmPelsWidth, &mut dm.dmPelsHeight);
                         dm.Anonymous1.Anonymous2.dmDisplayOrientation = DMDO_DEFAULT;
                         dm.dmFields |= DM_DISPLAYORIENTATION | DM_PELSWIDTH | DM_PELSHEIGHT;
-                        let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_UPDATEREGISTRY, None);
+                        let res = ChangeDisplaySettingsExW(None, Some(&dm), None, CDS_TYPE(0), None);
                         if res.0 != 0 {
                             let _ = ChangeDisplaySettingsExW(None, Some(&dm), None, Default::default(), None);
                         }
                         info!("Restored display to horizontal landscape");
+                        ORIENTATION_MODIFIED.store(false, Ordering::SeqCst);
+                        DISPLAY_GENERATION.fetch_add(1, Ordering::SeqCst);
                     }
                 }
             }
@@ -493,8 +593,11 @@ impl InputSimulator {
             let byte_count = utf16.len() * std::mem::size_of::<u16>();
 
             let mut opened = false;
+            // A real owner window is required: with a NULL owner EmptyClipboard() makes
+            // SetClipboardData() fail.
+            let owner = unsafe { windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow() }.0 as isize;
             for _ in 0..10 {
-                if unsafe { OpenClipboard(0) } != 0 {
+                if unsafe { OpenClipboard(owner) } != 0 {
                     opened = true;
                     break;
                 }
@@ -503,7 +606,11 @@ impl InputSimulator {
 
             if opened {
                 unsafe {
-                    let _ = EmptyClipboard();
+                    if EmptyClipboard() == 0 {
+                        warn!("EmptyClipboard failed; clipboard not updated");
+                        let _ = CloseClipboard();
+                        return;
+                    }
                     let h_mem = GlobalAlloc(0x0002 /* GMEM_MOVEABLE */, byte_count);
                     if h_mem != 0 {
                         let ptr = GlobalLock(h_mem);
@@ -800,7 +907,9 @@ impl InputSimulator {
                 // ==================== LAPTOP PARTY & DANCE MODES ====================
                 51 => {
                     // Laptop Dance Mode: Autonomous cursor choreography + rhythmic window pulses + 8-bit chiptune
-                    PARTY_RUNNING.store(true, Ordering::SeqCst);
+                    if PARTY_RUNNING.swap(true, Ordering::SeqCst) {
+                        return; // already running: never stack threads
+                    }
                     std::thread::spawn(|| {
                         use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SetCursorPos, SM_CXSCREEN, SM_CYSCREEN};
                         extern "system" {
@@ -857,26 +966,33 @@ impl InputSimulator {
                 52 => {
                     // Hacker Matrix Cyberpunk Mode
                     let _ = std::process::Command::new("cmd")
-                        .args(["/c", "start", "cmd", "/k", "color 0a && title [SWAY AUTONOMOUS CYBERPUNK TERMINAL] && echo. && echo  ======================================================= && echo    SWAY AI HACKER MODE ACTIVATED -- RUNNING DIAGNOSTICS && echo  ======================================================= && echo. && tree C:\\Users\\ArshPathan\\Projects /F 2>nul || dir /s"])
+                        .args(["/c", "start", "cmd", "/k", "color 0a && title [SWAY AUTONOMOUS CYBERPUNK TERMINAL] && echo. && echo  ======================================================= && echo    SWAY AI HACKER MODE ACTIVATED -- RUNNING DIAGNOSTICS && echo  ======================================================= && echo. && tree \"%USERPROFILE%\\Desktop\" /F 2>nul"])
                         .spawn();
                     info!("Executed remote Hacker Matrix Mode");
                 }
                 53 => {
                     // Ghost Prank Mode: Opens Notepad and types a friendly autonomous message
+                    if PARTY_RUNNING.swap(true, Ordering::SeqCst) {
+                        return;
+                    }
                     std::thread::spawn(|| {
                         let _ = std::process::Command::new("notepad.exe").spawn();
                         std::thread::sleep(std::time::Duration::from_millis(700));
-                        let msg = "Hello Arsh! Sway autonomous AI controller is live on your laptop... Everything is running silky smooth! \u{1F389}\u{1F47B}";
+                        let msg = "Hello! Sway autonomous AI controller is live on your laptop... Everything is running silky smooth! \u{1F389}\u{1F47B}";
                         for ch in msg.encode_utf16() {
                             Self::send_raw_key(0, KEYEVENTF_UNICODE, ch);
                             Self::send_raw_key(0, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, ch);
                             std::thread::sleep(std::time::Duration::from_millis(30));
                         }
+                        PARTY_RUNNING.store(false, Ordering::SeqCst);
                     });
                     info!("Executed remote Ghost Prank Mode");
                 }
                 54 => {
                     // Retro 8-bit Chiptune Victory Jingle
+                    if PARTY_RUNNING.swap(true, Ordering::SeqCst) {
+                        return;
+                    }
                     std::thread::spawn(|| {
                         extern "system" {
                             fn Beep(dwFreq: u32, dwDuration: u32) -> i32;
@@ -886,6 +1002,7 @@ impl InputSimulator {
                             unsafe { let _ = Beep(freq, dur); }
                             std::thread::sleep(std::time::Duration::from_millis(25));
                         }
+                        PARTY_RUNNING.store(false, Ordering::SeqCst);
                     });
                     info!("Executed remote 8-bit Chiptune Jingle");
                 }

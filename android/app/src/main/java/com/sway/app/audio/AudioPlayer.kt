@@ -4,22 +4,51 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class AudioPlayer {
     private val tag = "SwayAudioPlayer"
 
-    private var audioTrack: AudioTrack? = null
-    private var currentSampleRate = 48000
-    private var currentChannels = 2
-    private var isPlaying = false
+    private val audioDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private var scope: CoroutineScope? = null
+    private var workerJob: Job? = null
+    private var chunkChannel: Channel<ByteArray>? = null
+    private val isEnabled = AtomicBoolean(false)
 
-    @Synchronized
+    private var audioTrack: AudioTrack? = null
+    private var currentSampleRate = 0
+    private var currentChannels = 0
+    private var currentBitsPerSample = 0
+
+    private fun ensureWorker() {
+        isEnabled.set(true)
+        if (workerJob?.isActive == true && chunkChannel != null) return
+
+        val ch = Channel<ByteArray>(capacity = 24, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        val newScope = CoroutineScope(SupervisorJob() + audioDispatcher)
+        chunkChannel = ch
+        scope = newScope
+        workerJob = newScope.launch {
+            for (packet in ch) {
+                if (!isEnabled.get()) continue
+                writeChunkInternal(packet)
+            }
+        }
+    }
+
     fun playPcmChunk(packet: ByteArray) {
         if (packet.size < 12) return
-
-        // Verify magic SWAU header
         if (packet[0] != 'S'.code.toByte() ||
             packet[1] != 'W'.code.toByte() ||
             packet[2] != 'A'.code.toByte() ||
@@ -27,53 +56,65 @@ class AudioPlayer {
         ) {
             return
         }
+        ensureWorker()
+        chunkChannel?.trySend(packet)
+    }
 
+    private fun writeChunkInternal(packet: ByteArray) {
         val bb = ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN)
         bb.position(4)
-        val channels = bb.short.toInt()
+        val channels = bb.short.toInt() and 0xFFFF
         val sampleRate = bb.int
-        val bitsPerSample = bb.short.toInt()
+        val bitsPerSample = bb.short.toInt() and 0xFFFF
 
-        if (sampleRate <= 0 || channels <= 0) return
+        if (sampleRate <= 0 || channels <= 0 || (bitsPerSample != 16 && bitsPerSample != 32)) return
+
+        val frameSize = channels * (bitsPerSample / 8)
+        if (frameSize <= 0) return
 
         val pcmDataOffset = 12
-        val pcmDataLen = packet.size - pcmDataOffset
-        if (pcmDataLen <= 0) return
+        val rawLen = packet.size - pcmDataOffset
+        val alignedLen = rawLen - (rawLen % frameSize)
+        if (alignedLen <= 0) return
 
         ensureAudioTrack(sampleRate, channels, bitsPerSample)
 
         try {
-            audioTrack?.let { track ->
-                if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                    track.play()
-                }
-                // Wrap in ByteBuffer - required by Android AudioTrack to support ENCODING_PCM_FLOAT without ERROR_INVALID_OPERATION
-                val byteBuf = ByteBuffer.wrap(packet, pcmDataOffset, pcmDataLen).order(ByteOrder.LITTLE_ENDIAN)
-                val written = track.write(byteBuf, pcmDataLen, AudioTrack.WRITE_NON_BLOCKING)
-                if (written < 0) {
-                    Log.w(tag, "AudioTrack write returned status $written")
-                }
+            val track = audioTrack ?: return
+            if (!isEnabled.get()) return
+            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                track.play()
+            }
+            val byteBuf = ByteBuffer.wrap(packet, pcmDataOffset, alignedLen).order(ByteOrder.LITTLE_ENDIAN)
+            val written = track.write(byteBuf, alignedLen, AudioTrack.WRITE_BLOCKING)
+            if (written < 0) {
+                Log.w(tag, "AudioTrack write returned status $written")
             }
         } catch (e: Exception) {
             Log.e(tag, "Error writing PCM audio data to AudioTrack", e)
         }
     }
 
-    @Synchronized
     private fun ensureAudioTrack(sampleRate: Int, channels: Int, bitsPerSample: Int) {
-        if (audioTrack != null && currentSampleRate == sampleRate && currentChannels == channels) {
+        if (audioTrack != null &&
+            currentSampleRate == sampleRate &&
+            currentChannels == channels &&
+            currentBitsPerSample == bitsPerSample
+        ) {
             return
         }
 
-        release()
+        releaseTrackOnly()
 
         currentSampleRate = sampleRate
         currentChannels = channels
+        currentBitsPerSample = bitsPerSample
 
-        val channelConfig = if (channels == 1) {
-            AudioFormat.CHANNEL_OUT_MONO
-        } else {
-            AudioFormat.CHANNEL_OUT_STEREO
+        val channelConfig = when (channels) {
+            1 -> AudioFormat.CHANNEL_OUT_MONO
+            6 -> AudioFormat.CHANNEL_OUT_5POINT1
+            8 -> AudioFormat.CHANNEL_OUT_7POINT1_SURROUND
+            else -> AudioFormat.CHANNEL_OUT_STEREO
         }
 
         val audioEncoding = if (bitsPerSample == 32) {
@@ -83,7 +124,11 @@ class AudioPlayer {
         }
 
         val minBufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioEncoding)
-        val bufferSize = (minBufferSize * 2).coerceAtLeast(4096)
+        if (minBufferSize <= 0) {
+            Log.e(tag, "Invalid AudioTrack buffer size $minBufferSize for ${channels}ch @ ${sampleRate}Hz ${bitsPerSample}bit")
+            return
+        }
+        val bufferSize = (minBufferSize * 4).coerceAtLeast(8192)
 
         try {
             audioTrack = AudioTrack.Builder()
@@ -104,34 +149,65 @@ class AudioPlayer {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
-            isPlaying = true
-            Log.i(tag, "AudioTrack initialized: ${channels}ch @ ${sampleRate}Hz, bufferSize=$bufferSize")
+            Log.i(tag, "AudioTrack initialized: ${channels}ch @ ${sampleRate}Hz ${bitsPerSample}bit, bufferSize=$bufferSize")
         } catch (e: Exception) {
             Log.e(tag, "Failed to create AudioTrack", e)
             audioTrack = null
         }
     }
 
-    @Synchronized
     fun stop() {
-        try {
-            audioTrack?.pause()
-            audioTrack?.flush()
-        } catch (e: Exception) {
-            Log.w(tag, "Error stopping AudioTrack", e)
+        isEnabled.set(false)
+        val ch = chunkChannel
+        if (ch != null) {
+            while (ch.tryReceive().isSuccess) {
+                // Drain queued packets
+            }
+        }
+        scope?.launch {
+            try {
+                audioTrack?.pause()
+                audioTrack?.flush()
+            } catch (e: Exception) {
+                Log.w(tag, "Error stopping AudioTrack", e)
+            }
         }
     }
 
-    @Synchronized
-    fun release() {
+    private fun releaseTrackOnly() {
         try {
+            audioTrack?.pause()
+            audioTrack?.flush()
             audioTrack?.stop()
             audioTrack?.release()
         } catch (e: Exception) {
             Log.w(tag, "Error releasing AudioTrack", e)
         } finally {
             audioTrack = null
-            isPlaying = false
+            currentSampleRate = 0
+            currentChannels = 0
+            currentBitsPerSample = 0
+        }
+    }
+
+    fun release() {
+        isEnabled.set(false)
+        val oldCh = chunkChannel
+        val oldJob = workerJob
+        val oldScope = scope
+        chunkChannel = null
+        workerJob = null
+        scope = null
+
+        oldCh?.close()
+        oldJob?.cancel()
+        CoroutineScope(audioDispatcher).launch {
+            releaseTrackOnly()
+            oldScope?.let {
+                try {
+                    it.coroutineContext[Job]?.cancel()
+                } catch (_: Exception) {}
+            }
         }
     }
 }

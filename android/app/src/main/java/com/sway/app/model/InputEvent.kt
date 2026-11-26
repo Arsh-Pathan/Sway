@@ -80,10 +80,7 @@ sealed class InputEvent {
     data class TextInput(val text: String) : InputEvent() {
         override val opCode: Byte = 0x07
         override fun toByteArray(): ByteArray {
-            var bytes = text.toByteArray(Charsets.UTF_8)
-            if (bytes.size > 65535) {
-                bytes = bytes.copyOf(65535)
-            }
+            val bytes = encodeUtf8Bounded(text, MAX_TEXT_PAYLOAD_LEN)
             return ByteBuffer.allocate(3 + bytes.size)
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .put(opCode)
@@ -155,10 +152,7 @@ sealed class InputEvent {
     data class ClipboardSync(val text: String) : InputEvent() {
         override val opCode: Byte = 0x0E
         override fun toByteArray(): ByteArray {
-            var bytes = text.toByteArray(Charsets.UTF_8)
-            if (bytes.size > 65535) {
-                bytes = bytes.copyOf(65535)
-            }
+            val bytes = encodeUtf8Bounded(text, MAX_TEXT_PAYLOAD_LEN)
             return ByteBuffer.allocate(3 + bytes.size)
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .put(opCode)
@@ -242,5 +236,20 @@ sealed class InputEvent {
     data class SetAudioConfig(val speakerEnabled: Boolean, val micEnabled: Boolean) : InputEvent() {
         override val opCode: Byte = 0x11
         override fun toByteArray(): ByteArray = byteArrayOf(opCode, if (speakerEnabled) 1 else 0, if (micEnabled) 1 else 0)
+    }
+
+    companion object {
+        const val MAX_TEXT_PAYLOAD_LEN = 32 * 1024
+
+        fun encodeUtf8Bounded(text: String, maxBytes: Int): ByteArray {
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            if (bytes.size <= maxBytes) return bytes
+            var len = maxBytes
+            // Back off UTF-8 continuation bytes (10xxxxxx) so we never split a multi-byte codepoint
+            while (len > 0 && (bytes[len].toInt() and 0xC0) == 0x80) {
+                len--
+            }
+            return bytes.copyOf(len)
+        }
     }
 }

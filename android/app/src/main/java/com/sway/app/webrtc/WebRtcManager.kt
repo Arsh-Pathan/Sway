@@ -7,6 +7,9 @@ import com.sway.app.model.InputEvent
 import com.sway.app.model.SdpPayload
 import com.sway.app.network.SignalingClient
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -23,13 +26,15 @@ sealed class RtcConnectionState {
 
 class WebRtcManager(
     private val context: Context,
-    private val scope: CoroutineScope,
+    parentScope: CoroutineScope,
     val signalingClient: SignalingClient,
-    val isDirectLocal: Boolean = false,
-    val eglBase: EglBase = EglBase.create()
+    val isDirectLocal: Boolean = false
 ) {
     private val tag = "WebRtcManager"
+    private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
 
+    // Only allocated when WebRTC mode (!isDirectLocal) is actually active; saves 2-5MB native EGL state.
+    private var eglBase: EglBase? = null
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
     private var inputDataChannel: DataChannel? = null
@@ -37,36 +42,29 @@ class WebRtcManager(
     private val _connectionState = MutableStateFlow<RtcConnectionState>(RtcConnectionState.Idle)
     val connectionState = _connectionState.asStateFlow()
 
-    val currentFrame: kotlinx.coroutines.flow.StateFlow<com.sway.app.network.StreamFrame?> = signalingClient.currentFrame
+    val currentFrame = signalingClient.currentFrame
     val fps = signalingClient.fps
     val rttMs = signalingClient.rttMs
-    val textFocusEvents: kotlinx.coroutines.flow.SharedFlow<Unit> = signalingClient.textFocusEvents
+    val monitorCount = signalingClient.monitorCount
+    val textFocusEvents = signalingClient.textFocusEvents
 
     private var remoteVideoTrack: VideoTrack? = null
     private var videoRenderer: SurfaceViewRenderer? = null
 
     init {
         if (!isDirectLocal) {
+            eglBase = EglBase.create()
             initPeerConnectionFactory()
             observeSignaling()
         } else {
-            // Direct local Wi-Fi mode uses direct WebSocket frame streaming and binary input.
             scope.launch {
                 signalingClient.state.collect { st ->
-                    when (st) {
-                        is com.sway.app.network.SignalingState.Paired,
-                        is com.sway.app.network.SignalingState.Connected -> {
-                            _connectionState.value = RtcConnectionState.Connected
-                        }
-                        is com.sway.app.network.SignalingState.Connecting -> {
-                            _connectionState.value = RtcConnectionState.Connecting
-                        }
-                        is com.sway.app.network.SignalingState.Error -> {
-                            _connectionState.value = RtcConnectionState.Failed(st.message)
-                        }
-                        is com.sway.app.network.SignalingState.Disconnected -> {
-                            _connectionState.value = RtcConnectionState.Disconnected
-                        }
+                    _connectionState.value = when (st) {
+                        is com.sway.app.network.SignalingState.Paired -> RtcConnectionState.Connected
+                        is com.sway.app.network.SignalingState.Connected,
+                        is com.sway.app.network.SignalingState.Connecting -> RtcConnectionState.Connecting
+                        is com.sway.app.network.SignalingState.Error -> RtcConnectionState.Failed(st.message)
+                        is com.sway.app.network.SignalingState.Disconnected -> RtcConnectionState.Disconnected
                     }
                 }
             }
@@ -74,13 +72,14 @@ class WebRtcManager(
     }
 
     private fun initPeerConnectionFactory() {
+        val egl = eglBase ?: return
         val initOptions = PeerConnectionFactory.InitializationOptions.builder(context)
             .setEnableInternalTracer(false)
             .createInitializationOptions()
         PeerConnectionFactory.initialize(initOptions)
 
-        val videoDecoderFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
-        val videoEncoderFactory = DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true)
+        val videoDecoderFactory = DefaultVideoDecoderFactory(egl.eglBaseContext)
+        val videoEncoderFactory = DefaultVideoEncoderFactory(egl.eglBaseContext, true, true)
 
         peerConnectionFactory = PeerConnectionFactory.builder()
             .setVideoDecoderFactory(videoDecoderFactory)
@@ -89,17 +88,31 @@ class WebRtcManager(
     }
 
     fun attachRenderer(renderer: SurfaceViewRenderer) {
+        val egl = eglBase ?: return
+        this.videoRenderer?.let { detachRenderer(it) }
         this.videoRenderer = renderer
-        renderer.init(eglBase.eglBaseContext, null)
+        renderer.init(egl.eglBaseContext, null)
         renderer.setEnableHardwareScaler(true)
         remoteVideoTrack?.addSink(renderer)
     }
 
-    fun startSession(iceServers: List<PeerConnection.IceServer>) {
-        if (isDirectLocal) {
-            // Direct local Wi-Fi mode streams frames and input directly over WebSocket.
-            return
+    fun detachRenderer(renderer: SurfaceViewRenderer) {
+        try {
+            remoteVideoTrack?.removeSink(renderer)
+            renderer.release()
+        } catch (_: Exception) {}
+        if (this.videoRenderer === renderer) {
+            this.videoRenderer = null
         }
+    }
+
+    fun reconnect() {
+        _connectionState.value = RtcConnectionState.Connecting
+        signalingClient.reconnectNow()
+    }
+
+    fun startSession(iceServers: List<PeerConnection.IceServer>) {
+        if (isDirectLocal) return
         _connectionState.value = RtcConnectionState.Connecting
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
@@ -113,7 +126,6 @@ class WebRtcManager(
 
         peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, peerConnectionObserver)
 
-        // Initialize low-latency DataChannel for input events
         val dcInit = DataChannel.Init().apply {
             ordered = false
             maxRetransmits = 0
@@ -125,16 +137,8 @@ class WebRtcManager(
     }
 
     private fun observeSignaling() {
-        scope.launch {
-            signalingClient.offers.collect { offer ->
-                handleRemoteOffer(offer)
-            }
-        }
-        scope.launch {
-            signalingClient.answers.collect { answer ->
-                handleRemoteAnswer(answer)
-            }
-        }
+        scope.launch { signalingClient.offers.collect { handleRemoteOffer(it) } }
+        scope.launch { signalingClient.answers.collect { handleRemoteAnswer(it) } }
         scope.launch {
             signalingClient.candidates.collect { cand ->
                 val iceCandidate = IceCandidate(cand.sdpMid ?: "0", cand.sdpMLineIndex, cand.candidate)
@@ -146,9 +150,7 @@ class WebRtcManager(
     private fun handleRemoteOffer(offer: SdpPayload) {
         val sdp = SessionDescription(SessionDescription.Type.OFFER, offer.sdp)
         peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
-            override fun onSetSuccess() {
-                createAnswer()
-            }
+            override fun onSetSuccess() { createAnswer() }
         }, sdp)
     }
 
@@ -173,10 +175,6 @@ class WebRtcManager(
         peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
     }
 
-    /**
-     * Sends an input event directly through the low-latency DataChannel,
-     * or relays via WebSocket if DataChannel is negotiating.
-     */
     fun sendInput(event: InputEvent) {
         val bytes = event.toByteArray()
         val dc = inputDataChannel
@@ -190,13 +188,10 @@ class WebRtcManager(
 
     private val peerConnectionObserver = object : PeerConnection.Observer {
         override fun onIceCandidate(candidate: IceCandidate?) {
-            candidate?.let {
-                signalingClient.sendCandidate(it.sdp, it.sdpMid, it.sdpMLineIndex)
-            }
+            candidate?.let { signalingClient.sendCandidate(it.sdp, it.sdpMid, it.sdpMLineIndex) }
         }
 
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
-            Log.i(tag, "PeerConnectionState changed: $newState")
             when (newState) {
                 PeerConnection.PeerConnectionState.CONNECTED -> _connectionState.value = RtcConnectionState.Connected
                 PeerConnection.PeerConnectionState.FAILED -> _connectionState.value = RtcConnectionState.Failed("WebRTC peer connection failed")
@@ -209,17 +204,14 @@ class WebRtcManager(
         override fun onTrack(transceiver: RtpTransceiver?) {
             val track = transceiver?.receiver?.track()
             if (track is VideoTrack) {
-                Log.i(tag, "Remote video track received")
                 remoteVideoTrack = track
                 videoRenderer?.let { track.addSink(it) }
             } else if (track is AudioTrack) {
-                Log.i(tag, "Remote audio track received (WASAPI system audio)")
                 track.setEnabled(true)
             }
         }
 
         override fun onDataChannel(dc: DataChannel?) {
-            Log.i(tag, "Incoming DataChannel: ${dc?.label()}")
             dc?.let {
                 inputDataChannel = it
                 it.registerObserver(dataChannelObserver)
@@ -238,9 +230,7 @@ class WebRtcManager(
 
     private val dataChannelObserver = object : DataChannel.Observer {
         override fun onBufferedAmountChange(previousAmount: Long) {}
-        override fun onStateChange() {
-            Log.i(tag, "DataChannel '${inputDataChannel?.label()}' state: ${inputDataChannel?.state()}")
-        }
+        override fun onStateChange() {}
         override fun onMessage(buffer: DataChannel.Buffer?) {}
     }
 
@@ -253,14 +243,25 @@ class WebRtcManager(
 
     fun release() {
         try {
+            scope.cancel()
             if (!isDirectLocal) {
-                remoteVideoTrack?.removeSink(videoRenderer)
+                videoRenderer?.let {
+                    remoteVideoTrack?.removeSink(it)
+                    it.release()
+                }
+                videoRenderer = null
+                inputDataChannel?.unregisterObserver()
                 inputDataChannel?.close()
+                inputDataChannel?.dispose()
+                inputDataChannel = null
                 peerConnection?.close()
-                videoRenderer?.release()
+                peerConnection?.dispose()
+                peerConnection = null
                 peerConnectionFactory?.dispose()
+                peerConnectionFactory = null
             }
-            eglBase.release()
+            eglBase?.release()
+            eglBase = null
         } catch (e: Exception) {
             Log.e(tag, "Error releasing WebRTC resources", e)
         }

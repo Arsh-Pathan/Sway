@@ -1,17 +1,45 @@
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpListener;
+use std::time::Duration;
+
+use futures_util::StreamExt;
+use subtle::ConstantTimeEq;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
+use uuid::Uuid;
 
-use crate::capture::ScreenCapture;
 use crate::input::InputSimulator;
-use crate::power::PowerManager;
 use crate::privacy::PrivacyCurtain;
 use crate::protocol::InputPacket;
+use crate::session::{
+    host_info_message, new_session_guard, spawn_capture_worker, spawn_writer, SessionCtx, StreamState,
+};
+
+const MAX_HEAD: usize = 32 * 1024;
+const MAX_BODY: usize = 64 * 1024;
+const READ_TIMEOUT: Duration = Duration::from_secs(55);
+
+struct ServerConfig {
+    device_id: String,
+    token: String,
+    /// Random per-run secret handed only to pages served to the loopback interface.
+    nonce: String,
+}
+
+impl ServerConfig {
+    fn token_ok(&self, provided: &str) -> bool {
+        if provided.is_empty() {
+            return false;
+        }
+        let nonce_ok: bool = provided.as_bytes().ct_eq(self.nonce.as_bytes()).into();
+        let token_ok: bool = !self.token.is_empty() && provided.as_bytes().ct_eq(self.token.as_bytes()).into();
+        nonce_ok || token_ok
+    }
+}
 
 pub struct LocalServer;
 
@@ -27,7 +55,7 @@ impl LocalServer {
             let addr = format!("0.0.0.0:{}", port);
             let listener = match TcpListener::bind(&addr).await {
                 Ok(l) => {
-                    info!("Direct Local Wi-Fi / LAN server listening on: ws://{}/ws", addr);
+                    info!("Direct local Wi-Fi / LAN server listening on: ws://{}/ws", addr);
                     l
                 }
                 Err(e) => {
@@ -36,443 +64,462 @@ impl LocalServer {
                 }
             };
 
-            while let Ok((mut stream, peer_addr)) = listener.accept().await {
+            let cfg = Arc::new(ServerConfig { device_id, token, nonce: Uuid::new_v4().simple().to_string() });
+
+            loop {
+                let (stream, peer) = match listener.accept().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("Local server accept error: {}", e);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
                 let _ = stream.set_nodelay(true);
+                let cfg = cfg.clone();
                 let sim = simulator.clone();
-                let priv_curtain = privacy.clone();
-                let expected_device_id = device_id.clone();
-                let expected_token = token.clone();
-
+                let privacy = privacy.clone();
                 tokio::spawn(async move {
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-                    let mut peek_buf = [0u8; 1024];
-                    let n = match tokio::time::timeout(std::time::Duration::from_secs(5), stream.peek(&mut peek_buf)).await {
-                        Ok(Ok(n)) if n > 0 => n,
-                        _ => return,
-                    };
-                    let req_head = String::from_utf8_lossy(&peek_buf[..n]);
-
-                    // If this is a web browser request, serve Desktop Control Center GUI
-                    if !req_head.to_lowercase().contains("upgrade: websocket") {
-                        let mut buf = vec![0u8; 4096];
-                        let n = stream.read(&mut buf).await.unwrap_or(0);
-                        let req = String::from_utf8_lossy(&buf[..n]);
-
-                        // CSRF / Cross-Origin Security Check for API endpoints
-                        if req.contains("POST /api/") {
-                            let lower = req.to_lowercase();
-                            let is_cross_site = lower.contains("sec-fetch-site: cross-site");
-                            let mut foreign_origin = false;
-                            for line in lower.lines() {
-                                if line.starts_with("origin:") || line.starts_with("referer:") {
-                                    let v = line.trim();
-                                    if !v.contains("localhost") && !v.contains("127.0.0.1") && !v.contains("192.168.") && !v.contains("10.") && !v.contains("172.") {
-                                        foreign_origin = true;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if is_cross_site || foreign_origin {
-                                let forbidden = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n403 Forbidden: Cross-origin request rejected.";
-                                let _ = stream.write_all(forbidden.as_bytes()).await;
-                                return;
-                            }
-                        }
-
-                        let is_get_apk = req.contains("GET /sway.apk") || req.contains("GET /app.apk");
-                        let is_head_apk = req.contains("HEAD /sway.apk") || req.contains("HEAD /app.apk");
-
-                        if is_get_apk || is_head_apk {
-                            let apk_paths = [
-                                "android/app/build/outputs/apk/debug/app-debug.apk",
-                                "../android/app/build/outputs/apk/debug/app-debug.apk",
-                                "app-debug.apk",
-                                "sway.apk",
-                            ];
-                            for p in &apk_paths {
-                                if let Ok(bytes) = tokio::fs::read(p).await {
-                                    let header = format!(
-                                        "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.android.package-archive\r\nContent-Disposition: attachment; filename=\"Sway-Remote.apk\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                        bytes.len()
-                                    );
-                                    let _ = stream.write_all(header.as_bytes()).await;
-                                    if is_get_apk {
-                                        let _ = stream.write_all(&bytes).await;
-                                    }
-                                    return;
-                                }
-                            }
-                            let not_found = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nAPK not built yet. Run './gradlew assembleDebug' in android folder.";
-                            let _ = stream.write_all(not_found.as_bytes()).await;
-                            return;
-                        } else if req.contains("POST /api/privacy") {
-                            let enable = req.contains("\"enable\":true") || req.contains("\"enable\": true");
-                            priv_curtain.set_enabled(enable);
-                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"success\":true}";
-                            let _ = stream.write_all(resp.as_bytes()).await;
-                            return;
-                        } else if req.contains("POST /api/resolution") {
-                            if req.contains("\"mode\":1") || req.contains("\"mode\": 1") {
-                                InputSimulator::set_display_resolution(1);
-                            } else {
-                                InputSimulator::set_display_resolution(0);
-                            }
-                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"success\":true}";
-                            let _ = stream.write_all(resp.as_bytes()).await;
-                            return;
-                        } else if req.contains("POST /api/orientation") {
-                            let vertical = req.contains("\"vertical\":true") || req.contains("\"vertical\": true");
-                            InputSimulator::set_display_orientation(vertical);
-                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"success\":true}";
-                            let _ = stream.write_all(resp.as_bytes()).await;
-                            return;
-                        } else if req.contains("POST /api/system") {
-                            if req.contains("\"action\":1") || req.contains("\"action\": 1") {
-                                InputSimulator::execute_system_command(1);
-                            } else if req.contains("\"action\":2") || req.contains("\"action\": 2") {
-                                InputSimulator::execute_system_command(2);
-                            } else if req.contains("\"action\":3") || req.contains("\"action\": 3") {
-                                InputSimulator::execute_system_command(3);
-                            } else if req.contains("\"action\":4") || req.contains("\"action\": 4") {
-                                InputSimulator::execute_system_command(4);
-                            } else if req.contains("\"action\":5") || req.contains("\"action\": 5") {
-                                InputSimulator::execute_system_command(5);
-                            }
-                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"success\":true}";
-                            let _ = stream.write_all(resp.as_bytes()).await;
-                            return;
-                        } else if req.contains("POST /api/clipboard") {
-                            let full_req = req.to_string();
-                            let sep = if full_req.contains("\r\n\r\n") {
-                                Some("\r\n\r\n")
-                            } else if full_req.contains("\n\n") {
-                                Some("\n\n")
-                            } else {
-                                None
-                            };
-
-                            let body_str = if let Some(s) = sep {
-                                let parts: Vec<&str> = full_req.splitn(2, s).collect();
-                                if parts.len() > 1 && !parts[1].trim().is_empty() {
-                                    parts[1].trim().to_string()
-                                } else {
-                                    // Body might be coming in next chunk
-                                    let mut body_buf = vec![0u8; 2048];
-                                    if let Ok(Ok(bn)) = tokio::time::timeout(std::time::Duration::from_millis(50), stream.read(&mut body_buf)).await {
-                                        String::from_utf8_lossy(&body_buf[..bn]).trim().to_string()
-                                    } else {
-                                        String::new()
-                                    }
-                                }
-                            } else {
-                                String::new()
-                            };
-
-                            if !body_str.is_empty() {
-                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_str) {
-                                    if let Some(text) = parsed.get("text").and_then(|t| t.as_str()) {
-                                        InputSimulator::set_clipboard_text(text);
-                                    }
-                                }
-                            }
-                            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"success\":true}";
-                            let _ = stream.write_all(resp.as_bytes()).await;
-                            return;
-                        }
-
-                        let html = include_str!("dashboard.html");
-                        let resp = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: SAMEORIGIN\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            html.len(),
-                            html
-                        );
-                        let _ = stream.write_all(resp.as_bytes()).await;
-                        return;
-                    }
-
-                    // WebSocket Connection
-                    info!("Direct local Wi-Fi client connected from: {}", peer_addr);
-
-                    let ws_stream = match accept_async(stream).await {
-                        Ok(ws) => ws,
-                        Err(e) => {
-                            warn!("Local WebSocket handshake error from {}: {}", peer_addr, e);
-                            return;
-                        }
-                    };
-
-                    info!("Local direct WebSocket session established with {}", peer_addr);
-                    PowerManager::set_keep_awake(true);
-                    let (mut write, mut read) = ws_stream.split();
-                    let (frame_tx, mut frame_rx) = mpsc::channel::<Message>(1);
-                    let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(32);
-                    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(16);
-
-                    let writer_handle = tokio::spawn(async move {
-                        loop {
-                            tokio::select! {
-                                biased;
-                                Some(ctrl) = ctrl_rx.recv() => {
-                                    if let Err(e) = write.send(ctrl).await {
-                                        error!("Local WS write error: {}", e);
-                                        break;
-                                    }
-                                }
-                                Some(audio) = audio_rx.recv() => {
-                                    if let Err(e) = write.send(Message::Binary(audio)).await {
-                                        error!("Local WS audio write error: {}", e);
-                                        break;
-                                    }
-                                }
-                                Some(frame) = frame_rx.recv() => {
-                                    if let Err(e) = write.send(frame).await {
-                                        error!("Local WS frame write error: {}", e);
-                                        break;
-                                    }
-                                }
-                                else => break,
-                            }
-                        }
-                    });
-
-                    // Authenticate client handshake: support both JSON join, ping/pong, and immediate binary input packets
-                    let auth_timeout = std::time::Duration::from_secs(5);
-                    let mut authenticated = false;
-                    let mut initial_packet = None;
-
-                    match tokio::time::timeout(auth_timeout, read.next()).await {
-                        Ok(Some(Ok(Message::Text(t)))) => {
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&t) {
-                                let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                                if msg_type == "join" {
-                                    let client_token = val.get("token").and_then(|v| v.as_str()).unwrap_or("");
-                                    let client_device = val.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
-
-                                    use subtle::ConstantTimeEq;
-                                    let token_matches: bool = client_token.is_empty()
-                                        || expected_token.is_empty()
-                                        || client_token.as_bytes().ct_eq(expected_token.as_bytes()).into();
-                                    let device_matches: bool = client_device.is_empty()
-                                        || expected_device_id.is_empty()
-                                        || client_device.as_bytes().ct_eq(expected_device_id.as_bytes()).into();
-
-                                    if token_matches && device_matches {
-                                        info!("Local client at {} authenticated successfully", peer_addr);
-                                        let paired_resp = serde_json::json!({
-                                            "type": "status",
-                                            "payload": "paired"
-                                        });
-                                        let _ = ctrl_tx.send(Message::Text(paired_resp.to_string())).await;
-                                        authenticated = true;
-                                    } else {
-                                        warn!("Local client at {} sent invalid token/deviceId. Rejecting.", peer_addr);
-                                        let err_resp = serde_json::json!({
-                                            "type": "error",
-                                            "error": "Authentication failed: invalid token"
-                                        });
-                                        let _ = ctrl_tx.send(Message::Text(err_resp.to_string())).await;
-                                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                                        writer_handle.abort();
-                                        return;
-                                    }
-                                } else if msg_type == "ping" {
-                                    let pong = serde_json::json!({"type": "pong"});
-                                    let _ = ctrl_tx.send(Message::Text(pong.to_string())).await;
-                                    authenticated = true;
-                                } else {
-                                    authenticated = true;
-                                }
-                            } else {
-                                authenticated = true;
-                            }
-                        }
-                        Ok(Some(Ok(Message::Binary(bin)))) => {
-                            // Immediate direct streaming binary control frame (e.g. SetStreaming opCode 0x10)
-                            info!("Local client at {} authenticated via direct binary streaming frame", peer_addr);
-                            initial_packet = Some(bin);
-                            authenticated = true;
-                        }
-                        Ok(Some(Ok(Message::Ping(p)))) => {
-                            let _ = ctrl_tx.send(Message::Pong(p)).await;
-                            authenticated = true;
-                        }
-                        Ok(Some(Ok(_))) => {
-                            authenticated = true;
-                        }
-                        Ok(Some(Err(e))) => {
-                            warn!("Local client at {} connection error during handshake: {}. Rejecting.", peer_addr, e);
-                        }
-                        Ok(None) => {
-                            warn!("Local client at {} disconnected before sending authentication handshake.", peer_addr);
-                        }
-                        Err(_) => {
-                            warn!("Local client at {} timed out waiting for authentication handshake.", peer_addr);
-                        }
-                    }
-
-                    if !authenticated {
-                        writer_handle.abort();
-                        return;
-                    }
-
-                    if let Some(bin) = initial_packet {
-                        if let Ok(pkt) = InputPacket::parse(&bin) {
-                            sim.dispatch(pkt);
-                        }
-                    }
-
-                    let is_connected = Arc::new(AtomicBool::new(true));
-                    let is_streaming = Arc::new(AtomicBool::new(true));
-                    let active_monitor = Arc::new(AtomicUsize::new(0));
-                    let stream_quality = Arc::new(AtomicU8::new(45));
-                    let is_audio_streaming = Arc::new(AtomicBool::new(false));
-                    let audio_handle: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::new(std::sync::Mutex::new(None));
-
-                    // Direct capture thread at ultra-fluid up to 60 FPS real-time with Zero-Bufferbloat pacing
-                    let conn_flag = is_connected.clone();
-                    let stream_flag = is_streaming.clone();
-                    let monitor_flag = active_monitor.clone();
-                    let quality_flag = stream_quality.clone();
-                    let ft_tx = frame_tx.clone();
-
-                    let capture_handle = tokio::task::spawn_blocking(move || {
-                        let mut capture = ScreenCapture::new();
-                        info!("Started direct local screen streaming loop (real-time up to 60 FPS with Zero-Bufferbloat pacing)");
-
-                        while conn_flag.load(Ordering::Relaxed) {
-                            if !stream_flag.load(Ordering::Relaxed) {
-                                std::thread::sleep(std::time::Duration::from_millis(50));
-                                continue;
-                            }
-
-                            let start = std::time::Instant::now();
-                            capture.active_monitor = monitor_flag.load(Ordering::Relaxed);
-                            let q = quality_flag.load(Ordering::Relaxed);
-
-                            let target_interval = match q {
-                                1..=70 => std::time::Duration::from_millis(16),  // ~60 FPS Butter-smooth Real-time
-                                _ => std::time::Duration::from_millis(22),       // ~45 FPS High Fidelity
-                            };
-
-                            if let Some(frame) = capture.capture_frame_jpeg(q) {
-                                match ft_tx.try_send(Message::Binary(frame)) {
-                                    Ok(_) => {}
-                                    Err(mpsc::error::TrySendError::Full(_)) => {
-                                        // Channel has pending unsent frame: drop intermediate frame to guarantee ZERO lag
-                                    }
-                                    Err(mpsc::error::TrySendError::Closed(_)) => break,
-                                }
-                            }
-
-                            let elapsed = start.elapsed();
-                            if elapsed < target_interval {
-                                std::thread::sleep(target_interval - elapsed);
-                            }
-                        }
-                        info!("Direct local screen capture stopped");
-                    });
-
-                    while let Some(msg) = read.next().await {
-                        match msg {
-                            Ok(Message::Binary(bin)) => {
-                                if bin.len() == 1 && bin[0] == 0xAA {
-                                    // Client frame acknowledgment heartbeat
-                                    continue;
-                                }
-
-                                if let Ok(packet) = InputPacket::parse(&bin) {
-                                    match &packet {
-                                        InputPacket::SwitchMonitor { monitor_index } => {
-                                            active_monitor.store(*monitor_index as usize, Ordering::SeqCst);
-                                        }
-                                        InputPacket::SetQuality { mode } => {
-                                            let q = match mode {
-                                                0 => 45, // Mobile 60 FPS smooth
-                                                1 => 65, // Balanced crisp HD
-                                                _ => 80, // High Fidelity
-                                            };
-                                            stream_quality.store(q, Ordering::SeqCst);
-                                        }
-                                        InputPacket::SetPrivacyCurtain { enabled } => {
-                                            priv_curtain.set_enabled(*enabled);
-                                        }
-                                        InputPacket::TouchDirect { norm_x, norm_y, action } => {
-                                            let is_text = sim.touch_direct(*norm_x, *norm_y, *action);
-                                            if is_text && (*action == 0 || *action == 2) {
-                                                let _ = ctrl_tx.send(Message::Text("{\"type\":\"text_focus\"}".to_string())).await;
-                                            }
-                                        }
-                                        InputPacket::SetStreaming { enabled } => {
-                                            info!("Client requested screen streaming: {}", enabled);
-                                            is_streaming.store(*enabled, Ordering::SeqCst);
-                                        }
-                                        InputPacket::SetAudioConfig { speaker_enabled, mic_enabled } => {
-                                            info!("Audio config updated: speaker={}, mic={}", speaker_enabled, mic_enabled);
-                                            if *speaker_enabled {
-                                                if !is_audio_streaming.load(Ordering::Relaxed) {
-                                                    is_audio_streaming.store(true, Ordering::SeqCst);
-                                                    let atx = audio_tx.clone();
-                                                    let flag = is_audio_streaming.clone();
-                                                    let jh = crate::audio::AudioCapture::start_loopback(flag, atx);
-                                                    if let Ok(mut g) = audio_handle.lock() {
-                                                        *g = Some(jh);
-                                                    }
-                                                }
-                                            } else {
-                                                is_audio_streaming.store(false, Ordering::SeqCst);
-                                                if let Ok(mut g) = audio_handle.lock() {
-                                                    let _ = g.take();
-                                                }
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                    if !matches!(packet, InputPacket::TouchDirect { .. }) {
-                                        sim.dispatch(packet);
-                                    }
-                                }
-                            }
-                            Ok(Message::Ping(p)) => {
-                                let _ = ctrl_tx.send(Message::Pong(p)).await;
-                            }
-                            Ok(Message::Text(t)) => {
-                                if t.contains("\"ack\"") {
-                                    continue;
-                                }
-                                if t.contains("\"ping\"") {
-                                    let pong = t.replace("\"ping\"", "\"pong\"");
-                                    let _ = ctrl_tx.send(Message::Text(pong)).await;
-                                }
-                            }
-                            Ok(Message::Close(_)) => {
-                                info!("Local client disconnected");
-                                break;
-                            }
-                            Err(e) => {
-                                warn!("Local client stream error: {}", e);
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    is_connected.store(false, Ordering::SeqCst);
-                    is_streaming.store(false, Ordering::SeqCst);
-                    is_audio_streaming.store(false, Ordering::SeqCst);
-                    if let Ok(mut g) = audio_handle.lock() {
-                        let _ = g.take();
-                    }
-                    priv_curtain.set_enabled(false);
-                    InputSimulator::set_display_resolution(0);
-                    InputSimulator::set_display_orientation(false);
-                    PowerManager::set_keep_awake(false);
-                    writer_handle.abort();
-                    let _ = capture_handle.await;
-                    info!("Local direct session cleaned up, restored screen settings");
+                    handle_connection(stream, peer, cfg, sim, privacy).await;
                 });
             }
         });
+    }
+}
+
+struct Request {
+    method: String,
+    path: String,
+    headers: std::collections::HashMap<String, String>,
+}
+
+impl Request {
+    fn header(&self, name: &str) -> &str {
+        self.headers.get(name).map(|s| s.as_str()).unwrap_or("")
+    }
+}
+
+fn parse_head(head: &[u8]) -> Option<Request> {
+    let text = String::from_utf8_lossy(head);
+    let mut lines = text.split("\r\n");
+    let mut first = lines.next()?.split_whitespace();
+    let method = first.next()?.to_ascii_uppercase();
+    let path = first.next()?.to_string();
+    let mut headers = std::collections::HashMap::new();
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+        }
+    }
+    Some(Request { method, path, headers })
+}
+
+/// Peeks (without consuming) until the full request head has arrived.
+async fn peek_head(stream: &TcpStream) -> Option<(Vec<u8>, usize)> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut buf = vec![0u8; MAX_HEAD];
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let n = tokio::time::timeout(remaining, stream.peek(&mut buf)).await.ok()?.ok()?;
+        if n == 0 {
+            return None;
+        }
+        if let Some(pos) = buf[..n].windows(4).position(|w| w == b"\r\n\r\n") {
+            return Some((buf[..pos + 4].to_vec(), pos + 4));
+        }
+        if n >= buf.len() || tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
+    let resp = format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        content_type,
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(resp.as_bytes()).await;
+}
+
+async fn respond_json(stream: &mut TcpStream, ok: bool) {
+    let (status, body) = if ok { ("200 OK", "{\"success\":true}") } else { ("400 Bad Request", "{\"success\":false}") };
+    respond(stream, status, "application/json", body).await;
+}
+
+/// True when an `Origin`/`Referer` host is loopback, localhost or a private LAN address.
+fn origin_allowed(origin: &str) -> bool {
+    let rest = origin.split("://").nth(1).unwrap_or(origin);
+    let host_port = rest.split('/').next().unwrap_or("");
+    let host = if let Some(stripped) = host_port.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or("")
+    } else {
+        host_port.rsplit_once(':').map(|(h, _)| h).unwrap_or(host_port)
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        Ok(IpAddr::V6(v6)) => v6.is_loopback(),
+        Err(_) => false,
+    }
+}
+
+fn apk_candidates() -> Vec<std::path::PathBuf> {
+    let mut v = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            v.push(dir.join("sway.apk"));
+            v.push(dir.join("app-debug.apk"));
+        }
+    }
+    for p in [
+        "sway.apk",
+        "app-debug.apk",
+        "src/sway.apk",
+        "android/app/build/outputs/apk/debug/app-debug.apk",
+        "../android/app/build/outputs/apk/debug/app-debug.apk",
+    ] {
+        v.push(std::path::PathBuf::from(p));
+    }
+    v
+}
+
+async fn serve_apk(stream: &mut TcpStream, head_only: bool) {
+    for p in apk_candidates() {
+        if let Ok(mut file) = tokio::fs::File::open(&p).await {
+            let len = match file.metadata().await {
+                Ok(m) => m.len(),
+                Err(_) => continue,
+            };
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.android.package-archive\r\nContent-Disposition: attachment; filename=\"Sway-Remote.apk\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                len
+            );
+            let _ = stream.write_all(header.as_bytes()).await;
+            if !head_only {
+                // Streamed with an 8 KB buffer, not loaded into RAM.
+                let _ = tokio::io::copy(&mut file, stream).await;
+            }
+            return;
+        }
+    }
+    respond(
+        stream,
+        "404 Not Found",
+        "text/plain",
+        "APK not built yet. Run './gradlew assembleDebug' in the android folder.",
+    )
+    .await;
+}
+
+async fn handle_connection(
+    mut stream: TcpStream,
+    peer: SocketAddr,
+    cfg: Arc<ServerConfig>,
+    sim: Arc<InputSimulator>,
+    privacy: Arc<PrivacyCurtain>,
+) {
+    let (head, head_len) = match peek_head(&stream).await {
+        Some(v) => v,
+        None => return,
+    };
+    let req = match parse_head(&head) {
+        Some(r) => r,
+        None => return,
+    };
+
+    if req.header("upgrade").eq_ignore_ascii_case("websocket") {
+        handle_ws(stream, peer, cfg, sim, privacy).await;
+        return;
+    }
+
+    // Consume the head (it was only peeked) and then the declared body.
+    let mut sink = vec![0u8; head_len];
+    if stream.read_exact(&mut sink).await.is_err() {
+        return;
+    }
+    let body_len: usize = req.header("content-length").parse().unwrap_or(0);
+    if body_len > MAX_BODY {
+        respond(&mut stream, "413 Payload Too Large", "text/plain", "too large").await;
+        return;
+    }
+    let mut body = vec![0u8; body_len];
+    if body_len > 0 {
+        match tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut body)).await {
+            Ok(Ok(_)) => {}
+            _ => return,
+        }
+    }
+
+    let path = req.path.split('?').next().unwrap_or("/");
+
+    match (req.method.as_str(), path) {
+        ("GET", "/sway.apk") | ("GET", "/app.apk") => serve_apk(&mut stream, false).await,
+        ("HEAD", "/sway.apk") | ("HEAD", "/app.apk") => serve_apk(&mut stream, true).await,
+        ("GET", "/") | ("GET", "/index.html") => {
+            let boot = serde_json::json!({
+                "nonce": if peer.ip().is_loopback() { cfg.nonce.as_str() } else { "" },
+                "deviceId": cfg.device_id,
+            });
+            let html = include_str!("dashboard.html")
+                .replacen("<head>", &format!("<head><script>window.SWAY_BOOT={};</script>", boot), 1);
+            respond(&mut stream, "200 OK", "text/html; charset=utf-8", &html).await;
+        }
+        ("POST", p) if p.starts_with("/api/") => {
+            // Cross-site and foreign-origin requests are rejected outright.
+            let origin = req.header("origin");
+            let referer = req.header("referer");
+            if req.header("sec-fetch-site").eq_ignore_ascii_case("cross-site")
+                || (!origin.is_empty() && !origin_allowed(origin))
+                || (!referer.is_empty() && !origin_allowed(referer))
+            {
+                respond(&mut stream, "403 Forbidden", "text/plain", "403 Forbidden: cross-origin request rejected").await;
+                return;
+            }
+            if !cfg.token_ok(req.header("x-sway-token")) {
+                respond(&mut stream, "401 Unauthorized", "text/plain", "401 Unauthorized: missing or invalid token").await;
+                return;
+            }
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+            let ok = handle_api(p, &json, sim, privacy).await;
+            respond_json(&mut stream, ok).await;
+        }
+        _ => respond(&mut stream, "404 Not Found", "text/plain", "Not found").await,
+    }
+}
+
+async fn handle_api(
+    path: &str,
+    json: &serde_json::Value,
+    sim: Arc<InputSimulator>,
+    privacy: Arc<PrivacyCurtain>,
+) -> bool {
+    match path {
+        "/api/privacy" => match json.get("enable").and_then(|v| v.as_bool()) {
+            Some(enable) => {
+                privacy.set_enabled(enable);
+                true
+            }
+            None => false,
+        },
+        "/api/resolution" => match json.get("mode").and_then(|v| v.as_u64()) {
+            Some(mode) => {
+                let m = if mode == 1 { 1 } else { 0 };
+                let _ = tokio::task::spawn_blocking(move || InputSimulator::set_display_resolution(m)).await;
+                true
+            }
+            None => false,
+        },
+        "/api/orientation" => match json.get("vertical").and_then(|v| v.as_bool()) {
+            Some(vertical) => {
+                let _ = tokio::task::spawn_blocking(move || sim.change_display_orientation(vertical)).await;
+                true
+            }
+            None => false,
+        },
+        "/api/system" => match json.get("action").and_then(|v| v.as_u64()) {
+            Some(a) if (1..=5).contains(&a) => {
+                InputSimulator::execute_system_command(a as u8);
+                true
+            }
+            _ => false,
+        },
+        "/api/clipboard" => match json.get("text").and_then(|v| v.as_str()) {
+            Some(text) => {
+                let text = text.to_string();
+                let _ = tokio::task::spawn_blocking(move || InputSimulator::set_clipboard_text(&text)).await;
+                true
+            }
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum Role {
+    Controller,
+    Preview,
+}
+
+fn authenticate(text: &str, cfg: &ServerConfig, peer: SocketAddr) -> Option<Role> {
+    let val: serde_json::Value = serde_json::from_str(text).ok()?;
+    if val.get("type").and_then(|v| v.as_str()) != Some("join") {
+        return None;
+    }
+    let token = val.get("token").and_then(|v| v.as_str()).unwrap_or("");
+    let device = val.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
+    let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("");
+
+    if role == "preview" {
+        // Read-only live preview: only the loopback dashboard holding the per-run nonce.
+        let nonce_ok: bool = !token.is_empty() && token.as_bytes().ct_eq(cfg.nonce.as_bytes()).into();
+        return if nonce_ok && peer.ip().is_loopback() { Some(Role::Preview) } else { None };
+    }
+
+    let token_ok: bool = !cfg.token.is_empty() && token.as_bytes().ct_eq(cfg.token.as_bytes()).into();
+    let device_ok: bool = !cfg.device_id.is_empty() && device.as_bytes().ct_eq(cfg.device_id.as_bytes()).into();
+    if token_ok && device_ok {
+        Some(Role::Controller)
+    } else {
+        None
+    }
+}
+
+async fn handle_ws(
+    stream: TcpStream,
+    peer: SocketAddr,
+    cfg: Arc<ServerConfig>,
+    sim: Arc<InputSimulator>,
+    privacy: Arc<PrivacyCurtain>,
+) {
+    let ws = match accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(e) => {
+            warn!("Local WebSocket handshake error from {}: {}", peer, e);
+            return;
+        }
+    };
+    let (write, mut read) = ws.split();
+    let (frame_tx, frame_rx) = mpsc::channel::<Message>(1);
+    let (ctrl_tx, ctrl_rx) = mpsc::channel::<Message>(64);
+    let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(16);
+    let writer = spawn_writer(write, ctrl_rx, audio_rx, frame_rx);
+
+    // The very first frame must be a valid `join`; everything else is rejected.
+    let role = match tokio::time::timeout(Duration::from_secs(5), read.next()).await {
+        Ok(Some(Ok(Message::Text(t)))) => authenticate(&t, &cfg, peer),
+        _ => None,
+    };
+    let role = match role {
+        Some(r) => r,
+        None => {
+            warn!("Local client at {} failed authentication. Rejecting.", peer);
+            let _ = ctrl_tx
+                .send(Message::Text(
+                    serde_json::json!({"type":"error","error":"Authentication failed: invalid token"}).to_string(),
+                ))
+                .await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            writer.abort();
+            return;
+        }
+    };
+
+    info!("Local client at {} authenticated", peer);
+    let _ = ctrl_tx
+        .send(Message::Text(serde_json::json!({"type":"status","payload":{"status":"paired"}}).to_string()))
+        .await;
+
+    let state = StreamState::new(true);
+    let guard = if role == Role::Controller {
+        let _ = ctrl_tx.send(host_info_message(&sim)).await;
+        Some(new_session_guard(privacy.clone(), sim.clone()))
+    } else {
+        None
+    };
+    let capture = spawn_capture_worker(state.clone(), frame_tx);
+    let mut ctx = SessionCtx::new(sim.clone(), privacy.clone(), state.clone(), ctrl_tx.clone(), audio_tx);
+
+    loop {
+        let msg = match tokio::time::timeout(READ_TIMEOUT, read.next()).await {
+            Ok(Some(m)) => m,
+            Ok(None) => break,
+            Err(_) => {
+                warn!("Local client {} timed out", peer);
+                break;
+            }
+        };
+        match msg {
+            Ok(Message::Binary(bin)) => {
+                if bin.len() == 1 && bin[0] == 0xAA {
+                    continue; // frame acknowledgment heartbeat
+                }
+                if role == Role::Controller {
+                    if let Ok(packet) = InputPacket::parse(&bin) {
+                        ctx.handle(packet);
+                    }
+                }
+            }
+            Ok(Message::Text(t)) => {
+                if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&t) {
+                    if v.get("type").and_then(|x| x.as_str()) == Some("ping") {
+                        v["type"] = serde_json::Value::String("pong".into());
+                        let _ = ctrl_tx.try_send(Message::Text(v.to_string()));
+                    }
+                }
+            }
+            Ok(Message::Ping(p)) => {
+                let _ = ctrl_tx.try_send(Message::Pong(p));
+            }
+            Ok(Message::Close(_)) => {
+                info!("Local client {} disconnected", peer);
+                break;
+            }
+            Err(e) => {
+                warn!("Local client stream error: {}", e);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    state.conn_alive.store(false, std::sync::atomic::Ordering::SeqCst);
+    drop(ctx);
+    drop(guard); // restores privacy/display/input only if this was the last active session
+    writer.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(2), capture).await;
+    info!("Local session for {} cleaned up", peer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn origin_filter_is_strict() {
+        assert!(origin_allowed("http://localhost:8089"));
+        assert!(origin_allowed("http://127.0.0.1:8089"));
+        assert!(origin_allowed("http://192.168.11.93:8089"));
+        assert!(origin_allowed("http://10.0.0.5"));
+        assert!(origin_allowed("http://172.20.1.1:8089/x"));
+        // Substring tricks that used to bypass the old check
+        assert!(!origin_allowed("https://10.evil.com"));
+        assert!(!origin_allowed("https://evil.com/?192.168."));
+        assert!(!origin_allowed("https://win10.example.org"));
+        assert!(!origin_allowed("http://8.8.8.8"));
+        assert!(!origin_allowed("http://172.67.1.1")); // public, not RFC1918
+    }
+
+    #[test]
+    fn join_requires_valid_token_and_device() {
+        let cfg = ServerConfig { device_id: "dev".into(), token: "tok".into(), nonce: "nn".into() };
+        let lan: SocketAddr = "192.168.1.9:5000".parse().unwrap();
+        let lo: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        assert!(authenticate(r#"{"type":"join","deviceId":"dev","token":"tok"}"#, &cfg, lan) == Some(Role::Controller));
+        // The old bypasses: empty token / empty device / wrong type / not JSON
+        assert!(authenticate(r#"{"type":"join"}"#, &cfg, lan).is_none());
+        assert!(authenticate(r#"{"type":"join","deviceId":"dev","token":""}"#, &cfg, lan).is_none());
+        assert!(authenticate(r#"{"type":"join","deviceId":"","token":"tok"}"#, &cfg, lan).is_none());
+        assert!(authenticate(r#"{"type":"ping"}"#, &cfg, lan).is_none());
+        assert!(authenticate("garbage", &cfg, lan).is_none());
+        // Preview needs loopback + nonce
+        assert!(authenticate(r#"{"type":"join","role":"preview","token":"nn"}"#, &cfg, lo) == Some(Role::Preview));
+        assert!(authenticate(r#"{"type":"join","role":"preview","token":"nn"}"#, &cfg, lan).is_none());
+        assert!(authenticate(r#"{"type":"join","role":"preview","token":"tok"}"#, &cfg, lo).is_none());
+    }
+
+    #[test]
+    fn head_parsing() {
+        let r = parse_head(b"POST /api/privacy HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nX-Sway-Token: abc\r\n\r\n").unwrap();
+        assert_eq!(r.method, "POST");
+        assert_eq!(r.path, "/api/privacy");
+        assert_eq!(r.header("content-length"), "5");
+        assert_eq!(r.header("x-sway-token"), "abc");
     }
 }

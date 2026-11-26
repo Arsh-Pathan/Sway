@@ -92,8 +92,9 @@ impl InputPacket {
                 if buf.len() < 3 + len {
                     return Err(ProtocolError::TooShort);
                 }
-                let text = String::from_utf8(buf[3..3 + len].to_vec())
-                    .map_err(|_| ProtocolError::InvalidUtf8)?;
+                let text = std::str::from_utf8(&buf[3..3 + len])
+                    .map_err(|_| ProtocolError::InvalidUtf8)?
+                    .to_owned();
                 Ok(InputPacket::TextInput { text })
             }
             0x08 => {
@@ -133,8 +134,9 @@ impl InputPacket {
                 if buf.len() < 3 + len {
                     return Err(ProtocolError::TooShort);
                 }
-                let text = String::from_utf8(buf[3..3 + len].to_vec())
-                    .map_err(|_| ProtocolError::InvalidUtf8)?;
+                let text = std::str::from_utf8(&buf[3..3 + len])
+                    .map_err(|_| ProtocolError::InvalidUtf8)?
+                    .to_owned();
                 Ok(InputPacket::ClipboardSync { text })
             }
             0x0F => {

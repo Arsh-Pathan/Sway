@@ -5,16 +5,21 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 const (
-	writeWait      = 10 * time.Second
-	pongWait       = 60 * time.Second
-	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 10 * 1024 * 1024 // 10 MB for high-resolution desktop frames
+	writeWait  = 10 * time.Second
+	pongWait   = 60 * time.Second
+	pingPeriod = 25 * time.Second
+
+	// Pre-authentication read limit; raised once the peer registers/joins.
+	preAuthMessageSize = 64 * 1024
+	clientMessageSize  = 256 * 1024
+	maxMessageSize     = 10 * 1024 * 1024 // 10 MB for high-resolution desktop frames (host only)
 )
 
 // WSMessage encapsulates a message type (Text or Binary) and its payload.
@@ -24,21 +29,49 @@ type WSMessage struct {
 }
 
 // Client represents a connected WebSocket peer (either a Host or an Android Client).
+//
+// Outbound traffic is split into three queues so that media can never evict
+// control/input traffic and audio and video never evict each other:
+//   - ctrlSend:  JSON signaling and binary input packets (never dropped on overflow of media)
+//   - audioSend: "SWAU" PCM chunks (drop-oldest)
+//   - videoSend: JPEG frames (capacity 1, drop-stale)
 type Client struct {
 	hub       *Hub
 	conn      *websocket.Conn
-	send      chan WSMessage
+	ctrlSend  chan WSMessage
+	audioSend chan WSMessage
+	videoSend chan WSMessage
+	done      chan struct{}
 	closeOnce sync.Once
-	closed    bool
-	role      string // "host" or "client"
-	deviceID  string
-	token     string
+	closed    atomic.Bool
+
+	// role / deviceID / token are protected by Hub.mu.
+	role     string // "host" or "client"
+	deviceID string
+	token    string
 }
 
+// NewClient builds a client with production queue capacities.
+func NewClient(hub *Hub, conn *websocket.Conn) *Client {
+	return &Client{
+		hub:       hub,
+		conn:      conn,
+		ctrlSend:  make(chan WSMessage, 64),
+		audioSend: make(chan WSMessage, 32),
+		videoSend: make(chan WSMessage, 1),
+		done:      make(chan struct{}),
+	}
+}
+
+// Close marks the client closed and tears down the socket. The send channels are
+// intentionally never closed, which removes any send-vs-close race.
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
-		c.closed = true
-		close(c.send)
+		c.closed.Store(true)
+		close(c.done)
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
 	})
 }
 
@@ -52,10 +85,7 @@ type Hub struct {
 	// clients maps deviceID to a list of connected mobile clients
 	clients map[string][]*Client
 
-	// register channel for new client connections
-	register chan *Client
-
-	// unregister channel for dropped connections
+	register   chan *Client
 	unregister chan *Client
 }
 
@@ -74,7 +104,9 @@ func (h *Hub) Run() {
 	for {
 		select {
 		case client := <-h.register:
-			log.Printf("[Hub] New socket connected from %s", client.conn.RemoteAddr())
+			if client.conn != nil {
+				log.Printf("[Hub] New socket connected from %s", client.conn.RemoteAddr())
+			}
 
 		case client := <-h.unregister:
 			h.handleDisconnect(client)
@@ -82,68 +114,70 @@ func (h *Hub) Run() {
 	}
 }
 
+func statusMsg(role, deviceID, status string) []byte {
+	b, _ := json.Marshal(SignalingMessage{
+		Type:     TypeStatus,
+		Role:     role,
+		DeviceID: deviceID,
+		Payload:  json.RawMessage(`{"status":"` + status + `"}`),
+	})
+	return b
+}
+
 // handleDisconnect removes the client and notifies remaining peers.
 func (h *Hub) handleDisconnect(client *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if client.role == "host" {
+	switch client.role {
+	case "host":
 		if currentHost, exists := h.hosts[client.deviceID]; exists && currentHost == client {
 			delete(h.hosts, client.deviceID)
 			log.Printf("[Hub] Host disconnected for device: %s", client.deviceID)
 
-			// Notify all connected mobile clients that the host is offline
-			offlineMsg, _ := json.Marshal(SignalingMessage{
-				Type:     TypeStatus,
-				Role:     "host",
-				DeviceID: client.deviceID,
-				Payload:  json.RawMessage(`{"status":"offline"}`),
-			})
-
+			offline := statusMsg("host", client.deviceID, "offline")
 			for _, c := range h.clients[client.deviceID] {
-				c.sendSafe(WSMessage{msgType: websocket.TextMessage, data: offlineMsg})
+				c.sendSafe(WSMessage{msgType: websocket.TextMessage, data: offline})
 			}
 		}
-	} else if client.role == "client" {
+
+	case "client":
 		list := h.clients[client.deviceID]
 		for i, c := range list {
-			if c == client {
-				h.clients[client.deviceID] = append(list[:i], list[i+1:]...)
-				log.Printf("[Hub] Mobile client disconnected from device: %s", client.deviceID)
-				break
+			if c != client {
+				continue
 			}
+			last := len(list) - 1
+			copy(list[i:], list[i+1:])
+			list[last] = nil // do not pin the disconnected client in the backing array
+			list = list[:last]
+			break
 		}
-
-		// If no more mobile clients remain for this host, notify host and clean up map entry
-		if len(h.clients[client.deviceID]) == 0 {
+		if len(list) == 0 {
 			delete(h.clients, client.deviceID)
-			if host, exists := h.hosts[client.deviceID]; exists {
-				notifyHost, _ := json.Marshal(SignalingMessage{
-					Type:     TypeStatus,
-					Role:     "client",
-					DeviceID: client.deviceID,
-					Payload:  json.RawMessage(`{"status":"client_left"}`),
-				})
-				host.sendSafe(WSMessage{msgType: websocket.TextMessage, data: notifyHost})
+			log.Printf("[Hub] Last mobile client disconnected for device: %s", client.deviceID)
+			if host, ok := h.hosts[client.deviceID]; ok {
+				host.sendSafe(WSMessage{msgType: websocket.TextMessage, data: statusMsg("client", client.deviceID, "client_left")})
 			}
+		} else {
+			h.clients[client.deviceID] = list
 		}
 	}
 
 	client.Close()
 }
 
-// ProcessBinary relays binary frames (screen captures and input events) directly between host and mobile.
+// ProcessBinary relays binary frames (screen captures, audio and input events) between host and mobile.
 func (h *Hub) ProcessBinary(client *Client, raw []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	if client.role == "host" {
-		// Relay desktop screen frame to paired mobile client(s)
+	switch client.role {
+	case "host":
 		for _, c := range h.clients[client.deviceID] {
 			c.sendSafe(WSMessage{msgType: websocket.BinaryMessage, data: raw})
 		}
-	} else if client.role == "client" {
-		// Relay mouse/keyboard input event to target host
+	case "client":
 		if host, exists := h.hosts[client.deviceID]; exists {
 			host.sendSafe(WSMessage{msgType: websocket.BinaryMessage, data: raw})
 		}
@@ -172,11 +206,14 @@ func (h *Hub) ProcessMessage(client *Client, raw []byte) {
 	case TypeJoin:
 		h.handleJoin(client, msg)
 
-	case TypeOffer, TypeAnswer, TypeCandidate:
+	case TypeOffer, TypeAnswer, TypeCandidate, TypeTextFocus:
 		h.routePeerMessage(client, msg, raw)
 
 	case TypeBye:
-		log.Printf("[Hub] Session bye received from %s (%s)", client.deviceID, client.role)
+		h.mu.RLock()
+		role, id := client.role, client.deviceID
+		h.mu.RUnlock()
+		log.Printf("[Hub] Session bye received from %s (%s)", id, role)
 
 	default:
 		client.sendError("unrecognized message type: " + string(msg.Type))
@@ -197,6 +234,11 @@ func (h *Hub) handleRegister(client *Client, msg SignalingMessage) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if client.role != "" {
+		client.sendError("already authenticated")
+		return
+	}
+
 	if existing, exists := h.hosts[msg.DeviceID]; exists {
 		if subtle.ConstantTimeCompare([]byte(existing.token), []byte(msg.Token)) != 1 {
 			client.sendError("deviceId already registered with different token")
@@ -209,16 +251,18 @@ func (h *Hub) handleRegister(client *Client, msg SignalingMessage) {
 	client.deviceID = msg.DeviceID
 	client.token = msg.Token
 	h.hosts[msg.DeviceID] = client
+	if client.conn != nil {
+		client.conn.SetReadLimit(maxMessageSize)
+	}
 
 	log.Printf("[Hub] Host successfully registered: device=%s", msg.DeviceID)
 
-	ack, _ := json.Marshal(SignalingMessage{
-		Type:     TypeStatus,
-		Role:     "server",
-		DeviceID: msg.DeviceID,
-		Payload:  json.RawMessage(`{"status":"registered"}`),
-	})
-	client.sendSafe(WSMessage{msgType: websocket.TextMessage, data: ack})
+	client.sendSafe(WSMessage{msgType: websocket.TextMessage, data: statusMsg("server", msg.DeviceID, "registered")})
+
+	// If viewers are already waiting (host reconnected), tell the host so streaming resumes.
+	if len(h.clients[msg.DeviceID]) > 0 {
+		client.sendSafe(WSMessage{msgType: websocket.TextMessage, data: statusMsg("client", msg.DeviceID, "client_joined")})
+	}
 }
 
 // handleJoin authenticates and connects a mobile client to a host.
@@ -235,6 +279,11 @@ func (h *Hub) handleJoin(client *Client, msg SignalingMessage) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if client.role != "" {
+		client.sendError("already authenticated")
+		return
+	}
+
 	host, exists := h.hosts[msg.DeviceID]
 	if !exists {
 		client.sendError("host device not online")
@@ -250,98 +299,99 @@ func (h *Hub) handleJoin(client *Client, msg SignalingMessage) {
 	client.deviceID = msg.DeviceID
 	client.token = msg.Token
 	h.clients[msg.DeviceID] = append(h.clients[msg.DeviceID], client)
+	if client.conn != nil {
+		client.conn.SetReadLimit(clientMessageSize)
+	}
 
 	log.Printf("[Hub] Mobile client paired with device=%s", msg.DeviceID)
 
-	ack, _ := json.Marshal(SignalingMessage{
-		Type:     TypeStatus,
-		Role:     "server",
-		DeviceID: msg.DeviceID,
-		Payload:  json.RawMessage(`{"status":"paired"}`),
-	})
-	client.sendSafe(WSMessage{msgType: websocket.TextMessage, data: ack})
-
-	// Notify host that a mobile client has joined
-	notifyHost, _ := json.Marshal(SignalingMessage{
-		Type:     TypeStatus,
-		Role:     "client",
-		DeviceID: msg.DeviceID,
-		Payload:  json.RawMessage(`{"status":"client_joined"}`),
-	})
-	host.sendSafe(WSMessage{msgType: websocket.TextMessage, data: notifyHost})
+	client.sendSafe(WSMessage{msgType: websocket.TextMessage, data: statusMsg("server", msg.DeviceID, "paired")})
+	host.sendSafe(WSMessage{msgType: websocket.TextMessage, data: statusMsg("client", msg.DeviceID, "client_joined")})
 }
 
-// routePeerMessage relays SDP offers, answers, and ICE candidates between paired host and client.
+// routePeerMessage relays SDP offers, answers, ICE candidates and text-focus hints between paired peers.
 func (h *Hub) routePeerMessage(client *Client, msg SignalingMessage, raw []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	if client.role == "host" {
-		clients, exists := h.clients[client.deviceID]
-		if !exists || len(clients) == 0 {
-			log.Printf("[Hub] No active mobile clients for device: %s", client.deviceID)
+	switch client.role {
+	case "host":
+		clients := h.clients[client.deviceID]
+		if len(clients) == 0 {
 			return
 		}
 		for _, c := range clients {
 			c.sendSafe(WSMessage{msgType: websocket.TextMessage, data: raw})
 		}
-	} else if client.role == "client" {
+	case "client":
 		host, exists := h.hosts[client.deviceID]
 		if !exists {
 			client.sendError("target host not online")
 			return
 		}
 		host.sendSafe(WSMessage{msgType: websocket.TextMessage, data: raw})
-	} else {
+	default:
 		client.sendError("client must register or join before sending peer messages")
 	}
 }
 
+func isAudioPacket(d []byte) bool {
+	return len(d) >= 4 && d[0] == 'S' && d[1] == 'W' && d[2] == 'A' && d[3] == 'U'
+}
+
+func isJPEGFrame(d []byte) bool {
+	return len(d) >= 2 && d[0] == 0xFF && d[1] == 0xD8
+}
+
+// sendSafe enqueues a message without ever blocking the caller (callers may hold Hub.mu).
 func (c *Client) sendSafe(msg WSMessage) {
-	if c.closed {
+	if c.closed.Load() {
 		return
 	}
-	defer func() {
-		_ = recover()
-	}()
 
-	// Distinguish video frames (> 1KB binary payload) from critical input events & signaling
-	isVideoFrame := msg.msgType == websocket.BinaryMessage && len(msg.data) > 1024
-
-	if isVideoFrame {
-		for {
+	if msg.msgType == websocket.BinaryMessage {
+		switch {
+		case isAudioPacket(msg.data):
 			select {
-			case c.send <- msg:
+			case c.audioSend <- msg:
 				return
 			default:
-				// Buffer full: drop stale queued video frame to keep latency at zero
-				select {
-				case <-c.send:
-				default:
-					return
-				}
 			}
-		}
-	} else {
-		// Input & Control Messages: prioritize over stale video frames
-		select {
-		case c.send <- msg:
+			// Full: drop the oldest chunk and retry once.
+			select {
+			case <-c.audioSend:
+			default:
+			}
+			select {
+			case c.audioSend <- msg:
+			default:
+			}
 			return
-		default:
-			// Discard a stale video frame to make room for input/signaling
+
+		case isJPEGFrame(msg.data):
 			select {
-			case <-c.send:
+			case c.videoSend <- msg:
+				return
+			default:
+			}
+			// Stale frame queued: replace it with the newest one.
+			select {
+			case <-c.videoSend:
 			default:
 			}
 			select {
-			case c.send <- msg:
+			case c.videoSend <- msg:
 			default:
-				select {
-				case c.send <- msg:
-				case <-time.After(50 * time.Millisecond):
-				}
 			}
+			return
 		}
+	}
+
+	// JSON signaling and binary input packets (of any size) take the control queue.
+	select {
+	case c.ctrlSend <- msg:
+	default:
+		log.Printf("[Hub] control queue full for device=%s, dropping message", c.deviceID)
 	}
 }
 

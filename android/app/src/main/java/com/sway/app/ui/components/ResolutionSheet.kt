@@ -29,7 +29,7 @@ fun ResolutionSheet(
     isVerticalPc: Boolean,
     onSelectRes: (Byte) -> Unit,
     onSelectFit: (ViewFitMode) -> Unit,
-    onToggleVerticalPc: () -> Unit,
+    onSetVerticalPc: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(
@@ -125,21 +125,30 @@ fun ResolutionSheet(
                     title = "Mobile 720p (1280 × 720)",
                     subtitle = "Large readable text & icons, optimized for phone touch",
                     isSelected = currentResMode == InputEvent.ChangeResolution.MOBILE_720P,
-                    onClick = { onSelectRes(InputEvent.ChangeResolution.MOBILE_720P) }
+                    onClick = {
+                        if (isVerticalPc) onSetVerticalPc(false)
+                        onSelectRes(InputEvent.ChangeResolution.MOBILE_720P)
+                    }
                 )
 
                 ResolutionRow(
                     title = "HD+ Balanced (1600 × 900)",
                     subtitle = "Crisp clarity and comfortable touch targets",
                     isSelected = currentResMode == InputEvent.ChangeResolution.BALANCED_900P,
-                    onClick = { onSelectRes(InputEvent.ChangeResolution.BALANCED_900P) }
+                    onClick = {
+                        if (isVerticalPc) onSetVerticalPc(false)
+                        onSelectRes(InputEvent.ChangeResolution.BALANCED_900P)
+                    }
                 )
 
                 ResolutionRow(
                     title = "Full HD (1920 × 1080)",
                     subtitle = "Native high-definition desktop rendering",
                     isSelected = currentResMode == InputEvent.ChangeResolution.DESKTOP_1080P,
-                    onClick = { onSelectRes(InputEvent.ChangeResolution.DESKTOP_1080P) }
+                    onClick = {
+                        if (isVerticalPc) onSetVerticalPc(false)
+                        onSelectRes(InputEvent.ChangeResolution.DESKTOP_1080P)
+                    }
                 )
 
                 ResolutionRow(
@@ -147,7 +156,7 @@ fun ResolutionSheet(
                     subtitle = "Rotates Windows to match vertical phone orientation",
                     isSelected = isVerticalPc || currentResMode == InputEvent.ChangeResolution.VERTICAL_1080P,
                     onClick = {
-                        onToggleVerticalPc()
+                        onSetVerticalPc(true)
                         onSelectRes(InputEvent.ChangeResolution.VERTICAL_1080P)
                     }
                 )
@@ -156,7 +165,10 @@ fun ResolutionSheet(
                     title = "Reset Native Default",
                     subtitle = "Restores standard Windows desktop resolution",
                     isSelected = currentResMode == InputEvent.ChangeResolution.DEFAULT,
-                    onClick = { onSelectRes(InputEvent.ChangeResolution.DEFAULT) }
+                    onClick = {
+                        if (isVerticalPc) onSetVerticalPc(false)
+                        onSelectRes(InputEvent.ChangeResolution.DEFAULT)
+                    }
                 )
             }
 

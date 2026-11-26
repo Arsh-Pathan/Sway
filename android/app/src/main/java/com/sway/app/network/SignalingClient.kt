@@ -16,10 +16,14 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.*
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 data class StreamFrame(
     val bitmap: Bitmap,
@@ -38,17 +42,49 @@ class SignalingClient(
     private val serverUrl: String,
     private val deviceId: String,
     private val token: String,
-    private val scope: CoroutineScope
+    parentScope: CoroutineScope
 ) : WebSocketListener() {
 
     private val tag = "SignalingClient"
     private val json = Json { ignoreUnknownKeys = true }
-    private val okHttpClient = OkHttpClient.Builder()
-        .pingInterval(25, TimeUnit.SECONDS)
-        .build()
 
+    companion object {
+        // Shared across sessions so reconnects never leak OkHttp dispatcher threads or sockets.
+        private val sharedHttpClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .pingInterval(25, TimeUnit.SECONDS)
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .build()
+        }
+
+        private val ipv4Regex = Regex("""^\d{1,3}(\.\d{1,3}){3}(:\d+)?$""")
+
+        fun buildWsUrl(rawUrl: String): String {
+            val trimmed = rawUrl.trim().trimEnd('/').removeSuffix("/ws")
+            val scheme = when {
+                trimmed.startsWith("ws://") || trimmed.startsWith("wss://") -> return "$trimmed/ws"
+                trimmed.startsWith("http://") -> return "ws://${trimmed.removePrefix("http://")}/ws"
+                trimmed.startsWith("https://") -> return "wss://${trimmed.removePrefix("https://")}/ws"
+                trimmed.endsWith(".local") ||
+                    trimmed.contains(".local:") ||
+                    trimmed.endsWith(".lan") ||
+                    trimmed.contains(".lan:") ||
+                    trimmed.startsWith("[") ||
+                    trimmed.endsWith(":8089") ||
+                    ipv4Regex.matches(trimmed) ||
+                    trimmed.startsWith("localhost") -> "ws://"
+                else -> "wss://"
+            }
+            return "$scheme$trimmed/ws"
+        }
+    }
+
+    private val clientScope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
+    private val userDisconnected = AtomicBoolean(false)
     private var webSocket: WebSocket? = null
     private var pingJob: Job? = null
+    private var reconnectJob: Job? = null
+    private var reconnectAttempt = 0
 
     private val _state = MutableStateFlow<SignalingState>(SignalingState.Disconnected)
     val state = _state.asStateFlow()
@@ -59,12 +95,15 @@ class SignalingClient(
     private val _fps = MutableStateFlow(0)
     val fps = _fps.asStateFlow()
 
-    private val _rttMs = MutableStateFlow(1)
+    private val _rttMs = MutableStateFlow(0)
     val rttMs = _rttMs.asStateFlow()
+
+    private val _monitorCount = MutableStateFlow(2)
+    val monitorCount = _monitorCount.asStateFlow()
 
     private var frameCounter = 0
     private var lastFpsTimestamp = System.currentTimeMillis()
-    private var lastPingTimestamp = 0L
+    private val lastPingTimestamp = AtomicLong(0L)
 
     private val _offers = MutableSharedFlow<SdpPayload>()
     val offers = _offers.asSharedFlow()
@@ -78,26 +117,56 @@ class SignalingClient(
     val candidates = _candidates.asSharedFlow()
 
     fun connect() {
-        _state.value = SignalingState.Connecting
-        val trimmed = serverUrl.trim().trimEnd('/')
-        val wsUrl = when {
-            trimmed.startsWith("http://") -> trimmed.replace("http://", "ws://") + "/ws"
-            trimmed.startsWith("https://") -> trimmed.replace("https://", "wss://") + "/ws"
-            trimmed.startsWith("ws://") || trimmed.startsWith("wss://") -> "$trimmed/ws"
-            // If it's a domain name (like trycloudflare.com or custom domain), use secure WSS
-            trimmed.contains(".trycloudflare.com") || trimmed.contains(".ngrok") || (trimmed.contains(".") && !trimmed.matches(Regex("^[0-9.:]+$"))) -> "wss://$trimmed/ws"
-            else -> "ws://$trimmed/ws"
-        }
+        userDisconnected.set(false)
+        reconnectJob?.cancel()
+        openSocket()
+    }
 
+    fun reconnectNow() {
+        if (userDisconnected.get()) return
+        reconnectAttempt = 0
+        reconnectJob?.cancel()
+        pingJob?.cancel()
+        webSocket?.cancel()
+        webSocket = null
+        openSocket()
+    }
+
+    private fun openSocket() {
+        _state.value = SignalingState.Connecting
+        val wsUrl = buildWsUrl(serverUrl)
         val request = Request.Builder().url(wsUrl).build()
-        webSocket = okHttpClient.newWebSocket(request, this)
+        webSocket = sharedHttpClient.newWebSocket(request, this)
+    }
+
+    private fun scheduleReconnect(delayOverrideMs: Long? = null) {
+        if (userDisconnected.get()) return
+        if (reconnectJob?.isActive == true) return
+        val delayMs = delayOverrideMs ?: when (reconnectAttempt) {
+            0 -> 1000L
+            1 -> 2000L
+            2 -> 4000L
+            else -> 8000L
+        }
+        reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(5)
+        reconnectJob = clientScope.launch {
+            delay(delayMs)
+            if (!userDisconnected.get()) {
+                Log.i(tag, "Auto-reconnecting WebSocket (attempt $reconnectAttempt)...")
+                openSocket()
+            }
+        }
     }
 
     override fun onOpen(webSocket: WebSocket, response: Response) {
+        if (userDisconnected.get()) {
+            webSocket.close(1000, "Disconnected")
+            return
+        }
         Log.i(tag, "WebSocket opened, sending join request for device: $deviceId")
+        reconnectAttempt = 0
         _state.value = SignalingState.Connected
 
-        // Send Join message
         val joinEnvelope = SignalingEnvelope(
             type = "join",
             deviceId = deviceId,
@@ -105,48 +174,54 @@ class SignalingClient(
         )
         sendEnvelope(joinEnvelope)
 
-        // Start real-time RTT latency ping loop every 1.5 seconds
         pingJob?.cancel()
-        pingJob = scope.launch {
+        pingJob = clientScope.launch {
             while (isActive) {
+                val ts = System.currentTimeMillis()
+                lastPingTimestamp.set(ts)
+                webSocket.send("{\"type\":\"ping\",\"t\":$ts}")
                 delay(1500)
-                lastPingTimestamp = System.currentTimeMillis()
-                webSocket.send("{\"type\":\"ping\",\"t\":$lastPingTimestamp}")
             }
         }
     }
 
     private var frameSeq = 0L
 
-    // Triple-buffered Bitmap pool to eliminate GC allocations and prevent race conditions with GPU draw calls
-    private val bitmapPool = arrayOfNulls<Bitmap>(3)
+    // Quad-buffered Bitmap pool: never reuse the bitmap currently held by _currentFrame/RenderThread,
+    // and never call recycle() manually so hwui never encounters a recycled texture mid-draw.
+    private val bitmapPool = arrayOfNulls<Bitmap>(4)
     private var poolIndex = 0
 
     val audioPlayer = com.sway.app.audio.AudioPlayer()
 
-    // Conflated decoding pipeline: zero race conditions, zero thread churn, zero buffer bloat
     private val decodeChannel = Channel<ByteArray>(Channel.CONFLATED)
 
     init {
-        scope.launch(Dispatchers.Default) {
+        clientScope.launch(Dispatchers.Default) {
             val decodeOpts = BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.RGB_565
                 inMutable = true
                 inSampleSize = 1
-                inPremultiplied = false // JPEGs have no alpha; RGB_565 cuts memory & GPU upload bandwidth by 50%
+                inPremultiplied = false // JPEGs have no alpha; RGB_565 halves memory & GPU upload cost
             }
 
             for (toDecode in decodeChannel) {
-                val candidate = bitmapPool[poolIndex]
-                if (candidate != null && !candidate.isRecycled) {
-                    decodeOpts.inBitmap = candidate
+                if (userDisconnected.get()) break
+                val activeBitmap = _currentFrame.value?.bitmap
+                var candidate = bitmapPool[poolIndex]
+                if (candidate != null && (candidate.isRecycled || !candidate.isMutable || candidate === activeBitmap)) {
+                    poolIndex = (poolIndex + 1) % bitmapPool.size
+                    candidate = bitmapPool[poolIndex]
+                }
+                decodeOpts.inBitmap = if (candidate != null && !candidate.isRecycled && candidate.isMutable && candidate !== activeBitmap) {
+                    candidate
                 } else {
-                    decodeOpts.inBitmap = null
+                    null
                 }
 
                 val bmp = try {
                     BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)
-                } catch (iae: IllegalArgumentException) {
+                } catch (_: IllegalArgumentException) {
                     decodeOpts.inBitmap = null
                     try {
                         BitmapFactory.decodeByteArray(toDecode, 0, toDecode.size, decodeOpts)
@@ -159,13 +234,12 @@ class SignalingClient(
                     null
                 }
 
-                if (bmp != null) {
+                if (bmp != null && !userDisconnected.get()) {
                     bitmapPool[poolIndex] = bmp
-                    poolIndex = (poolIndex + 1) % 3
+                    poolIndex = (poolIndex + 1) % bitmapPool.size
                     frameSeq++
                     _currentFrame.value = StreamFrame(bmp, frameSeq)
 
-                    // Update real-time rendered FPS counter
                     frameCounter++
                     val now = System.currentTimeMillis()
                     if (now - lastFpsTimestamp >= 1000) {
@@ -181,7 +255,7 @@ class SignalingClient(
     override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
         val raw = bytes.toByteArray()
 
-        // SWAU Audio Packet: intercept and route directly to low-latency PCM player
+        // SWAU Audio Packet: route directly to async low-latency PCM player
         if (raw.size >= 4 &&
             raw[0] == 'S'.code.toByte() &&
             raw[1] == 'W'.code.toByte() &&
@@ -192,59 +266,82 @@ class SignalingClient(
             return
         }
 
-        // Deliver directly to the conflated decode pipeline
         decodeChannel.trySend(raw)
     }
 
     override fun onMessage(webSocket: WebSocket, text: String) {
         try {
-            if (text.contains("\"text_focus\"")) {
-                scope.launch { textFocusEvents.emit(Unit) }
-                return
-            }
+            val elem = json.parseToJsonElement(text)
+            val obj = elem.jsonObject
+            val msgType = obj["type"]?.jsonPrimitive?.content ?: return
 
-            // Handle real-time RTT pong response
-            if (text.contains("\"pong\"")) {
-                if (lastPingTimestamp > 0) {
-                    val rtt = (System.currentTimeMillis() - lastPingTimestamp).coerceAtLeast(1)
-                    _rttMs.value = rtt.toInt()
+            when (msgType) {
+                "text_focus" -> {
+                    clientScope.launch { textFocusEvents.emit(Unit) }
                 }
-                return
-            }
-
-            val env = json.decodeFromString<SignalingEnvelope>(text)
-            when (env.type) {
+                "host_info" -> {
+                    val count = obj["monitors"]?.jsonPrimitive?.content?.toIntOrNull()
+                    if (count != null && count > 0) {
+                        _monitorCount.value = count
+                    }
+                }
+                "pong" -> {
+                    val echoedTs = obj["t"]?.jsonPrimitive?.content?.toLongOrNull()
+                        ?: obj["payload"]?.jsonObject?.get("t")?.jsonPrimitive?.content?.toLongOrNull()
+                        ?: lastPingTimestamp.get()
+                    if (echoedTs > 0L) {
+                        val rtt = (System.currentTimeMillis() - echoedTs).coerceIn(1L, 9999L)
+                        _rttMs.value = rtt.toInt()
+                    }
+                }
                 "status" -> {
-                    val statusText = env.payload?.toString() ?: ""
-                    if (statusText.contains("paired")) {
-                        Log.i(tag, "Successfully paired with host $deviceId")
-                        _state.value = SignalingState.Paired
-                    } else if (statusText.contains("offline")) {
-                        _state.value = SignalingState.Error("Host is offline")
+                    val payloadElem = obj["payload"]
+                    val statusStr = when {
+                        payloadElem == null -> ""
+                        payloadElem is kotlinx.serialization.json.JsonObject ->
+                            payloadElem["status"]?.jsonPrimitive?.content ?: ""
+                        else -> payloadElem.jsonPrimitive.content
+                    }
+                    when (statusStr) {
+                        "paired" -> {
+                            Log.i(tag, "Successfully paired with host $deviceId")
+                            _state.value = SignalingState.Paired
+                        }
+                        "offline" -> {
+                            _fps.value = 0
+                            _state.value = SignalingState.Error("Host is offline")
+                        }
                     }
                 }
                 "offer" -> {
+                    val env = json.decodeFromString<SignalingEnvelope>(text)
                     env.payload?.let {
                         val sdp = json.decodeFromJsonElement<SdpPayload>(it)
-                        scope.launch { _offers.emit(sdp) }
+                        clientScope.launch { _offers.emit(sdp) }
                     }
                 }
                 "answer" -> {
+                    val env = json.decodeFromString<SignalingEnvelope>(text)
                     env.payload?.let {
                         val sdp = json.decodeFromJsonElement<SdpPayload>(it)
-                        scope.launch { _answers.emit(sdp) }
+                        clientScope.launch { _answers.emit(sdp) }
                     }
                 }
                 "candidate" -> {
+                    val env = json.decodeFromString<SignalingEnvelope>(text)
                     env.payload?.let {
                         val cand = json.decodeFromJsonElement<CandidatePayload>(it)
-                        scope.launch { _candidates.emit(cand) }
+                        clientScope.launch { _candidates.emit(cand) }
                     }
                 }
                 "error" -> {
-                    val errMsg = env.error ?: "Unknown signaling error"
+                    val errMsg = obj["error"]?.jsonPrimitive?.content ?: "Unknown signaling error"
                     Log.e(tag, "Server error: $errMsg")
+                    _fps.value = 0
                     _state.value = SignalingState.Error(errMsg)
+                    if (!errMsg.contains("authentication", ignoreCase = true) && !errMsg.contains("invalid token", ignoreCase = true)) {
+                        scheduleReconnect(3000L)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -258,17 +355,25 @@ class SignalingClient(
     }
 
     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+        if (this.webSocket !== webSocket || userDisconnected.get()) return
         Log.e(tag, "WebSocket failure: ${t.message}", t)
         pingJob?.cancel()
         pingJob = null
+        _fps.value = 0
         _state.value = SignalingState.Error(t.message ?: "Connection failed")
+        scheduleReconnect()
     }
 
     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+        if (this.webSocket !== webSocket) return
         Log.i(tag, "WebSocket closed: $reason ($code)")
         pingJob?.cancel()
         pingJob = null
+        _fps.value = 0
         _state.value = SignalingState.Disconnected
+        if (!userDisconnected.get()) {
+            scheduleReconnect()
+        }
     }
 
     fun sendOffer(sdp: String) {
@@ -294,16 +399,22 @@ class SignalingClient(
     }
 
     fun disconnect() {
-        audioPlayer.release()
+        userDisconnected.set(true)
+        reconnectJob?.cancel()
+        reconnectJob = null
         pingJob?.cancel()
         pingJob = null
+        audioPlayer.release()
         webSocket?.close(1000, "User disconnected")
         webSocket = null
+        decodeChannel.close()
         _currentFrame.value = null
+        _fps.value = 0
         for (i in bitmapPool.indices) {
-            bitmapPool[i]?.recycle()
+            // Do NOT call bitmap.recycle() here: RenderThread may still finish drawing the active frame.
             bitmapPool[i] = null
         }
+        clientScope.cancel()
         _state.value = SignalingState.Disconnected
     }
 }

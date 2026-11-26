@@ -7,11 +7,13 @@ param(
     [string]$Token = ""
 )
 
-if ([string]::IsNullOrWhiteSpace($DeviceId)) {
-    $DeviceId = "sway-host-$((New-Guid).ToString().Substring(0,8))"
-}
-if ([string]::IsNullOrWhiteSpace($Token)) {
-    $Token = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 16 | ForEach-Object {[char]$_})
+function New-SecureToken {
+    $chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+    $bytes = New-Object byte[] 16
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $rng.GetBytes($bytes)
+    $rng.Dispose()
+    return -join ($bytes | ForEach-Object { $chars[$_ % $chars.Length] })
 }
 
 $ErrorActionPreference = "Stop"
@@ -23,6 +25,11 @@ $AppDir = "$env:LOCALAPPDATA\Sway"
 if (-not (Test-Path $AppDir)) {
     New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
     Write-Host "[+] Created application directory: $AppDir" -ForegroundColor Green
+}
+
+$CargoBin = "$env:USERPROFILE\.cargo\bin"
+if (Test-Path $CargoBin) {
+    $env:PATH = "$CargoBin;$env:PATH"
 }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -44,21 +51,46 @@ if (-not (Test-Path $SourceExe)) {
     exit 1
 }
 
+# Stop running instances BEFORE copying to avoid Windows file-in-use lock errors
+Stop-Process -Name "sway-host" -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 600
+
 $TargetExe = "$AppDir\sway-host.exe"
 Copy-Item -Path $SourceExe -Destination $TargetExe -Force
 Write-Host "[+] Copied host binary to $TargetExe" -ForegroundColor Green
 
-# Save or update config.json in application directory
+# Save or update BOM-less UTF-8 config.json (PowerShell Set-Content UTF8 adds a BOM that breaks JSON parsers)
 $ConfigPath = "$AppDir\config.json"
-if (-not (Test-Path $ConfigPath)) {
-    $ConfigJson = @{
-        signaling_url = $SignalingUrl
-        device_id = $DeviceId
-        token = $Token
-        local_port = 8089
+$Config = $null
+if (Test-Path $ConfigPath) {
+    try {
+        $raw = [System.IO.File]::ReadAllText($ConfigPath).TrimStart([char]0xFEFF)
+        $Config = $raw | ConvertFrom-Json
+    } catch {
+        $Config = $null
+    }
+}
+
+$NeedWrite = ($null -eq $Config) -or
+    $PSBoundParameters.ContainsKey('SignalingUrl') -or
+    $PSBoundParameters.ContainsKey('DeviceId') -or
+    $PSBoundParameters.ContainsKey('Token')
+
+if ($NeedWrite) {
+    $FinalUrl = if ($PSBoundParameters.ContainsKey('SignalingUrl')) { $SignalingUrl } elseif ($Config -and $Config.signaling_url) { $Config.signaling_url } else { $SignalingUrl }
+    $FinalId = if ($PSBoundParameters.ContainsKey('DeviceId') -and -not [string]::IsNullOrWhiteSpace($DeviceId)) { $DeviceId } elseif ($Config -and $Config.device_id) { $Config.device_id } else { "sway-host-$((New-Guid).ToString().Substring(0,8))" }
+    $FinalToken = if ($PSBoundParameters.ContainsKey('Token') -and -not [string]::IsNullOrWhiteSpace($Token)) { $Token } elseif ($Config -and $Config.token) { $Config.token } else { New-SecureToken }
+    $FinalPort = if ($Config -and $Config.local_port) { [int]$Config.local_port } else { 8089 }
+
+    $ConfigJson = [ordered]@{
+        signaling_url = $FinalUrl
+        device_id     = $FinalId
+        token         = $FinalToken
+        local_port    = $FinalPort
     } | ConvertTo-Json -Compress
-    Set-Content -Path $ConfigPath -Value $ConfigJson -Encoding UTF8
-    Write-Host "[+] Created configuration: $ConfigPath" -ForegroundColor Green
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($ConfigPath, $ConfigJson, $Utf8NoBom)
+    Write-Host "[+] Wrote BOM-less configuration: $ConfigPath" -ForegroundColor Green
 }
 
 # 1. Clean up any redundant Registry Run key to avoid dual-launch and heuristic false-positives
@@ -86,17 +118,23 @@ try {
     Write-Host "[!] Could not configure powercfg: $_" -ForegroundColor Yellow
 }
 
-# Stop any old instances before launching clean native background process
-Stop-Process -Name "sway-host" -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 500
-
 # Launch native background process detached via WMI Win32_Process
 Write-Host "[*] Launching Sway Host 24/7 silent background service..." -ForegroundColor Yellow
 $launchRes = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
     CommandLine = "`"$TargetExe`""
     CurrentDirectory = $AppDir
 }
+if ($launchRes.ReturnValue -ne 0) {
+    Write-Error "Failed to launch sway-host.exe via WMI (ReturnValue=$($launchRes.ReturnValue))."
+    exit 1
+}
 Start-Sleep -Seconds 2
+$proc = Get-Process -Id $launchRes.ProcessId -ErrorAction SilentlyContinue
+if (-not $proc) {
+    Write-Error "sway-host.exe exited immediately after launch."
+    exit 1
+}
+Write-Host "[+] Sway Host running silently in background (PID: $($proc.Id))" -ForegroundColor Green
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Sway Desktop Host Autostart Installed! " -ForegroundColor Green

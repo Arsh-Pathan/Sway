@@ -8,6 +8,7 @@ mod local_server;
 mod power;
 mod privacy;
 mod protocol;
+mod session;
 mod signaling;
 
 use std::env;
@@ -19,7 +20,7 @@ use local_server::LocalServer;
 use power::PowerManager;
 use privacy::PrivacyCurtain;
 use signaling::HostSignaling;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -42,10 +43,18 @@ impl HostConfig {
         let config_path = config_dir.join("config.json");
 
         let mut config = if config_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&config_path) {
-                serde_json::from_str::<HostConfig>(&content).unwrap_or_else(|_| Self::default_config())
-            } else {
-                Self::default_config()
+            match std::fs::read_to_string(&config_path).map_err(|e| e.to_string()).and_then(|c| Self::parse(&c).map_err(|e| e.to_string())) {
+                Ok(c) => c,
+                Err(e) => {
+                    // Never silently roll a new identity on every boot: keep the bad file and persist a fresh one.
+                    warn!("config.json unreadable ({}); backing up and creating a new one", e);
+                    let _ = std::fs::copy(&config_path, config_dir.join("config.json.bad"));
+                    let def = Self::default_config();
+                    if let Ok(content) = serde_json::to_string_pretty(&def) {
+                        let _ = std::fs::write(&config_path, content);
+                    }
+                    def
+                }
             }
         } else {
             let def = Self::default_config();
@@ -81,11 +90,16 @@ impl HostConfig {
         config
     }
 
+    /// Parses config JSON, tolerating a UTF-8 BOM (Windows PowerShell 5.1 writes one).
+    fn parse(content: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(content.trim_start_matches('\u{feff}'))
+    }
+
     fn default_config() -> Self {
         Self {
             signaling_url: "51.79.249.143:8080".to_string(),
-            device_id: format!("sway-laptop-{}", &Uuid::new_v4().to_string()[..8]),
-            token: Uuid::new_v4().to_string()[..12].to_string(),
+            device_id: format!("sway-laptop-{}", &Uuid::new_v4().simple().to_string()[..8]),
+            token: Uuid::new_v4().simple().to_string()[..16].to_string(),
             local_port: 8089,
             pin: Some("1234".to_string()),
         }
@@ -116,12 +130,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing_subscriber::fmt::init();
 
-    // Emergency panic safety hook to guarantee display restoration
+    // Emergency panic safety hook: always give the user their screen, mouse, keyboard and power policy back
     let orig_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
-        InputSimulator::set_display_resolution(0);
-        InputSimulator::set_display_orientation(false);
-        PowerManager::set_keep_awake(false);
+        PrivacyCurtain::emergency_restore();
+        InputSimulator::restore_display_if_changed();
+        PowerManager::shutdown();
         orig_hook(panic_info);
     }));
 
@@ -139,9 +153,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Prevent Windows laptop from sleeping when idle or display turns off
     PowerManager::set_host_always_awake(true);
 
-    // Initialize screen capture and detect monitors
-    let capture = ScreenCapture::new();
-    info!("Initialized capture for {} display(s)", capture.monitors.len());
+    // Detect monitors (cheap; no capture buffers are allocated here)
+    info!("Detected {} display(s)", ScreenCapture::detect_monitors().len());
 
     // Initialize privacy curtain manager with laptop PIN and token
     let pin = config.pin.clone().unwrap_or_else(|| "1234".to_string());
@@ -162,8 +175,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         privacy.clone(),
     );
 
-    // Start UDP auto-discovery service on port 8088
-    DiscoveryService::start(device_id.clone(), local_port, token.clone());
+    // Start UDP auto-discovery service on port 8088 (never broadcasts the token)
+    DiscoveryService::start(device_id.clone(), local_port);
 
     // Spawn signaling background worker with automatic reconnection
     let host_signaling = host.clone();
@@ -197,10 +210,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     signaling_handle.abort();
     privacy.set_enabled(false);
-    InputSimulator::set_display_resolution(0);
-    InputSimulator::set_display_orientation(false);
-    PowerManager::set_keep_awake(false);
+    privacy.shutdown();
+    PrivacyCurtain::emergency_restore();
+    host.simulator.release_all();
+    InputSimulator::restore_display_if_changed();
+    PowerManager::shutdown();
 
     info!("Sway Host Daemon shut down cleanly.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_parses_with_utf8_bom() {
+        let json = "\u{feff}{\"signaling_url\":\"1.2.3.4:8080\",\"device_id\":\"dev\",\"token\":\"tok\",\"local_port\":8089}";
+        let cfg = HostConfig::parse(json).expect("BOM config must parse");
+        assert_eq!(cfg.device_id, "dev");
+        assert_eq!(cfg.token, "tok");
+    }
+
+    #[test]
+    fn default_config_has_strong_token() {
+        let cfg = HostConfig::default_config();
+        assert_eq!(cfg.token.len(), 16);
+        assert!(cfg.device_id.starts_with("sway-laptop-"));
+    }
 }

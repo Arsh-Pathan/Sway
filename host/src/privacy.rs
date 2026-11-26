@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::info;
 
 #[cfg(windows)]
@@ -8,18 +8,18 @@ use windows::core::w;
 use windows::Win32::Foundation::{BOOL, COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, FillRect, SetBkMode, SetStretchBltMode,
-    StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, SRCCOPY, TRANSPARENT,
+    FillRect, GetStockObject, InvalidateRect, SetBkMode, SetStretchBltMode, StretchDIBits, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, BLACK_BRUSH, DIB_RGB_COLORS, HALFTONE, HBRUSH, SRCCOPY, TRANSPARENT,
 };
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::BlockInput;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+    CreateWindowExW, DefWindowProcW, DestroyCursor, DestroyWindow, DispatchMessageW, GetMessageW,
     GetSystemMetrics, PostMessageW, PostQuitMessage, RegisterClassExW, SetWindowDisplayAffinity,
     ShowWindow, TranslateMessage, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, WINDOW_DISPLAY_AFFINITY, WM_CLOSE,
-    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
     WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
     WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_LAYERED,
     WS_POPUP, WS_VISIBLE, SetLayeredWindowAttributes, LWA_ALPHA,
@@ -52,9 +52,43 @@ static CURTAIN_IMAGE: std::sync::LazyLock<Option<(u32, u32, Vec<u8>)>> = std::sy
     }
 });
 
+/// Virtual-screen bounds `(x, y, w, h)` covering every monitor.
+#[cfg(windows)]
+fn virtual_bounds() -> (i32, i32, i32, i32) {
+    unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    }
+}
+
+/// Per-monitor rectangles relative to the curtain window so the artwork centres on each display.
+#[cfg(windows)]
+fn monitor_rects(vx: i32, vy: i32, vw: i32, vh: i32) -> Vec<(i32, i32, i32, i32)> {
+    if let Ok(all) = xcap::Monitor::all() {
+        if !all.is_empty() {
+            return all
+                .into_iter()
+                .map(|m| {
+                    let mx = m.x().unwrap_or(0);
+                    let my = m.y().unwrap_or(0);
+                    let mw = m.width().unwrap_or(1920) as i32;
+                    let mh = m.height().unwrap_or(1080) as i32;
+                    (mx - vx, my - vy, mx - vx + mw, my - vy + mh)
+                })
+                .collect();
+        }
+    }
+    vec![(0, 0, vw, vh)]
+}
+
 pub struct PrivacyCurtain {
     is_active: Arc<AtomicBool>,
     hwnd_val: Arc<AtomicIsize>,
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl PrivacyCurtain {
@@ -62,6 +96,27 @@ impl PrivacyCurtain {
         Self {
             is_active: Arc::new(AtomicBool::new(false)),
             hwnd_val: Arc::new(AtomicIsize::new(0)),
+            thread: Mutex::new(None),
+        }
+    }
+
+    /// Synchronously gives the user their keyboard, mouse and cursor back. Safe to call from a
+    /// panic hook or at shutdown, from any thread, any number of times.
+    pub fn emergency_restore() {
+        #[cfg(windows)]
+        unsafe {
+            let _ = BlockInput(BOOL(0));
+        }
+        #[cfg(windows)]
+        set_system_cursor_hidden(false);
+    }
+
+    /// Disables the curtain (if active) and waits for its window thread to exit.
+    pub fn shutdown(&self) {
+        self.set_enabled(false);
+        let handle = self.thread.lock().ok().and_then(|mut g| g.take());
+        if let Some(h) = handle {
+            let _ = h.join();
         }
     }
 
@@ -76,7 +131,7 @@ impl PrivacyCurtain {
                 let is_active = self.is_active.clone();
                 let hwnd_store = self.hwnd_val.clone();
 
-                std::thread::spawn(move || {
+                let handle = std::thread::spawn(move || {
                     unsafe {
                         extern "system" {
                             fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
@@ -94,8 +149,9 @@ impl PrivacyCurtain {
                         // Hide hardware mouse cursor globally on physical laptop display
                         set_system_cursor_hidden(true);
 
+                        // Stock objects are owned by the OS: never freed, never dangling in the class.
+                        let black_brush = HBRUSH(GetStockObject(BLACK_BRUSH).0);
                         let class_name = w!("SwayPrivacyCurtainClass");
-                        let black_brush = CreateSolidBrush(COLORREF(0x00000000));
                         let wc = WNDCLASSEXW {
                             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
                             lpfnWndProc: Some(curtain_wnd_proc),
@@ -106,31 +162,9 @@ impl PrivacyCurtain {
                         };
                         let _ = RegisterClassExW(&wc);
 
-                        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-                        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-                        let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-                        let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-
-                        // Enumerate all active physical monitors so emblem & text center on each display
-                        let mon_rects: Vec<(i32, i32, i32, i32)> = if let Ok(all) = xcap::Monitor::all() {
-                            if !all.is_empty() {
-                                all.into_iter()
-                                    .map(|m| {
-                                        let mx = m.x().unwrap_or(0);
-                                        let my = m.y().unwrap_or(0);
-                                        let mw = m.width().unwrap_or(1920) as i32;
-                                        let mh = m.height().unwrap_or(1080) as i32;
-                                        (mx - vx, my - vy, mx - vx + mw, my - vy + mh)
-                                    })
-                                    .collect()
-                            } else {
-                                vec![(0, 0, vw, vh)]
-                            }
-                        } else {
-                            vec![(0, 0, vw, vh)]
-                        };
+                        let (vx, vy, vw, vh) = virtual_bounds();
                         if let Ok(mut lock) = CURTAIN_MONITORS.write() {
-                            *lock = mon_rects;
+                            *lock = monitor_rects(vx, vy, vw, vh);
                         }
 
                         // Create Layered topmost curtain covering all displays (blocks local click-through)
@@ -181,7 +215,6 @@ impl PrivacyCurtain {
                             }
 
                             let _ = DestroyWindow(h);
-                            let _ = DeleteObject(black_brush);
                         }
 
                         // Restore physical inputs and hardware cursor visibility
@@ -196,19 +229,27 @@ impl PrivacyCurtain {
                     }
                     info!("Privacy Curtain window closed & restored physical display");
                 });
+                if let Ok(mut g) = self.thread.lock() {
+                    *g = Some(handle);
+                }
             } else {
                 if !self.is_active.swap(false, Ordering::SeqCst) {
                     return;
                 }
                 info!("Disabling Privacy Curtain: restoring physical monitor");
+                // Give input and cursor back immediately; the window thread finishes asynchronously.
+                Self::emergency_restore();
                 let hwnd = self.hwnd_val.swap(0, Ordering::SeqCst);
                 if hwnd != 0 {
                     unsafe {
-                        let _ = BlockInput(BOOL(0));
                         let _ = PostMessageW(HWND(hwnd as *mut _), WM_CLOSE, WPARAM(0), LPARAM(0));
                     }
                 }
             }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = enable;
         }
     }
 }
@@ -233,10 +274,15 @@ fn set_system_cursor_hidden(hidden: bool) {
                     and_mask.as_ptr() as *const _,
                     xor_mask.as_ptr() as *const _,
                 ) {
-                    let _ = windows::Win32::UI::WindowsAndMessaging::SetSystemCursor(
+                    // On success the system takes ownership of `cur`; on failure we must free it.
+                    if windows::Win32::UI::WindowsAndMessaging::SetSystemCursor(
                         cur,
                         windows::Win32::UI::WindowsAndMessaging::SYSTEM_CURSOR_ID(id),
-                    );
+                    )
+                    .is_err()
+                    {
+                        let _ = DestroyCursor(cur);
+                    }
                 }
             }
         } else {
@@ -269,6 +315,25 @@ unsafe extern "system" fn curtain_wnd_proc(
             // Suppress default background erasing to prevent any screen flicker
             LRESULT(1)
         }
+        WM_DISPLAYCHANGE => {
+            // Resolution / rotation changed under us: re-cover the whole virtual screen so no part of
+            // the physical display is ever exposed.
+            let (vx, vy, vw, vh) = virtual_bounds();
+            if let Ok(mut lock) = CURTAIN_MONITORS.write() {
+                *lock = monitor_rects(vx, vy, vw, vh);
+            }
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                hwnd,
+                windows::Win32::UI::WindowsAndMessaging::HWND_TOPMOST,
+                vx,
+                vy,
+                vw,
+                vh,
+                windows::Win32::UI::WindowsAndMessaging::SWP_SHOWWINDOW,
+            );
+            let _ = InvalidateRect(hwnd, None, BOOL(0));
+            LRESULT(0)
+        }
         WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
             // Absorb any keystrokes sent to curtain window
             LRESULT(0)
@@ -280,10 +345,8 @@ unsafe extern "system" fn curtain_wnd_proc(
                 let mut rect = RECT::default();
                 let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
 
-                // Pitch OLED Black Background (Monochrome Theme)
-                let bg_brush = CreateSolidBrush(COLORREF(0x00000000));
-                FillRect(hdc, &rect, bg_brush);
-                let _ = DeleteObject(bg_brush);
+                // Pitch OLED Black Background (Monochrome Theme) using the OS-owned stock brush
+                FillRect(hdc, &rect, HBRUSH(GetStockObject(BLACK_BRUSH).0));
 
                 SetBkMode(hdc, TRANSPARENT);
 
@@ -374,7 +437,8 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(500));
         let hwnd = privacy.hwnd_val.load(Ordering::SeqCst);
         println!("Curtain HWND: {}", hwnd);
-        privacy.set_enabled(false);
+        privacy.shutdown();
+        PrivacyCurtain::emergency_restore();
         assert_ne!(hwnd, 0, "Curtain HWND should not be 0!");
     }
 }
