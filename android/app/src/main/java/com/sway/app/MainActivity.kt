@@ -1,8 +1,11 @@
 package com.sway.app
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -19,6 +22,7 @@ import androidx.lifecycle.lifecycleScope
 import com.sway.app.network.SignalingClient
 import com.sway.app.ui.screens.PairingScreen
 import com.sway.app.ui.screens.SessionScreen
+import com.sway.app.ui.screens.isPrivateOrLocalEndpoint
 import com.sway.app.ui.theme.BackgroundDark
 import com.sway.app.ui.theme.SwayTheme
 import com.sway.app.util.NotificationHelper
@@ -35,6 +39,7 @@ class MainActivity : ComponentActivity() {
     private var currentHostName: String = "Desktop"
 
     private val inSessionState = mutableStateOf(false)
+    private var userDisconnected = false
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -52,6 +57,7 @@ class MainActivity : ComponentActivity() {
         }
 
         handleIncomingIntent(intent)
+        tryAutoConnect()
 
         setContent {
             SwayTheme {
@@ -65,6 +71,7 @@ class MainActivity : ComponentActivity() {
                         SessionScreen(
                             webRtcManager = webRtcManager!!,
                             onDisconnect = {
+                                userDisconnected = true
                                 inSessionState.value = false
                                 cleanupSession()
                             }
@@ -72,6 +79,7 @@ class MainActivity : ComponentActivity() {
                     } else {
                         PairingScreen(
                             onConnect = { serverUrl, deviceId, token ->
+                                userDisconnected = false
                                 connectToHost(serverUrl, deviceId, token)
                                 inSessionState.value = true
                             }
@@ -88,12 +96,42 @@ class MainActivity : ComponentActivity() {
         handleIncomingIntent(intent)
     }
 
+    private fun isCellularOnly(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        val cap = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return cap.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+            !cap.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
+
+    private fun tryAutoConnect() {
+        if (inSessionState.value || userDisconnected) return
+        val prefs = getSharedPreferences("sway_prefs", Context.MODE_PRIVATE)
+        val savedDeviceId = prefs.getString("saved_device_id", null)?.trim()
+        val savedToken = prefs.getString("saved_token", null)?.trim()
+        if (savedDeviceId.isNullOrEmpty() || savedToken.isNullOrEmpty()) return
+
+        val savedUrl = prefs.getString("saved_signaling_url", null)?.trim().orEmpty()
+        val defaultVpsUrl = "51.79.249.143:8080"
+        val targetUrl = if ((isCellularOnly() && (savedUrl.isBlank() || isPrivateOrLocalEndpoint(savedUrl) || savedUrl.contains("trycloudflare"))) ||
+            savedUrl.isBlank() ||
+            savedUrl.contains("trycloudflare")
+        ) {
+            defaultVpsUrl
+        } else {
+            savedUrl
+        }
+
+        connectToHost(targetUrl, savedDeviceId, savedToken)
+        inSessionState.value = true
+    }
+
     private fun handleIncomingIntent(intent: Intent?) {
         val serverUrl = intent?.getStringExtra("signaling_url")
         val deviceId = intent?.getStringExtra("device_id")
         val token = intent?.getStringExtra("token")
 
         if (!serverUrl.isNullOrEmpty() && !deviceId.isNullOrEmpty() && !token.isNullOrEmpty()) {
+            userDisconnected = false
             connectToHost(serverUrl, deviceId, token)
             inSessionState.value = true
         }
