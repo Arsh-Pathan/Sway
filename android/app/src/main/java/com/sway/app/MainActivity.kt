@@ -90,6 +90,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onRestart() {
+        super.onRestart()
+        userDisconnected = false
+        tryAutoConnect()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -131,6 +137,11 @@ class MainActivity : ComponentActivity() {
         val token = intent?.getStringExtra("token")
 
         if (!serverUrl.isNullOrEmpty() && !deviceId.isNullOrEmpty() && !token.isNullOrEmpty()) {
+            getSharedPreferences("sway_prefs", Context.MODE_PRIVATE).edit()
+                .putString("saved_signaling_url", serverUrl)
+                .putString("saved_device_id", deviceId)
+                .putString("saved_token", token)
+                .commit()
             userDisconnected = false
             connectToHost(serverUrl, deviceId, token)
             inSessionState.value = true
