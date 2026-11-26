@@ -88,29 +88,31 @@ impl InputSimulator {
     pub fn release_all(&self) {
         #[cfg(windows)]
         {
+            let mut batch: Vec<INPUT> = Vec::with_capacity(7);
             let held = self.held_buttons.swap(0, Ordering::SeqCst);
             if held & 1 != 0 {
-                self.send_mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0);
+                batch.push(Self::make_mouse_input(MOUSEEVENTF_LEFTUP, 0, 0, 0));
             }
             if held & 2 != 0 {
-                self.send_mouse_input(MOUSEEVENTF_RIGHTUP, 0, 0, 0);
+                batch.push(Self::make_mouse_input(MOUSEEVENTF_RIGHTUP, 0, 0, 0));
             }
             if held & 4 != 0 {
-                self.send_mouse_input(MOUSEEVENTF_MIDDLEUP, 0, 0, 0);
+                batch.push(Self::make_mouse_input(MOUSEEVENTF_MIDDLEUP, 0, 0, 0));
             }
             let mods = self.active_modifiers.swap(0, Ordering::SeqCst);
             if mods & 0x01 != 0 {
-                self.send_key_input(VK_CONTROL.0, KEYEVENTF_KEYUP, 0);
+                batch.push(Self::make_key_input(VK_CONTROL.0, KEYEVENTF_KEYUP, 0));
             }
             if mods & 0x02 != 0 {
-                self.send_key_input(VK_SHIFT.0, KEYEVENTF_KEYUP, 0);
+                batch.push(Self::make_key_input(VK_SHIFT.0, KEYEVENTF_KEYUP, 0));
             }
             if mods & 0x04 != 0 {
-                self.send_key_input(VK_MENU.0, KEYEVENTF_KEYUP, 0);
+                batch.push(Self::make_key_input(VK_MENU.0, KEYEVENTF_KEYUP, 0));
             }
             if mods & 0x08 != 0 {
-                self.send_key_input(VK_LWIN.0, KEYEVENTF_KEYUP, 0);
+                batch.push(Self::make_key_input(VK_LWIN.0, KEYEVENTF_KEYUP, 0));
             }
+            Self::send_batch(&batch);
         }
     }
 
@@ -192,37 +194,26 @@ impl InputSimulator {
     }
 
     #[cfg(windows)]
-    fn send_mouse_input(&self, flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, mouse_data: u32) {
-        Self::ensure_input_desktop();
-        unsafe {
-            let input = INPUT {
-                r#type: INPUT_MOUSE,
-                Anonymous: INPUT_0 {
-                    mi: MOUSEINPUT {
-                        dx,
-                        dy,
-                        mouseData: mouse_data,
-                        dwFlags: flags,
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
+    fn make_mouse_input(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, mouse_data: u32) -> INPUT {
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx,
+                    dy,
+                    mouseData: mouse_data,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
                 },
-            };
-
-            let sent = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
-            if sent == 0 {
-                debug!("SendInput mouse failed");
-            }
+            },
         }
     }
 
     #[cfg(windows)]
-    pub fn send_raw_key(vkey: u16, flags: KEYBD_EVENT_FLAGS, scan: u16) {
+    fn make_key_input(vkey: u16, mut flags: KEYBD_EVENT_FLAGS, mut scan: u16) -> INPUT {
         use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, KEYEVENTF_EXTENDEDKEY, MAPVK_VK_TO_VSC};
-        Self::ensure_input_desktop();
 
-        let mut flags = flags;
-        let mut scan = scan;
         // Real hardware always reports a scan code; games, VMs and remote-desktop clients rely on it.
         // Navigation/Win/right-hand keys must also carry the EXTENDED flag.
         if (flags.0 & KEYEVENTF_UNICODE.0) == 0 && vkey != 0 {
@@ -243,30 +234,42 @@ impl InputSimulator {
             }
         }
 
-        unsafe {
-            let input = INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: VIRTUAL_KEY(vkey),
-                        wScan: scan,
-                        dwFlags: flags,
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vkey),
+                    wScan: scan,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
                 },
-            };
+            },
+        }
+    }
 
-            let sent = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+    #[cfg(windows)]
+    fn send_batch(inputs: &[INPUT]) {
+        if inputs.is_empty() {
+            return;
+        }
+        Self::ensure_input_desktop();
+        unsafe {
+            let sent = SendInput(inputs, std::mem::size_of::<INPUT>() as i32);
             if sent == 0 {
-                debug!("SendInput keyboard failed");
+                debug!("SendInput batch failed (count={})", inputs.len());
             }
         }
     }
 
     #[cfg(windows)]
-    fn send_key_input(&self, vkey: u16, flags: KEYBD_EVENT_FLAGS, scan: u16) {
-        Self::send_raw_key(vkey, flags, scan);
+    fn send_mouse_input(&self, flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, mouse_data: u32) {
+        Self::send_batch(&[Self::make_mouse_input(flags, dx, dy, mouse_data)]);
+    }
+
+    #[cfg(windows)]
+    pub fn send_raw_key(vkey: u16, flags: KEYBD_EVENT_FLAGS, scan: u16) {
+        Self::send_batch(&[Self::make_key_input(vkey, flags, scan)]);
     }
 
     #[cfg(not(windows))]
@@ -274,9 +277,6 @@ impl InputSimulator {
 
     #[cfg(not(windows))]
     fn send_mouse_input(&self, _flags: u32, _dx: i32, _dy: i32, _mouse_data: u32) {}
-
-    #[cfg(not(windows))]
-    fn send_key_input(&self, _vkey: u16, _flags: u32, _scan: u16) {}
 
     pub fn mouse_move(&self, dx: i16, dy: i16) {
         #[cfg(windows)]
@@ -316,74 +316,78 @@ impl InputSimulator {
     pub fn mouse_scroll(&self, delta_y: i16, delta_x: i16) {
         #[cfg(windows)]
         {
+            let mut batch: Vec<INPUT> = Vec::with_capacity(2);
             if delta_y != 0 {
-                // Vertical wheel (WHEEL_DELTA is 120 per click in Windows)
                 let val = (delta_y as i32) * 2;
-                self.send_mouse_input(MOUSEEVENTF_WHEEL, 0, 0, val as u32);
+                batch.push(Self::make_mouse_input(MOUSEEVENTF_WHEEL, 0, 0, val as u32));
             }
             if delta_x != 0 {
-                // Horizontal wheel
                 let val = (delta_x as i32) * 2;
-                self.send_mouse_input(MOUSEEVENTF_HWHEEL, 0, 0, val as u32);
+                batch.push(Self::make_mouse_input(MOUSEEVENTF_HWHEEL, 0, 0, val as u32));
             }
+            Self::send_batch(&batch);
         }
     }
 
     pub fn key_down(&self, vkey: u16, modifiers: u8) {
         #[cfg(windows)]
         {
+            let mut batch: Vec<INPUT> = Vec::with_capacity(5);
             if modifiers != 0 {
                 // OR, never overwrite: a second chord must not forget modifiers still held from the first.
                 self.active_modifiers.fetch_or(modifiers, Ordering::Relaxed);
                 if modifiers & 0x01 != 0 {
-                    self.send_key_input(VK_CONTROL.0, KEYBD_EVENT_FLAGS(0), 0);
+                    batch.push(Self::make_key_input(VK_CONTROL.0, KEYBD_EVENT_FLAGS(0), 0));
                 }
                 if modifiers & 0x02 != 0 {
-                    self.send_key_input(VK_SHIFT.0, KEYBD_EVENT_FLAGS(0), 0);
+                    batch.push(Self::make_key_input(VK_SHIFT.0, KEYBD_EVENT_FLAGS(0), 0));
                 }
                 if modifiers & 0x04 != 0 {
-                    self.send_key_input(VK_MENU.0, KEYBD_EVENT_FLAGS(0), 0);
+                    batch.push(Self::make_key_input(VK_MENU.0, KEYBD_EVENT_FLAGS(0), 0));
                 }
                 if modifiers & 0x08 != 0 {
-                    self.send_key_input(VK_LWIN.0, KEYBD_EVENT_FLAGS(0), 0);
+                    batch.push(Self::make_key_input(VK_LWIN.0, KEYBD_EVENT_FLAGS(0), 0));
                 }
             }
 
-            self.send_key_input(vkey, KEYBD_EVENT_FLAGS(0), 0);
+            batch.push(Self::make_key_input(vkey, KEYBD_EVENT_FLAGS(0), 0));
+            Self::send_batch(&batch);
         }
     }
 
     pub fn key_up(&self, vkey: u16) {
         #[cfg(windows)]
         {
-            self.send_key_input(vkey, KEYEVENTF_KEYUP, 0);
+            let mut batch: Vec<INPUT> = Vec::with_capacity(5);
+            batch.push(Self::make_key_input(vkey, KEYEVENTF_KEYUP, 0));
 
             // Automatically release any transient modifier keys from key chords
             let prev_mods = self.active_modifiers.swap(0, Ordering::Relaxed);
             if prev_mods & 0x01 != 0 {
-                self.send_key_input(VK_CONTROL.0, KEYEVENTF_KEYUP, 0);
+                batch.push(Self::make_key_input(VK_CONTROL.0, KEYEVENTF_KEYUP, 0));
             }
             if prev_mods & 0x02 != 0 {
-                self.send_key_input(VK_SHIFT.0, KEYEVENTF_KEYUP, 0);
+                batch.push(Self::make_key_input(VK_SHIFT.0, KEYEVENTF_KEYUP, 0));
             }
             if prev_mods & 0x04 != 0 {
-                self.send_key_input(VK_MENU.0, KEYEVENTF_KEYUP, 0);
+                batch.push(Self::make_key_input(VK_MENU.0, KEYEVENTF_KEYUP, 0));
             }
             if prev_mods & 0x08 != 0 {
-                self.send_key_input(VK_LWIN.0, KEYEVENTF_KEYUP, 0);
+                batch.push(Self::make_key_input(VK_LWIN.0, KEYEVENTF_KEYUP, 0));
             }
+            Self::send_batch(&batch);
         }
     }
 
     pub fn text_input(&self, text: &str) {
         #[cfg(windows)]
         {
+            let mut batch: Vec<INPUT> = Vec::with_capacity(text.len() * 2);
             for ch in text.encode_utf16() {
-                // Down
-                self.send_key_input(0, KEYEVENTF_UNICODE, ch);
-                // Up
-                self.send_key_input(0, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, ch);
+                batch.push(Self::make_key_input(0, KEYEVENTF_UNICODE, ch));
+                batch.push(Self::make_key_input(0, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, ch));
             }
+            Self::send_batch(&batch);
         }
     }
 

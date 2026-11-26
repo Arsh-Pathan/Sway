@@ -35,7 +35,7 @@ class AudioPlayer {
         isEnabled.set(true)
         if (workerJob?.isActive == true && chunkChannel != null) return
 
-        val ch = Channel<ByteArray>(capacity = 24, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        val ch = Channel<ByteArray>(capacity = 6, onBufferOverflow = BufferOverflow.DROP_OLDEST)
         val newScope = CoroutineScope(SupervisorJob() + audioDispatcher)
         chunkChannel = ch
         scope = newScope
@@ -128,7 +128,7 @@ class AudioPlayer {
             Log.e(tag, "Invalid AudioTrack buffer size $minBufferSize for ${channels}ch @ ${sampleRate}Hz ${bitsPerSample}bit")
             return
         }
-        val bufferSize = (minBufferSize * 4).coerceAtLeast(8192)
+        val bufferSize = (minBufferSize * 2).coerceAtLeast(minBufferSize)
 
         try {
             audioTrack = AudioTrack.Builder()
@@ -147,6 +147,7 @@ class AudioPlayer {
                 )
                 .setBufferSizeInBytes(bufferSize)
                 .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .build()
 
             Log.i(tag, "AudioTrack initialized: ${channels}ch @ ${sampleRate}Hz ${bitsPerSample}bit, bufferSize=$bufferSize")

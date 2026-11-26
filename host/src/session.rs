@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::SinkExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::info;
 
@@ -18,16 +18,20 @@ use crate::privacy::PrivacyCurtain;
 use crate::protocol::InputPacket;
 
 /// Maps the 4 wire quality modes (0 TURBO, 1 DATA_SAVER, 2 BALANCED, 3 NATIVE) to a JPEG quality
-/// and frame interval. `lan` links can afford a higher quality than the WAN relay.
+/// and frame interval. `lan` links can afford a higher quality and 60 FPS native mode than WAN.
 pub fn quality_params(mode: u8, lan: bool) -> (u8, Duration) {
-    let (q_lan, q_wan, ms) = match mode {
-        0 => (45, 36, 16),
-        1 => (35, 28, 33),
-        2 => (68, 60, 16),
-        3 => (85, 78, 20),
-        _ => (68, 60, 16),
+    let (q_lan, q_wan, ms_lan, ms_wan) = match mode {
+        0 => (45, 36, 16, 16),
+        1 => (35, 28, 33, 33),
+        2 => (68, 60, 16, 16),
+        3 => (85, 78, 16, 20),
+        _ => (68, 60, 16, 16),
     };
-    (if lan { q_lan } else { q_wan }, Duration::from_millis(ms))
+    if lan {
+        (q_lan, Duration::from_millis(ms_lan))
+    } else {
+        (q_wan, Duration::from_millis(ms_wan))
+    }
 }
 
 /// Atomics shared between a connection's reader and its capture worker.
@@ -55,31 +59,36 @@ impl StreamState {
 /// off, instead of being torn down and re-spawned on every input packet.
 pub fn spawn_capture_worker(
     state: Arc<StreamState>,
-    frame_tx: mpsc::Sender<Message>,
+    frame_tx: watch::Sender<Option<Vec<u8>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         let mut capture = ScreenCapture::new();
         capture.active_monitor = state.active_monitor.load(Ordering::Relaxed);
+        let mut next_tick = Instant::now();
         info!("Started screen capture & streaming loop");
-        while state.conn_alive.load(Ordering::Relaxed) {
+        while state.conn_alive.load(Ordering::Relaxed) && !frame_tx.is_closed() {
             if !state.stream_enabled.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(50));
+                next_tick = Instant::now();
                 continue;
             }
-            let start = Instant::now();
             capture.active_monitor = state.active_monitor.load(Ordering::Relaxed);
             let (q, interval) = quality_params(state.quality_mode.load(Ordering::Relaxed), state.lan);
+            let wait_ms = interval.as_millis().clamp(1, 20) as u32;
 
-            if let Some(frame) = capture.capture_frame_jpeg(q) {
-                // Never queue video: if the writer is busy, drop the frame to keep latency flat.
-                match frame_tx.try_send(Message::Binary(frame)) {
-                    Ok(_) | Err(mpsc::error::TrySendError::Full(_)) => {}
-                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+            if let Some(frame) = capture.capture_frame_jpeg(q, wait_ms) {
+                // Overwrite any unconsumed stale frame so the writer always sends the latest frame.
+                frame_tx.send_replace(Some(frame));
+                if frame_tx.is_closed() {
+                    break;
                 }
             }
-            let elapsed = start.elapsed();
-            if elapsed < interval {
-                std::thread::sleep(interval - elapsed);
+            next_tick += interval;
+            let now = Instant::now();
+            if now < next_tick {
+                std::thread::sleep(next_tick - now);
+            } else {
+                next_tick = now;
             }
         }
         info!("Screen capture loop stopped");
@@ -112,7 +121,7 @@ pub fn spawn_writer<W>(
     mut write: W,
     mut ctrl_rx: mpsc::Receiver<Message>,
     mut audio_rx: mpsc::Receiver<Vec<u8>>,
-    mut frame_rx: mpsc::Receiver<Message>,
+    mut frame_rx: watch::Receiver<Option<Vec<u8>>>,
 ) -> tokio::task::JoinHandle<()>
 where
     W: futures_util::Sink<Message> + Unpin + Send + 'static,
@@ -131,8 +140,12 @@ where
                 Some(audio) = audio_rx.recv() => {
                     if write.send(Message::Binary(audio)).await.is_err() { break; }
                 }
-                Some(frame) = frame_rx.recv() => {
-                    if write.send(frame).await.is_err() { break; }
+                res = frame_rx.changed() => {
+                    if res.is_err() { break; }
+                    let frame_opt = { frame_rx.borrow_and_update().clone() };
+                    if let Some(frame) = frame_opt {
+                        if write.send(Message::Binary(frame)).await.is_err() { break; }
+                    }
                 }
                 _ = keepalive.tick() => {
                     if write.send(Message::Ping(Vec::new())).await.is_err() { break; }

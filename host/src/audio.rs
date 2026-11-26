@@ -5,14 +5,19 @@ use tracing::{info, warn};
 #[cfg(windows)]
 use windows::core::HRESULT;
 #[cfg(windows)]
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
 use windows::Win32::Media::Audio::{
     eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, WAVEFORMATEX,
+    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+    WAVEFORMATEX,
 };
 #[cfg(windows)]
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
+#[cfg(windows)]
+use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
 pub const AUDIO_MAGIC: &[u8; 4] = b"SWAU";
 
@@ -40,6 +45,19 @@ impl Drop for MixFormat {
     fn drop(&mut self) {
         if !self.0.is_null() {
             unsafe { CoTaskMemFree(Some(self.0 as *const _)) };
+        }
+    }
+}
+
+#[cfg(windows)]
+struct EventHandle(HANDLE);
+#[cfg(windows)]
+impl Drop for EventHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
         }
     }
 }
@@ -191,10 +209,44 @@ unsafe fn capture_session(running: &Arc<AtomicBool>, tx: &tokio::sync::mpsc::Sen
         channels, rate, bits, is_float, OUT_CHANNELS, OUT_BITS
     );
 
-    // 20ms buffer = 200,000 in 100-ns units
-    if let Err(e) = client.Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 200_000, 0, pwfx, None) {
-        warn!("Failed to initialize WASAPI loopback client: {:?}", e);
-        return true;
+    // Prefer event-driven 10ms buffer (100,000 in 100-ns units); fall back cleanly to 2ms polling if unsupported.
+    let mut client = client;
+    let mut event_guard: Option<EventHandle> = None;
+    let init_event = client.Initialize(
+        AUDCLNT_SHAREMODE_SHARED,
+        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+        100_000,
+        0,
+        pwfx,
+        None,
+    );
+    if init_event.is_ok() {
+        if let Ok(ev) = CreateEventW(None, false, false, None) {
+            if client.SetEventHandle(ev).is_ok() {
+                event_guard = Some(EventHandle(ev));
+            } else {
+                let _ = CloseHandle(ev);
+            }
+        }
+    } else {
+        client = match device.Activate(CLSCTX_ALL, None) {
+            Ok(c) => c,
+            Err(err) => {
+                warn!("Failed to re-activate IAudioClient for loopback fallback: {:?}", err);
+                return true;
+            }
+        };
+        if let Err(e) = client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_LOOPBACK,
+            100_000,
+            0,
+            pwfx,
+            None,
+        ) {
+            warn!("Failed to initialize WASAPI loopback client: {:?}", e);
+            return true;
+        }
     }
 
     let capture: IAudioCaptureClient = match client.GetService() {
@@ -208,7 +260,7 @@ unsafe fn capture_session(running: &Arc<AtomicBool>, tx: &tokio::sync::mpsc::Sen
         warn!("Failed to start IAudioClient: {:?}", e);
         return true;
     }
-    info!("WASAPI Loopback audio capture started");
+    info!("WASAPI Loopback audio capture started (event_driven={})", event_guard.is_some());
 
     let mut silent_run = 0u32;
     let mut retry = false;
@@ -220,7 +272,11 @@ unsafe fn capture_session(running: &Arc<AtomicBool>, tx: &tokio::sync::mpsc::Sen
         match capture.GetBuffer(&mut p_data, &mut frames, &mut flags, None, None) {
             Ok(()) => {
                 if frames == 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    if let Some(ref ev) = event_guard {
+                        WaitForSingleObject(ev.0, 15);
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
                     continue;
                 }
                 let silent = (flags & 0x02) != 0 || p_data.is_null(); // AUDCLNT_BUFFERFLAGS_SILENT

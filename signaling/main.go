@@ -18,7 +18,7 @@ import (
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  64 * 1024,
-	WriteBufferSize: 256 * 1024,
+	WriteBufferSize: 64 * 1024,
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
@@ -99,8 +99,8 @@ func main() {
 
 		if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
 			_ = tcpConn.SetNoDelay(true)
-			// Moderate kernel buffers: large ones just add seconds of stale video on WAN links.
-			_ = tcpConn.SetWriteBuffer(128 * 1024)
+			// Tight kernel send buffer: keeps WAN backpressure immediate so stale video frames are replaced.
+			_ = tcpConn.SetWriteBuffer(64 * 1024)
 			_ = tcpConn.SetReadBuffer(256 * 1024)
 		}
 
@@ -194,6 +194,15 @@ func (c *Client) writePump() {
 		// Control/input traffic always goes first.
 		select {
 		case msg := <-c.ctrlSend:
+			if c.write(msg) != nil {
+				return
+			}
+			continue
+		default:
+		}
+		// Audio chunks always pre-empt queued video frames.
+		select {
+		case msg := <-c.audioSend:
 			if c.write(msg) != nil {
 				return
 			}

@@ -185,10 +185,11 @@ fun TrackpadSurface(
                                 val normX = dragX * densityScale
                                 val normY = dragY * densityScale
 
-                                // Anti-jitter low-pass exponential filter to eliminate digitizer stepping
-                                val alpha = if (isDeckMode) 0.68f else 0.74f
-                                val filteredDragX = if (hasMoved) alpha * normX + (1f - alpha) * prevFilteredX else normX
-                                val filteredDragY = if (hasMoved) alpha * normY + (1f - alpha) * prevFilteredY else normY
+                                // Velocity-adaptive smoothing: suppress digitizer jitter on micro motion, zero lag on fast swipes
+                                val rawDist = Math.hypot(normX.toDouble(), normY.toDouble()).toFloat()
+                                val alpha = if (!hasMoved || rawDist >= 1.8f) 1.0f else 0.78f
+                                val filteredDragX = alpha * normX + (1f - alpha) * prevFilteredX
+                                val filteredDragY = alpha * normY + (1f - alpha) * prevFilteredY
                                 prevFilteredX = filteredDragX
                                 prevFilteredY = filteredDragY
 

@@ -21,6 +21,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.*
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -80,6 +81,9 @@ class SignalingClient(
     }
 
     private val clientScope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
+    private val decodeDispatcher = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "SwayFrameDecoder").apply { priority = Thread.MAX_PRIORITY }
+    }.asCoroutineDispatcher()
     private val userDisconnected = AtomicBoolean(false)
     private var webSocket: WebSocket? = null
     private var pingJob: Job? = null
@@ -143,10 +147,10 @@ class SignalingClient(
         if (userDisconnected.get()) return
         if (reconnectJob?.isActive == true) return
         val delayMs = delayOverrideMs ?: when (reconnectAttempt) {
-            0 -> 1000L
-            1 -> 2000L
-            2 -> 4000L
-            else -> 8000L
+            0 -> 300L
+            1 -> 800L
+            2 -> 2000L
+            else -> 4000L
         }
         reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(5)
         reconnectJob = clientScope.launch {
@@ -197,7 +201,7 @@ class SignalingClient(
     private val decodeChannel = Channel<ByteArray>(Channel.CONFLATED)
 
     init {
-        clientScope.launch(Dispatchers.Default) {
+        clientScope.launch(decodeDispatcher) {
             val decodeOpts = BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.RGB_565
                 inMutable = true
@@ -235,6 +239,9 @@ class SignalingClient(
                 }
 
                 if (bmp != null && !userDisconnected.get()) {
+                    try {
+                        bmp.prepareToDraw()
+                    } catch (_: Exception) {}
                     bitmapPool[poolIndex] = bmp
                     poolIndex = (poolIndex + 1) % bitmapPool.size
                     frameSeq++
@@ -415,6 +422,9 @@ class SignalingClient(
             bitmapPool[i] = null
         }
         clientScope.cancel()
+        try {
+            decodeDispatcher.close()
+        } catch (_: Exception) {}
         _state.value = SignalingState.Disconnected
     }
 }

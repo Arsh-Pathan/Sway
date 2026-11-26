@@ -14,12 +14,15 @@ sealed class InputEvent {
     data class MouseMove(val dx: Short, val dy: Short) : InputEvent() {
         override val opCode: Byte = 0x01
         override fun toByteArray(): ByteArray {
-            return ByteBuffer.allocate(5)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .put(opCode)
-                .putShort(dx)
-                .putShort(dy)
-                .array()
+            val ix = dx.toInt()
+            val iy = dy.toInt()
+            return byteArrayOf(
+                opCode,
+                (ix and 0xFF).toByte(),
+                ((ix ushr 8) and 0xFF).toByte(),
+                (iy and 0xFF).toByte(),
+                ((iy ushr 8) and 0xFF).toByte()
+            )
         }
     }
 
@@ -45,35 +48,40 @@ sealed class InputEvent {
     data class MouseScroll(val deltaY: Short, val deltaX: Short = 0) : InputEvent() {
         override val opCode: Byte = 0x04
         override fun toByteArray(): ByteArray {
-            return ByteBuffer.allocate(5)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .put(opCode)
-                .putShort(deltaY)
-                .putShort(deltaX)
-                .array()
+            val iy = deltaY.toInt()
+            val ix = deltaX.toInt()
+            return byteArrayOf(
+                opCode,
+                (iy and 0xFF).toByte(),
+                ((iy ushr 8) and 0xFF).toByte(),
+                (ix and 0xFF).toByte(),
+                ((ix ushr 8) and 0xFF).toByte()
+            )
         }
     }
 
     data class KeyDown(val vkey: Short, val modifiers: Byte = 0) : InputEvent() {
         override val opCode: Byte = 0x05
         override fun toByteArray(): ByteArray {
-            return ByteBuffer.allocate(4)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .put(opCode)
-                .putShort(vkey)
-                .put(modifiers)
-                .array()
+            val vk = vkey.toInt()
+            return byteArrayOf(
+                opCode,
+                (vk and 0xFF).toByte(),
+                ((vk ushr 8) and 0xFF).toByte(),
+                modifiers
+            )
         }
     }
 
     data class KeyUp(val vkey: Short) : InputEvent() {
         override val opCode: Byte = 0x06
         override fun toByteArray(): ByteArray {
-            return ByteBuffer.allocate(3)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .put(opCode)
-                .putShort(vkey)
-                .array()
+            val vk = vkey.toInt()
+            return byteArrayOf(
+                opCode,
+                (vk and 0xFF).toByte(),
+                ((vk ushr 8) and 0xFF).toByte()
+            )
         }
     }
 
@@ -109,13 +117,14 @@ sealed class InputEvent {
     data class TouchDirect(val normX: Int, val normY: Int, val action: Byte) : InputEvent() {
         override val opCode: Byte = 0x0A
         override fun toByteArray(): ByteArray {
-            return ByteBuffer.allocate(6)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .put(opCode)
-                .putShort(normX.toShort())
-                .putShort(normY.toShort())
-                .put(action)
-                .array()
+            return byteArrayOf(
+                opCode,
+                (normX and 0xFF).toByte(),
+                ((normX ushr 8) and 0xFF).toByte(),
+                (normY and 0xFF).toByte(),
+                ((normY ushr 8) and 0xFF).toByte(),
+                action
+            )
         }
         companion object {
             const val ACTION_DOWN: Byte = 0

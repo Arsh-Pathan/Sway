@@ -167,8 +167,10 @@ impl HostSignaling {
             if !addr.contains('/') {
                 let tcp = tokio::net::TcpStream::connect(addr).await?;
                 let _ = tcp.set_nodelay(true);
-                // Keep the send buffer small: a large one hides stale video frames inside the OS.
-                let _ = socket2::SockRef::from(&tcp).set_recv_buffer_size(256 * 1024);
+                // Keep the send/recv buffers small: a large send buffer hides stale video frames inside the OS.
+                let sock = socket2::SockRef::from(&tcp);
+                let _ = sock.set_send_buffer_size(128 * 1024);
+                let _ = sock.set_recv_buffer_size(256 * 1024);
                 tokio_tungstenite::client_async(&ws_url, tokio_tungstenite::MaybeTlsStream::Plain(tcp)).await?
             } else {
                 connect_async(&ws_url).await?
@@ -181,7 +183,7 @@ impl HostSignaling {
         let (write, mut read) = ws_stream.split();
         let (ctrl_tx, ctrl_rx) = mpsc::channel::<Message>(64);
         let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(16);
-        let (frame_tx, frame_rx) = mpsc::channel::<Message>(1);
+        let (frame_tx, frame_rx) = tokio::sync::watch::channel::<Option<Vec<u8>>>(None);
         let writer = spawn_writer(write, ctrl_rx, audio_rx, frame_rx);
 
         let reg_msg = SignalingEnvelope {

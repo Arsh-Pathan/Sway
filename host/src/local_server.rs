@@ -378,6 +378,7 @@ async fn handle_ws(
     sim: Arc<InputSimulator>,
     privacy: Arc<PrivacyCurtain>,
 ) {
+    let _ = socket2::SockRef::from(&stream).set_send_buffer_size(256 * 1024);
     let ws = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
@@ -386,7 +387,7 @@ async fn handle_ws(
         }
     };
     let (write, mut read) = ws.split();
-    let (frame_tx, frame_rx) = mpsc::channel::<Message>(1);
+    let (frame_tx, frame_rx) = tokio::sync::watch::channel::<Option<Vec<u8>>>(None);
     let (ctrl_tx, ctrl_rx) = mpsc::channel::<Message>(64);
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(16);
     let writer = spawn_writer(write, ctrl_rx, audio_rx, frame_rx);
