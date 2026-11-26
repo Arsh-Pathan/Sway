@@ -44,7 +44,6 @@ fun TrackpadSurface(
         }
     }
 
-    var isDragging by remember { mutableStateOf(false) }
     val latestDragLocked by rememberUpdatedState(isDragLocked)
     val latestRotation by rememberUpdatedState(rotationQuarterTurns)
     val latestOnUnlockDrag by rememberUpdatedState(onUnlockDrag)
@@ -74,7 +73,7 @@ fun TrackpadSurface(
                 .background(TrackpadFill)
                 .border(
                     width = 1.5.dp,
-                    color = if (isDragging || isDragLocked) TrackpadActiveBorder else TrackpadBorder,
+                    color = if (isDragLocked) TrackpadActiveBorder else TrackpadBorder,
                     shape = RoundedCornerShape(20.dp)
                 )
         }
@@ -164,8 +163,6 @@ fun TrackpadSurface(
                                 }
                                 break
                             }
-
-                            if (!isDragging) isDragging = true
 
                             if (pressedCount == 1 && p0 != null) {
                                 val rawX = p0.position.x - p0.previousPosition.x
@@ -257,7 +254,6 @@ fun TrackpadSurface(
                             latestOnInputEvent(InputEvent.MouseUp(InputEvent.MouseDown.BUTTON_LEFT))
                             isDragHolding = false
                         }
-                        isDragging = false
                         accumX = 0f
                         accumY = 0f
                         accumScrollX = 0f

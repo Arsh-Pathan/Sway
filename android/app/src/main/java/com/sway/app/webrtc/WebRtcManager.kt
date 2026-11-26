@@ -42,11 +42,17 @@ class WebRtcManager(
     private val _connectionState = MutableStateFlow<RtcConnectionState>(RtcConnectionState.Idle)
     val connectionState = _connectionState.asStateFlow()
 
-    val currentFrame = signalingClient.currentFrame
+    val hasFrame = signalingClient.hasFrame
+    val latestBitmap: android.graphics.Bitmap?
+        get() = signalingClient.latestBitmap
     val fps = signalingClient.fps
     val rttMs = signalingClient.rttMs
     val monitorCount = signalingClient.monitorCount
     val textFocusEvents = signalingClient.textFocusEvents
+
+    fun setFrameListener(listener: (() -> Unit)?) {
+        signalingClient.frameListener = listener
+    }
 
     private var remoteVideoTrack: VideoTrack? = null
     private var videoRenderer: SurfaceViewRenderer? = null
@@ -176,13 +182,13 @@ class WebRtcManager(
     }
 
     fun sendInput(event: InputEvent) {
-        val bytes = event.toByteArray()
         val dc = inputDataChannel
         if (!isDirectLocal && dc != null && dc.state() == DataChannel.State.OPEN) {
+            val bytes = event.toByteArray()
             val buffer = DataChannel.Buffer(ByteBuffer.wrap(bytes), true)
             dc.send(buffer)
         } else {
-            signalingClient.sendBinary(bytes)
+            signalingClient.sendInputFast(event)
         }
     }
 

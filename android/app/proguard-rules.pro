@@ -9,3 +9,15 @@
 -keep,includedescriptorclasses class com.sway.app.model.**$$serializer { *; }
 -keepclassmembers class com.sway.app.model.** { *** Companion; }
 -keep class com.sway.app.model.** { *; }
+
+# Keep MLKit & ODML classes loaded via reflection/native JNI
+-keep class com.google.mlkit.** { *; }
+-dontwarn com.google.mlkit.**
+-keep class com.google.android.odml.** { *; }
+-dontwarn com.google.android.odml.**
+
+# Suppress optional JVM/TLS platform warnings in OkHttp / Conscrypt
+-dontwarn okhttp3.internal.platform.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**

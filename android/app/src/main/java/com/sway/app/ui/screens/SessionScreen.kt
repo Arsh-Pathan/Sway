@@ -245,60 +245,111 @@ private fun BoxScope.ConnectionOverlayCard(
     }
 }
 
+private class StreamBitmapView(context: android.content.Context) : android.view.View(context) {
+    var manager: WebRtcManager? = null
+    var fitMode: ViewFitMode = ViewFitMode.FIT
+    var onSizeTierChanged: ((Int, Int) -> Unit)? = null
+
+    private val bitmapPaint = android.graphics.Paint().apply {
+        isFilterBitmap = true
+        isDither = false
+    }
+    private val dstRect = android.graphics.Rect()
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        onSizeTierChanged?.invoke(w, h)
+    }
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        val frame = manager?.latestBitmap ?: return
+        if (frame.isRecycled) return
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+
+        val placement = computeStreamPlacement(
+            canvasWidth = w,
+            canvasHeight = h,
+            imgW = frame.width.toFloat(),
+            imgH = frame.height.toFloat(),
+            fitMode = fitMode
+        )
+        dstRect.set(
+            placement.padX.toInt(),
+            placement.padY.toInt(),
+            (placement.padX + placement.fitW).toInt(),
+            (placement.padY + placement.fitH).toInt()
+        )
+        if (fitMode == ViewFitMode.ROTATE_90) {
+            canvas.save()
+            canvas.rotate(90f, w / 2f, h / 2f)
+            canvas.drawBitmap(frame, null, dstRect, bitmapPaint)
+            canvas.restore()
+        } else {
+            canvas.drawBitmap(frame, null, dstRect, bitmapPaint)
+        }
+    }
+}
+
 @Composable
 private fun DesktopStreamCanvas(
-    currentFrameFlow: kotlinx.coroutines.flow.StateFlow<com.sway.app.network.StreamFrame?>,
+    webRtcManager: WebRtcManager,
     rtcState: RtcConnectionState,
     fitMode: ViewFitMode = ViewFitMode.FIT,
+    zoomScale: Float = 1.0f,
+    onInputEvent: (InputEvent) -> Unit = {},
     onReconnect: () -> Unit = {},
     onDisconnect: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val frameState = currentFrameFlow.collectAsState()
-    val hasFrame by remember { derivedStateOf { frameState.value != null } }
-    val paint = remember {
-        android.graphics.Paint().apply {
-            isFilterBitmap = true
-            isDither = false
+    val hasFrame by webRtcManager.hasFrame.collectAsState()
+    var viewWidthPx by remember { mutableIntStateOf(0) }
+    var viewHeightPx by remember { mutableIntStateOf(0) }
+    var lastViewportTier by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(viewWidthPx, viewHeightPx, zoomScale) {
+        if (viewWidthPx <= 0 || viewHeightPx <= 0) return@LaunchedEffect
+        val rawDim = (maxOf(viewWidthPx, viewHeightPx) * zoomScale).roundToInt()
+        val tier = when {
+            rawDim <= 854 -> 854
+            rawDim <= 960 -> 960
+            rawDim <= 1280 -> 1280
+            rawDim <= 1600 -> 1600
+            else -> 1920
+        }
+        if (tier != lastViewportTier) {
+            lastViewportTier = tier
+            onInputEvent(InputEvent.SetViewport(tier))
         }
     }
-    val dstRect = remember { android.graphics.Rect() }
 
     Box(modifier = modifier.fillMaxSize()) {
-        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-            val frameWrapper = frameState.value ?: return@Canvas
-            val frame = frameWrapper.bitmap
-            if (frame.isRecycled) return@Canvas
-            val canvasWidth = size.width
-            val canvasHeight = size.height
-
-            val placement = computeStreamPlacement(
-                canvasWidth = canvasWidth,
-                canvasHeight = canvasHeight,
-                imgW = frame.width.toFloat(),
-                imgH = frame.height.toFloat(),
-                fitMode = fitMode
-            )
-
-            dstRect.set(
-                placement.padX.toInt(),
-                placement.padY.toInt(),
-                (placement.padX + placement.fitW).toInt(),
-                (placement.padY + placement.fitH).toInt()
-            )
-
-            drawIntoCanvas { canvas ->
-                val nativeCanvas = canvas.nativeCanvas
-                if (fitMode == ViewFitMode.ROTATE_90) {
-                    nativeCanvas.save()
-                    nativeCanvas.rotate(90f, canvasWidth / 2f, canvasHeight / 2f)
-                    nativeCanvas.drawBitmap(frame, null, dstRect, paint)
-                    nativeCanvas.restore()
-                } else {
-                    nativeCanvas.drawBitmap(frame, null, dstRect, paint)
+        AndroidView(
+            factory = { ctx ->
+                StreamBitmapView(ctx).apply {
+                    manager = webRtcManager
+                    this.fitMode = fitMode
+                    onSizeTierChanged = { w, h ->
+                        viewWidthPx = w
+                        viewHeightPx = h
+                    }
+                    webRtcManager.setFrameListener {
+                        postInvalidateOnAnimation()
+                    }
                 }
-            }
-        }
+            },
+            update = { view ->
+                view.fitMode = fitMode
+                view.invalidate()
+            },
+            onRelease = { view ->
+                webRtcManager.setFrameListener(null)
+                view.onSizeTierChanged = null
+                view.manager = null
+            },
+            modifier = Modifier.fillMaxSize()
+        )
 
         if (!hasFrame || rtcState !is RtcConnectionState.Connected) {
             ConnectionOverlayCard(
@@ -341,7 +392,6 @@ private fun DesktopStreamView(
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position
                     val downTime = System.currentTimeMillis()
-                    var prevPointers = listOf(down)
                     var currentScale = latestScale
                     var currentOffsetX = latestOffsetX
                     var currentOffsetY = latestOffsetY
@@ -351,19 +401,29 @@ private fun DesktopStreamView(
 
                     while (true) {
                         val event = awaitPointerEvent()
-                        val pressedPointers = event.changes.filter { it.pressed }
-                        if (pressedPointers.size > maxPointers) {
-                            maxPointers = pressedPointers.size
+                        var pressedCount = 0
+                        var p0: androidx.compose.ui.input.pointer.PointerInputChange? = null
+                        var p1: androidx.compose.ui.input.pointer.PointerInputChange? = null
+                        for (i in event.changes.indices) {
+                            val c = event.changes[i]
+                            if (c.pressed) {
+                                if (pressedCount == 0) p0 = c
+                                else if (pressedCount == 1) p1 = c
+                                pressedCount++
+                            }
+                        }
+                        if (pressedCount > maxPointers) {
+                            maxPointers = pressedCount
                         }
 
-                        if (pressedPointers.isEmpty()) {
+                        if (pressedCount == 0) {
                             if (latestEnableDirectTap &&
                                 currentScale <= 1.05f &&
                                 maxPointers == 1 &&
                                 maxMovePx < tapSlopPx &&
                                 (System.currentTimeMillis() - downTime) < 280
                             ) {
-                                val bmp = webRtcManager.currentFrame.value?.bitmap
+                                val bmp = webRtcManager.latestBitmap
                                 val imgW = (bmp?.width ?: 1920).toFloat()
                                 val imgH = (bmp?.height ?: 1080).toFloat()
                                 val cw = size.width.toFloat().coerceAtLeast(1f)
@@ -388,18 +448,13 @@ private fun DesktopStreamView(
                             break
                         }
 
-                        if (pressedPointers.size >= 2) {
-                            val p0 = pressedPointers[0]
-                            val p1 = pressedPointers[1]
-                            val prev0 = prevPointers.firstOrNull { it.id == p0.id } ?: p0
-                            val prev1 = prevPointers.firstOrNull { it.id == p1.id } ?: p1
-
+                        if (pressedCount >= 2 && p0 != null && p1 != null) {
                             val currentDist = (p0.position - p1.position).getDistance().coerceAtLeast(1f)
-                            val prevDist = (prev0.position - prev1.position).getDistance().coerceAtLeast(1f)
+                            val prevDist = (p0.previousPosition - p1.previousPosition).getDistance().coerceAtLeast(1f)
                             val zoomFactor = currentDist / prevDist
 
                             val currentCenter = (p0.position + p1.position) / 2f
-                            val prevCenter = (prev0.position + prev1.position) / 2f
+                            val prevCenter = (p0.previousPosition + p1.previousPosition) / 2f
                             val pan = currentCenter - prevCenter
 
                             currentScale = (currentScale * zoomFactor).coerceIn(1.0f, 5.0f)
@@ -413,25 +468,24 @@ private fun DesktopStreamView(
                                 currentOffsetY = 0f
                             }
                             latestOnZoomChange(currentScale, currentOffsetX, currentOffsetY)
-                            for (p in pressedPointers) p.consume()
-                        } else if (pressedPointers.size == 1) {
-                            val current = pressedPointers[0]
-                            lastPos = current.position
-                            val moveDist = (current.position - downPos).getDistance()
+                            for (i in event.changes.indices) {
+                                if (event.changes[i].pressed) event.changes[i].consume()
+                            }
+                        } else if (pressedCount == 1 && p0 != null) {
+                            lastPos = p0.position
+                            val moveDist = (p0.position - downPos).getDistance()
                             if (moveDist > maxMovePx) maxMovePx = moveDist
 
                             if (currentScale > 1.05f) {
-                                val prev = prevPointers.firstOrNull { it.id == current.id } ?: current
-                                val pan = current.position - prev.position
+                                val pan = p0.position - p0.previousPosition
                                 val maxOffX = size.width * (currentScale - 1f) / 2f
                                 val maxOffY = size.height * (currentScale - 1f) / 2f
                                 currentOffsetX = (currentOffsetX + pan.x).coerceIn(-maxOffX, maxOffX)
                                 currentOffsetY = (currentOffsetY + pan.y).coerceIn(-maxOffY, maxOffY)
                                 latestOnZoomChange(currentScale, currentOffsetX, currentOffsetY)
-                                current.consume()
+                                p0.consume()
                             }
                         }
-                        prevPointers = pressedPointers
                     }
                 }
             }
@@ -447,9 +501,11 @@ private fun DesktopStreamView(
                 }
         ) {
             DesktopStreamCanvas(
-                currentFrameFlow = webRtcManager.currentFrame,
+                webRtcManager = webRtcManager,
                 rtcState = rtcState,
                 fitMode = fitMode,
+                zoomScale = zoomScale,
+                onInputEvent = onInputEvent,
                 onReconnect = onReconnect,
                 onDisconnect = onDisconnect
             )

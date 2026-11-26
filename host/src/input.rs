@@ -190,6 +190,7 @@ impl InputSimulator {
             }
             InputPacket::SetStreaming { enabled: _ } => {}
             InputPacket::SetAudioConfig { speaker_enabled: _, mic_enabled: _ } => {}
+            InputPacket::SetViewport { max_dim: _ } => {}
         }
     }
 

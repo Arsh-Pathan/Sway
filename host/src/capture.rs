@@ -868,7 +868,12 @@ impl ScreenCapture {
         }
     }
 
-    pub fn capture_frame_jpeg(&mut self, quality: u8, wait_ms: u32) -> Option<Vec<u8>> {
+    pub fn capture_frame_jpeg(
+        &mut self,
+        quality: u8,
+        viewport_max_dim: u16,
+        force_encode: bool,
+    ) -> Option<Vec<u8>> {
         #[cfg(windows)]
         crate::input::InputSimulator::ensure_input_desktop();
 
@@ -908,7 +913,9 @@ impl ScreenCapture {
             }
 
             if let Some(ref mut dxgi) = self.dxgi {
-                match dxgi.capture(wait_ms, &mut self.desktop_bgra) {
+                // Non-blocking poll once a base desktop image is cached so cursor-only moves encode in ~2ms.
+                let poll_ms = if self.has_desktop_frame { 0 } else { 16 };
+                match dxgi.capture(poll_ms, &mut self.desktop_bgra) {
                     DxgiCaptureResult::NewFrame => {
                         self.desktop_w = dxgi.width;
                         self.desktop_h = dxgi.height;
@@ -953,9 +960,6 @@ impl ScreenCapture {
             }
         }
 
-        #[cfg(not(windows))]
-        let _ = wait_ms;
-
         if !self.has_desktop_frame || self.desktop_w == 0 || self.desktop_h == 0 {
             return None;
         }
@@ -975,7 +979,7 @@ impl ScreenCapture {
         };
         let is_identical = frame_hash == self.last_frame_hash && cur_cursor == self.last_cursor_state;
 
-        if is_identical && self.last_encoded_time.elapsed() < std::time::Duration::from_millis(250) {
+        if !force_encode && is_identical && self.last_encoded_time.elapsed() < std::time::Duration::from_millis(250) {
             return None;
         }
 
@@ -984,13 +988,14 @@ impl ScreenCapture {
         self.last_encoded_time = std::time::Instant::now();
         self.last_frame_time = self.last_encoded_time;
 
-        // Adaptive resolution scaling mapped to quality ranges across LAN and WAN
-        let max_dim = match quality {
+        // Adaptive resolution scaling capped by client viewport tier across LAN and WAN
+        let quality_max_dim: u32 = match quality {
             0..=36 => 854,
             37..=52 => 960,
             53..=68 => 1280,
             _ => 1920,
         };
+        let max_dim = quality_max_dim.min((viewport_max_dim.max(480)) as u32);
 
         let (target_w, target_h) = if width > max_dim || height > max_dim {
             if width >= height {
@@ -1034,6 +1039,7 @@ impl ScreenCapture {
                 self.x_lut_src_w = width;
             }
             let x_lut = &self.x_lut;
+            let max_x = x_lut.iter().copied().max().unwrap_or(0);
 
             let dst_len = (target_w * target_h * 4) as usize;
             if self.scaled_bgra_buffer.len() < dst_len {
@@ -1048,8 +1054,10 @@ impl ScreenCapture {
             for (y, dst_row) in dst_pixels.chunks_exact_mut(dst_w).enumerate() {
                 let src_y = ((y * height as usize) / target_h as usize).min(height as usize - 1);
                 let src_row = &src_pixels[src_y * src_w..(src_y + 1) * src_w];
-                for (x, dst_px) in dst_row.iter_mut().enumerate() {
-                    *dst_px = src_row[x_lut[x]];
+                if max_x < src_row.len() {
+                    for (&lx, dst_px) in x_lut.iter().zip(dst_row.iter_mut()) {
+                        *dst_px = src_row[lx];
+                    }
                 }
             }
 
@@ -1088,9 +1096,8 @@ mod tests {
         }
         let mut success = 0;
         for q in [30, 45, 60, 75] {
-            capture.last_frame_hash = 0; // force encode across all qualities
             let t0 = std::time::Instant::now();
-            if let Some(frame) = capture.capture_frame_jpeg(q, 16) {
+            if let Some(frame) = capture.capture_frame_jpeg(q, 1920, true) {
                 let ms = t0.elapsed().as_secs_f64() * 1000.0;
                 println!("Quality {}: size = {} KB, time = {:.2} ms", q, frame.len() / 1024, ms);
                 if !frame.is_empty() {

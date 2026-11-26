@@ -247,6 +247,18 @@ sealed class InputEvent {
         override fun toByteArray(): ByteArray = byteArrayOf(opCode, if (speakerEnabled) 1 else 0, if (micEnabled) 1 else 0)
     }
 
+    data class SetViewport(val maxDim: Int) : InputEvent() {
+        override val opCode: Byte = 0x12
+        override fun toByteArray(): ByteArray {
+            val clamped = maxDim.coerceIn(480, 3840)
+            return byteArrayOf(
+                opCode,
+                (clamped and 0xFF).toByte(),
+                ((clamped ushr 8) and 0xFF).toByte()
+            )
+        }
+    }
+
     companion object {
         const val MAX_TEXT_PAYLOAD_LEN = 32 * 1024
 

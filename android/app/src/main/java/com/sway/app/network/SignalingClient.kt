@@ -7,6 +7,7 @@ import com.sway.app.model.CandidatePayload
 import com.sway.app.model.SdpPayload
 import com.sway.app.model.SignalingEnvelope
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +25,7 @@ import okio.ByteString.Companion.toByteString
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 data class StreamFrame(
@@ -84,17 +86,35 @@ class SignalingClient(
     private val decodeDispatcher = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "SwayFrameDecoder").apply { priority = Thread.MAX_PRIORITY }
     }.asCoroutineDispatcher()
+    private val inputDispatcher = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "SwayInputSender").apply { priority = Thread.MAX_PRIORITY }
+    }.asCoroutineDispatcher()
     private val userDisconnected = AtomicBoolean(false)
+    @Volatile
     private var webSocket: WebSocket? = null
     private var pingJob: Job? = null
     private var reconnectJob: Job? = null
     private var reconnectAttempt = 0
 
+    private val ctrlOutChannel = Channel<ByteArray>(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val inputWake = Channel<Unit>(Channel.CONFLATED)
+    private val pendingMoveDx = AtomicInteger(0)
+    private val pendingMoveDy = AtomicInteger(0)
+    private val pendingScrollY = AtomicInteger(0)
+    private val pendingScrollX = AtomicInteger(0)
+
     private val _state = MutableStateFlow<SignalingState>(SignalingState.Disconnected)
     val state = _state.asStateFlow()
 
-    private val _currentFrame = MutableStateFlow<StreamFrame?>(null)
-    val currentFrame = _currentFrame.asStateFlow()
+    @Volatile
+    var latestBitmap: Bitmap? = null
+        private set
+
+    @Volatile
+    var frameListener: (() -> Unit)? = null
+
+    private val _hasFrame = MutableStateFlow(false)
+    val hasFrame = _hasFrame.asStateFlow()
 
     private val _fps = MutableStateFlow(0)
     val fps = _fps.asStateFlow()
@@ -211,7 +231,7 @@ class SignalingClient(
 
             for (toDecode in decodeChannel) {
                 if (userDisconnected.get()) break
-                val activeBitmap = _currentFrame.value?.bitmap
+                val activeBitmap = latestBitmap
                 var candidate = bitmapPool[poolIndex]
                 if (candidate != null && (candidate.isRecycled || !candidate.isMutable || candidate === activeBitmap)) {
                     poolIndex = (poolIndex + 1) % bitmapPool.size
@@ -245,7 +265,11 @@ class SignalingClient(
                     bitmapPool[poolIndex] = bmp
                     poolIndex = (poolIndex + 1) % bitmapPool.size
                     frameSeq++
-                    _currentFrame.value = StreamFrame(bmp, frameSeq)
+                    latestBitmap = bmp
+                    if (!_hasFrame.value) {
+                        _hasFrame.value = true
+                    }
+                    frameListener?.invoke()
 
                     frameCounter++
                     val now = System.currentTimeMillis()
@@ -254,6 +278,67 @@ class SignalingClient(
                         frameCounter = 0
                         lastFpsTimestamp = now
                     }
+                }
+            }
+        }
+
+        clientScope.launch(inputDispatcher) {
+            for (_wake in inputWake) {
+                if (userDisconnected.get()) break
+                val ws = webSocket ?: continue
+
+                // Flush accumulated pointer deltas before any queued click/key so clicks hit exact targets.
+                val dx = pendingMoveDx.getAndSet(0)
+                val dy = pendingMoveDy.getAndSet(0)
+                if (dx != 0 || dy != 0) {
+                    val cx = dx.coerceIn(-32767, 32767)
+                    val cy = dy.coerceIn(-32767, 32767)
+                    ws.send(
+                        byteArrayOf(
+                            0x01,
+                            (cx and 0xFF).toByte(),
+                            ((cx ushr 8) and 0xFF).toByte(),
+                            (cy and 0xFF).toByte(),
+                            ((cy ushr 8) and 0xFF).toByte()
+                        ).toByteString()
+                    )
+                }
+
+                while (true) {
+                    val pkt = ctrlOutChannel.tryReceive().getOrNull() ?: break
+                    ws.send(pkt.toByteString())
+                }
+
+                val sy = pendingScrollY.getAndSet(0)
+                val sx = pendingScrollX.getAndSet(0)
+                if (sy != 0 || sx != 0) {
+                    val cy = sy.coerceIn(-32767, 32767)
+                    val cx = sx.coerceIn(-32767, 32767)
+                    ws.send(
+                        byteArrayOf(
+                            0x04,
+                            (cy and 0xFF).toByte(),
+                            ((cy ushr 8) and 0xFF).toByte(),
+                            (cx and 0xFF).toByte(),
+                            ((cx ushr 8) and 0xFF).toByte()
+                        ).toByteString()
+                    )
+                }
+
+                val dx2 = pendingMoveDx.getAndSet(0)
+                val dy2 = pendingMoveDy.getAndSet(0)
+                if (dx2 != 0 || dy2 != 0) {
+                    val cx = dx2.coerceIn(-32767, 32767)
+                    val cy = dy2.coerceIn(-32767, 32767)
+                    ws.send(
+                        byteArrayOf(
+                            0x01,
+                            (cx and 0xFF).toByte(),
+                            ((cx ushr 8) and 0xFF).toByte(),
+                            (cy and 0xFF).toByte(),
+                            ((cy ushr 8) and 0xFF).toByte()
+                        ).toByteString()
+                    )
                 }
             }
         }
@@ -356,6 +441,27 @@ class SignalingClient(
         }
     }
 
+    fun sendInputFast(event: com.sway.app.model.InputEvent): Boolean {
+        if (userDisconnected.get() || webSocket == null) return false
+        when (event) {
+            is com.sway.app.model.InputEvent.MouseMove -> {
+                if (event.dx.toInt() != 0) pendingMoveDx.addAndGet(event.dx.toInt())
+                if (event.dy.toInt() != 0) pendingMoveDy.addAndGet(event.dy.toInt())
+                inputWake.trySend(Unit)
+            }
+            is com.sway.app.model.InputEvent.MouseScroll -> {
+                if (event.deltaY.toInt() != 0) pendingScrollY.addAndGet(event.deltaY.toInt())
+                if (event.deltaX.toInt() != 0) pendingScrollX.addAndGet(event.deltaX.toInt())
+                inputWake.trySend(Unit)
+            }
+            else -> {
+                ctrlOutChannel.trySend(event.toByteArray())
+                inputWake.trySend(Unit)
+            }
+        }
+        return true
+    }
+
     fun sendBinary(bytes: ByteArray): Boolean {
         val ws = webSocket ?: return false
         return ws.send(bytes.toByteString())
@@ -414,8 +520,12 @@ class SignalingClient(
         audioPlayer.release()
         webSocket?.close(1000, "User disconnected")
         webSocket = null
+        frameListener = null
+        latestBitmap = null
+        _hasFrame.value = false
         decodeChannel.close()
-        _currentFrame.value = null
+        ctrlOutChannel.close()
+        inputWake.close()
         _fps.value = 0
         for (i in bitmapPool.indices) {
             // Do NOT call bitmap.recycle() here: RenderThread may still finish drawing the active frame.
@@ -424,6 +534,9 @@ class SignalingClient(
         clientScope.cancel()
         try {
             decodeDispatcher.close()
+        } catch (_: Exception) {}
+        try {
+            inputDispatcher.close()
         } catch (_: Exception) {}
         _state.value = SignalingState.Disconnected
     }

@@ -21,6 +21,7 @@ pub enum InputPacket {
     SystemCommand { action: u8 },
     SetStreaming { enabled: bool },
     SetAudioConfig { speaker_enabled: bool, mic_enabled: bool },
+    SetViewport { max_dim: u16 },
 }
 
 #[derive(Debug, Error)]
@@ -155,6 +156,10 @@ impl InputPacket {
                 let mic_enabled = rdr.read_u8()? != 0;
                 Ok(InputPacket::SetAudioConfig { speaker_enabled, mic_enabled })
             }
+            0x12 => {
+                let max_dim = rdr.read_u16::<LittleEndian>()?.clamp(480, 3840);
+                Ok(InputPacket::SetViewport { max_dim })
+            }
             _ => Err(ProtocolError::UnknownOpCode(opcode)),
         }
     }
@@ -233,6 +238,18 @@ mod tests {
         assert_eq!(
             InputPacket::parse(&sys).unwrap(),
             InputPacket::SystemCommand { action: 2 }
+        );
+
+        let vp = vec![0x12, 0x00, 0x05]; // 1280 = 0x0500 little-endian
+        assert_eq!(
+            InputPacket::parse(&vp).unwrap(),
+            InputPacket::SetViewport { max_dim: 1280 }
+        );
+
+        let vp_clamped = vec![0x12, 0x64, 0x00]; // 100 clamps up to 480
+        assert_eq!(
+            InputPacket::parse(&vp_clamped).unwrap(),
+            InputPacket::SetViewport { max_dim: 480 }
         );
     }
 

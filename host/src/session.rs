@@ -1,7 +1,7 @@
 //! Shared per-connection session plumbing used by both the direct LAN server and the cloud
 //! signaling client, so both transports behave identically.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -40,6 +40,8 @@ pub struct StreamState {
     pub stream_enabled: AtomicBool,
     pub active_monitor: AtomicUsize,
     pub quality_mode: AtomicU8,
+    pub viewport_max_dim: AtomicU16,
+    pub force_refresh: AtomicBool,
     pub lan: bool,
 }
 
@@ -50,6 +52,8 @@ impl StreamState {
             stream_enabled: AtomicBool::new(true),
             active_monitor: AtomicUsize::new(0),
             quality_mode: AtomicU8::new(0),
+            viewport_max_dim: AtomicU16::new(1920),
+            force_refresh: AtomicBool::new(true),
             lan,
         })
     }
@@ -74,21 +78,26 @@ pub fn spawn_capture_worker(
             }
             capture.active_monitor = state.active_monitor.load(Ordering::Relaxed);
             let (q, interval) = quality_params(state.quality_mode.load(Ordering::Relaxed), state.lan);
-            let wait_ms = interval.as_millis().clamp(1, 20) as u32;
+            let viewport_max_dim = state.viewport_max_dim.load(Ordering::Relaxed);
+            let force = state.force_refresh.swap(false, Ordering::AcqRel);
 
-            if let Some(frame) = capture.capture_frame_jpeg(q, wait_ms) {
+            if let Some(frame) = capture.capture_frame_jpeg(q, viewport_max_dim, force) {
                 // Overwrite any unconsumed stale frame so the writer always sends the latest frame.
                 frame_tx.send_replace(Some(frame));
                 if frame_tx.is_closed() {
                     break;
                 }
-            }
-            next_tick += interval;
-            let now = Instant::now();
-            if now < next_tick {
-                std::thread::sleep(next_tick - now);
+                next_tick += interval;
+                let now = Instant::now();
+                if now < next_tick {
+                    std::thread::sleep(next_tick - now);
+                } else {
+                    next_tick = now;
+                }
             } else {
-                next_tick = now;
+                // Static desktop: sleep lightly so cursor moves and forced refreshes react in <8ms.
+                std::thread::sleep(Duration::from_millis(8));
+                next_tick = Instant::now();
             }
         }
         info!("Screen capture loop stopped");
@@ -201,15 +210,26 @@ impl SessionCtx {
             InputPacket::SwitchMonitor { monitor_index } => {
                 let idx = (monitor_index as usize) % self.sim.monitor_count().max(1);
                 self.state.active_monitor.store(idx, Ordering::SeqCst);
+                self.state.force_refresh.store(true, Ordering::Release);
                 self.dispatch_blocking(InputPacket::SwitchMonitor { monitor_index: idx as u8 });
             }
             InputPacket::SetQuality { mode } => {
                 self.state.quality_mode.store(mode, Ordering::SeqCst);
+                self.state.force_refresh.store(true, Ordering::Release);
                 info!("Stream quality mode set to {}", mode);
             }
             InputPacket::SetStreaming { enabled } => {
                 info!("Client requested screen streaming: {}", enabled);
                 self.state.stream_enabled.store(enabled, Ordering::SeqCst);
+                if enabled {
+                    self.state.force_refresh.store(true, Ordering::Release);
+                }
+            }
+            InputPacket::SetViewport { max_dim } => {
+                let prev = self.state.viewport_max_dim.swap(max_dim, Ordering::Relaxed);
+                if prev != max_dim {
+                    self.state.force_refresh.store(true, Ordering::Release);
+                }
             }
             InputPacket::SetPrivacyCurtain { enabled } => {
                 self.privacy.set_enabled(enabled);

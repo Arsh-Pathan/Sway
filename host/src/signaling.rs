@@ -220,13 +220,24 @@ impl HostSignaling {
         };
 
         let mut result: Result<(), Box<dyn std::error::Error + Send + Sync>> = Ok(());
+        let mut idle_tick = tokio::time::interval(Duration::from_secs(15));
+        idle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last_rx = tokio::time::Instant::now();
         loop {
-            let msg = match tokio::time::timeout(READ_TIMEOUT, read.next()).await {
-                Ok(Some(m)) => m,
-                Ok(None) => break,
-                Err(_) => {
-                    warn!("Signaling connection timed out (no traffic for {:?})", READ_TIMEOUT);
-                    break;
+            let msg = tokio::select! {
+                m = read.next() => match m {
+                    Some(m) => {
+                        last_rx = tokio::time::Instant::now();
+                        m
+                    }
+                    None => break,
+                },
+                _ = idle_tick.tick() => {
+                    if last_rx.elapsed() >= READ_TIMEOUT {
+                        warn!("Signaling connection timed out (no traffic for {:?})", READ_TIMEOUT);
+                        break;
+                    }
+                    continue;
                 }
             };
             match msg {
